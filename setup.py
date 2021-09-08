@@ -17,20 +17,12 @@ setup(
   install_requires=[
     'einops>=0.3',
     'numpy',
-    'proDy',
     'pytorch3d',
-    'requests',
     'sidechainnet',
     'torch>=1.6',
-    'biopython',
     'mp-nerf>=0.1.5'
   ],
-  setup_requires=[
-    'pytest-runner',
-  ],
-  tests_require=[
-    'pytest'
-  ],
+  test_suite = 'tests',
   classifiers=[
     'Development Status :: 4 - Beta',
     'Intended Audience :: Developers',

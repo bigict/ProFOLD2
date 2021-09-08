@@ -6,6 +6,7 @@ from einops import rearrange,repeat
 
 from profold2 import constants
 from profold2.model.evoformer import *
+from profold2.model.features import FeatureBuilder
 from profold2.model.head import HeaderBuilder
 from profold2.model.mlm import MLM
 from profold2.utils import *
@@ -57,6 +58,7 @@ class Alphafold2(nn.Module):
         mlm_keep_token_same_prob = 0.1,
         mlm_exclude_token_ids = (0,),
         recycling_distance_buckets = 32,
+        feats = None,
         headers = None
     ):
         super().__init__()
@@ -65,7 +67,7 @@ class Alphafold2(nn.Module):
         # token embedding
         self.token_emb = nn.Embedding(num_tokens + 1, dim) if not disable_token_embed else Always(0)
         self.disable_token_embed = disable_token_embed
-        self.to_pairwise_repr = PairwiseEmbedding(dim)
+        self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
         # extra msa embedding
         self.extra_msa_evoformer = Evoformer(
@@ -138,27 +140,26 @@ class Alphafold2(nn.Module):
         self.recycling_distance_embed = nn.Embedding(recycling_distance_buckets, dim)
         self.recycling_distance_buckets = recycling_distance_buckets
 
+        self.feat_builder = FeatureBuilder(feats)
         self.headers = default(HeaderBuilder.build(dim, headers), {})
 
     def forward(
         self,
-        seq,
-        msa = None,
-        mask = None,
-        msa_mask = None,
         extra_msa = None,
         extra_msa_mask = None,
-        seq_index = None,
-        seq_embed = None,
-        msa_embed = None,
         templates_feats = None,
         templates_mask = None,
         templates_angles = None,
-        embedds = None,
         recyclables = None,
         return_recyclables = False,
         batch = None
     ):
+        batch = self.feat_builder(batch)
+
+        seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
+        msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
+        embedds, = map(batch.get, ('embedds',))
+
         assert not (self.disable_token_embed and not exists(seq_embed)), 'sequence embedding must be supplied if one has disabled token embedding'
         assert not (self.disable_token_embed and not exists(msa_embed)), 'msa embedding must be supplied if one has disabled token embedding'
 

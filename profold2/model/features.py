@@ -1,4 +1,4 @@
-from functools import wraps
+import functools
 
 import torch
 from einops import rearrange
@@ -8,10 +8,10 @@ from profold2.utils import default,exists
 
 _feats_fn = {}
 
-def take1(fn):
+def take1st(fn):
     """Supply all arguments but the first."""
 
-    @wraps(fn)
+    @functools.wraps(fn)
     def fc(*args, **kwargs):
         return lambda x: fn(x, *args, **kwargs)
 
@@ -20,11 +20,11 @@ def take1(fn):
 
     return fc
 
-@take1
+@take1st
 def make_seq_mask(protein):
     return protein
 
-@take1
+@take1st
 def make_msa_mask(protein):
     return protein
 
@@ -47,39 +47,43 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
 
     return pseudo_beta
 
-@take1
+@take1st
 def make_pseudo_beta(protein, prefix=''):
     protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
             pseudo_beta_fn(protein[prefix + 'seq'], protein[prefix + 'coord'], protein[prefix + 'coord_mask']))
     return protein
 
-@take1
+@take1st
 def make_random_seed_to_crop(protein):
     return protein
 
-@take1
-def make_esm_embedd(protein, esm_extractor, repr_layer, device=None):
+@take1st
+def make_esm_embedd(protein, esm_extractor, repr_layer, device=None, field='embedds'):
     data = list(zip(protein['pid'], protein['str_seq']))
-    protein['emb_seq'] = rearrange(
+    protein[field] = rearrange(
             esm_extractor.extract(data, repr_layer=repr_layer, device=device),
             'b l c -> b () l c')
     return protein
 
-@take1
+@take1st
 def make_to_device(protein, fields, device):
     for k in fields:
         protein[k] = protein[k].to(device)
     return protein
 
-@take1
+@take1st
 def make_selection(protein, fields):
     return {k: protein[k] for k in fields}
 
 class FeatureBuilder:
     def __init__(self, config):
-        self.map_fn = [_feats_fn[k](**v) for k, v in config.items()] if config else []
+        self.config = config
 
     def build(self, protein):
-        for f in self.map_fn:
+        for fn, kwargs in default(self.config, []):
+            f = _feats_fn[fn](**kwargs)
             protein = f(protein)
         return protein
+
+    def __call__(self, protein):
+        return self.build(protein)

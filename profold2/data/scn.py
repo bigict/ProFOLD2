@@ -74,6 +74,8 @@ def load(max_seq_len=1024, aggregate_model_input=True, seq_as_onehot=None, colla
         collate_fn = get_collate_fn(max_seq_len,
                 aggregate_model_input,
                 seq_as_onehot)
+    if 'with_pytorch' not in kwargs:
+        kwargs['with_pytorch'] = 'dataloaders'
     return sidechainnet.load(
             aggregate_model_input=aggregate_model_input, 
             collate_fn = collate_fn, 
