@@ -27,66 +27,29 @@ def main(args):
     if args.threads > 0:
         torch.set_num_threads(args.threads)
     
-    # set emebdder model from esm if appropiate - Load ESM-1b model
-    
-    if args.features == "esm":
-        esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
-    
     # get data
-    
     data = scn.load(
         casp_version = args.casp_version,
         thinning = 30,
-        with_pytorch = 'dataloaders',
         batch_size = args.batch_size,
         num_workers = 0,
-        dynamic_batching = False
-    )
+        dynamic_batching = False)
     
     test_loader = data['train']
-    data_cond = lambda t: args.min_protein_len <= t[1].shape[1] and t[1].shape[1] <= args.max_protein_len
 
     # model
-    
     model = torch.load(os.path.join(args.model))
     model.eval()
     model.to(DEVICE)
 
     # eval loop
-    
-    for i, batch in enumerate(filter(data_cond, iter(test_loader))):
-        seq, coords, mask = batch.seqs, batch.crds, batch.msks
-        logging.debug('seq.shape: {}'.format(seq.shape))
-    
-        # prepare data and mask labels
-        seq, coords, mask = seq.argmax(dim = -1).to(DEVICE), coords.to(DEVICE), mask.to(DEVICE)
-        # coords = rearrange(coords, 'b (l c) d -> b l c d', l = l) # no need to rearrange for now
-        # mask the atoms and backbone positions for each residue
-    
-        # sequence embedding (msa / esm / attn / or nothing)
-        msa, embedds = None, None
-    
-        # get embedds
-        if args.features == "esm":
-            data = list(zip(batch.pids, str_seqs))
-            embedds = rearrange(
-                    esm_extractor.extract(data, repr_layer=esm.ESM_EMBED_LAYER, device=DEVICE),
-                    'b l c -> b () l c')
-        # get msa here
-        elif args.features == "msa":
-            pass 
-        # no embeddings 
-        else:
-            pass
+    for i, batch in enumerate(iter(test_loader)):
+        logging.debug('seq.shape: {}'.format(batch['seq'].shape))
     
         # predict - out is (batch, L * 3, 3)
-    
-        backbones = model(
-            seq,
-            mask = mask,
-            msa = msa,
-            embedds = embedds
-        )
+        r = model(batch=batch)
+        print(r.headers)
+        sys.exit(0)
     
         # atom mask
         #_, atom_mask, _ = scn_backbone_mask(seq, boolean=True)

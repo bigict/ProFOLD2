@@ -62,10 +62,11 @@ def main(args):
                     device=DEVICE))
                 ]
 
-        headers = dict(distogram=(dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
+        headers = [('distogram', dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
                             buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.01)),
-                       folding=(dict(structure_module_depth=4, structure_module_heads=4,
-                            fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)))
+                       ('folding', dict(structure_module_depth=4, structure_module_heads=4,
+                            fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
+                       ('tmscore', {}, {})]
 
         logging.info('Alphafold2.feats: {}'.format(feats))
         logging.info('Alphafold2.headers: {}'.format(headers))
