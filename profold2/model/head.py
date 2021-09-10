@@ -24,7 +24,7 @@ class DistogramHead(nn.Module):
                 nn.LayerNorm(dim),
                 nn.Linear(dim, buckets_num))
 
-    def forward(self, representations, batch):
+    def forward(self, headers, representations, batch):
         """Builds DistogramHead module.
 
        Arguments:
@@ -83,7 +83,7 @@ class FoldingHead(nn.Module):
         self.fape_z = fape_z
         self.criterion = nn.MSELoss()
 
-    def forward(self, representations, batch):
+    def forward(self, headers, representations, batch):
         return dict(coords=self.struct_module(representations, batch))
 
     def loss(self, value, batch):
@@ -105,7 +105,7 @@ class FoldingHead(nn.Module):
         loss = torch.clamp(
                 torch.sqrt(self.criterion(coords_aligned, labels_aligned)), 
                 self.fape_min, self.fape_max) / self.fape_z
-        return dict(loss=loss, coords=coords_aligned)
+        return dict(loss=loss, backbones=coords, coords=proto_sidechain)
 
 class LDDTHead(nn.Module):
     """Head to predict LDDT score.
@@ -113,7 +113,7 @@ class LDDTHead(nn.Module):
     def __init__(self, dim):
         super().__init__()
 
-    def forward(self, representations, batch):
+    def forward(self, headers, representations, batch):
         pass
 
     def loss(self, value, batch):
@@ -125,8 +125,17 @@ class TMscoreHead(nn.Module):
     def __init__(self, dim):
         super().__init__()
 
-    def forward(self, representations, batch):
-        pass
+    def forward(self, headers, representations, batch):
+        assert 'folding' in headers and 'coords' in headers['folding']
+
+        pred, labels = headers['folding']['coords'], batch['coord']
+        flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+        # rotate / align
+        coords_aligned, labels_aligned = Kabsch(
+                rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask], 
+                rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
+        return dict(loss=TMscore(
+            rearrange(coords_aligned, 'l d -> () d l'), rearrange(labels_aligned, 'l d -> () d l')))
 
 class HeaderBuilder:
     _headers = dict(
@@ -137,6 +146,6 @@ class HeaderBuilder:
     @staticmethod
     def build(dim, config):
         if exists(config):
-            return dict((k, (HeaderBuilder._headers[k](dim=dim, **args), data))
-                    for k, (args, data) in config.items())
-        return {}
+            return list((k, HeaderBuilder._headers[k](dim=dim, **args), options)
+                    for k, args, options in config)
+        return []

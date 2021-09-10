@@ -29,7 +29,7 @@ def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_
         return predicted
 
     # build scaffold from (N, CA, C, CB) - do in cpu
-    new_coords = torch.zeros(batch, length, NUM_COORDS_PER_RES, 3)
+    new_coords = torch.zeros(batch, length, num_coords_per_res, 3)
     predicted  = predicted.cpu() if predicted.is_cuda else predicted
 
     # fill atoms if they have been passed
@@ -44,7 +44,7 @@ def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_
             padding = (seq == padding_tok).sum().item()
             seq_str = ''.join([VOCAB._int2char[aa] for aa in seq.cpu().numpy()[:-padding or None]])
         elif isinstance(seq, str):
-            padding = 0
+            padding = length - len(seq)
             seq_str = seq
         # get scaffolds - will overwrite oxygen since its position is fully determined by N-C-CA
         scaffolds = mp_nerf.proteins.build_scaffolds_from_scn_angles(seq_str, angles=None, device="cpu")

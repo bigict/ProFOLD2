@@ -141,7 +141,7 @@ class Alphafold2(nn.Module):
         self.recycling_distance_buckets = recycling_distance_buckets
 
         self.feat_builder = FeatureBuilder(feats)
-        self.headers = default(HeaderBuilder.build(dim, headers), {})
+        self.headers = HeaderBuilder.build(dim, headers)
 
     def forward(
         self,
@@ -260,8 +260,8 @@ class Alphafold2(nn.Module):
 
         representations = {'pair': x, 'single': m[:, 0]}
         ret.headers = {}
-        for name, (module, options) in self.headers.items():
-            ret.headers[name] = module(representations, batch)
+        for name, module, options in self.headers:
+            ret.headers[name] = module(ret.headers, representations, batch)
             if self.training and hasattr(module, 'loss'):
                 loss = module.loss(ret.headers[name], batch)
                 ret.headers[name].update(loss)
