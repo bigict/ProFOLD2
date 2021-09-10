@@ -51,7 +51,6 @@ class Alphafold2(nn.Module):
         templates_angles_feats_dim = 55,
         predict_angles = False,
         symmetrize_omega = False,
-        predict_coords = False,                # structure module related keyword arguments below
         disable_token_embed = False,
         mlm_mask_prob = 0.15,
         mlm_random_replace_token_prob = 0.1,
@@ -131,8 +130,6 @@ class Alphafold2(nn.Module):
         )
 
         # to coordinate output
-
-        self.predict_coords = predict_coords
 
         # recycling params
         self.recycling_msa_norm = nn.LayerNorm(dim)
@@ -261,17 +258,19 @@ class Alphafold2(nn.Module):
         representations = {'pair': x, 'single': m[:, 0]}
         ret.headers = {}
         for name, module, options in self.headers:
-            ret.headers[name] = module(ret.headers, representations, batch)
+            value = module(ret.headers, representations, batch)
+            if not exists(value):
+                continue
+            ret.headers[name] = value
             if self.training and hasattr(module, 'loss'):
                 loss = module.loss(ret.headers[name], batch)
                 ret.headers[name].update(loss)
-                if ret.loss is None:
-                    ret.loss = loss['loss'] * options.get('weight', 1.0)
-                else:
+                if exists(ret.loss):
                     ret.loss += loss['loss'] * options.get('weight', 1.0)
+                else:
+                    ret.loss = loss['loss'] * options.get('weight', 1.0)
 
         # calculate mlm loss, if training
-        ret.msa_mlm_loss = None
         if self.training and exists(msa):
             num_msa = original_msa.shape[1]
             ret.msa_mlm_loss = self.mlm(m[:, :num_msa], original_msa, replaced_msa_mask)
@@ -280,9 +279,6 @@ class Alphafold2(nn.Module):
         if self.predict_angles:
             omega_input = trunk_embeds if self.symmetrize_omega else x
             ret.omega_logits = self.to_prob_omega(omega_input)
-
-        if not self.predict_coords:
-            return ret
 
         if return_recyclables:
             coords, single_msa_repr_row, pairwise_repr = map(torch.detach, (coords, single_msa_repr_row, pairwise_repr))

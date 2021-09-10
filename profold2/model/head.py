@@ -74,9 +74,10 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, fape_min=1e-6, fape_max=15, fape_z=15):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=14, fape_min=1e-6, fape_max=15, fape_z=15):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
+        self.num_atoms = num_atoms
 
         self.fape_min = fape_min
         self.fape_max = fape_max
@@ -84,31 +85,33 @@ class FoldingHead(nn.Module):
         self.criterion = nn.MSELoss()
 
     def forward(self, headers, representations, batch):
-        return dict(coords=self.struct_module(representations, batch))
+        backbones = self.struct_module(representations, batch)
 
-    def loss(self, value, batch):
-        coords, labels = value['coords'], batch['coord']
-        num_coords_per_res = labels.shape[-2]
-
-        atom_mask = torch.zeros(num_coords_per_res) #.to(seq.device)
+        atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
         atom_mask[..., 1] = 1
 
         ## build SC container. set SC points to CA and optionally place carbonyl O
-        proto_sidechain = sidechain.fold(batch['str_seq'], backbones=coords, atom_mask=atom_mask,
-                                              cloud_mask=batch['coord_mask'], num_coords_per_res=num_coords_per_res)
+        coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
+                                              cloud_mask=batch['coord_mask'], num_coords_per_res=self.num_atoms)
+
+        return dict(backbones=backbones, coords=coords)
+
+    def loss(self, value, batch):
+        coords, labels = value['coords'], batch['coord']
         flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+
         # rotate / align
         coords_aligned, labels_aligned = Kabsch(
-                rearrange(proto_sidechain, 'b l c d -> b (l c) d')[flat_cloud_mask], 
+                rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 
                 rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
 
         loss = torch.clamp(
                 torch.sqrt(self.criterion(coords_aligned, labels_aligned)), 
                 self.fape_min, self.fape_max) / self.fape_z
-        return dict(loss=loss, backbones=coords, coords=proto_sidechain)
+        return dict(loss=loss)
 
 class LDDTHead(nn.Module):
-    """Head to predict LDDT score.
+    """Head to predict the LDDT to be used as a per-residue configence score.
     """
     def __init__(self, dim):
         super().__init__()
@@ -128,14 +131,18 @@ class TMscoreHead(nn.Module):
     def forward(self, headers, representations, batch):
         assert 'folding' in headers and 'coords' in headers['folding']
 
-        pred, labels = headers['folding']['coords'], batch['coord']
-        flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
-        # rotate / align
-        coords_aligned, labels_aligned = Kabsch(
-                rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask], 
-                rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
-        return dict(loss=TMscore(
-            rearrange(coords_aligned, 'l d -> () d l'), rearrange(labels_aligned, 'l d -> () d l')))
+        if 'coord' in batch and 'coord_mask' in batch:
+            pred, labels = headers['folding']['coords'], batch['coord']
+            flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+
+            # rotate / align
+            coords_aligned, labels_aligned = Kabsch(
+                    rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask], 
+                    rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
+
+            return dict(loss=TMscore(
+                    rearrange(coords_aligned, 'l d -> () d l'), rearrange(labels_aligned, 'l d -> () d l')))
+        return None
 
 class HeaderBuilder:
     _headers = dict(

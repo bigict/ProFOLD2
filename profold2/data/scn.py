@@ -69,7 +69,7 @@ def get_collate_fn(max_seq_len, aggregate_input, seqs_as_onehot=None):
                     coord_mask=cloud_mask(int_seqs, coords=coords))
     return collate_fn
 
-def load(max_seq_len=1024, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, **kwargs):
+def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, **kwargs):
     if collate_fn is None:
         collate_fn = get_collate_fn(max_seq_len,
                 aggregate_model_input,
