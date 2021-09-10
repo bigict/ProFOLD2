@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import esm,scn,custom
-from profold2.model import Alphafold2,FeatureBuilder
+from profold2.model import Alphafold2
 
 def main(args):
     # constants
@@ -41,7 +41,6 @@ def main(args):
         max_seq_len = args.max_protein_len,
         casp_version = args.casp_version,
         thinning = 30,
-        with_pytorch = 'dataloaders',
         batch_size = args.batch_size,
         num_workers = 0,
         dynamic_batching = False)
@@ -49,26 +48,26 @@ def main(args):
     train_loader = data['train']
     dl = cycle(train_loader)
 
-    # features
-    feats_builder = FeatureBuilder(dict(
-            make_pseudo_beta={},
-            make_esm_embedd=dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER),
-            make_to_device=dict(
-                fields=['seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta', 'pseudo_beta_mask'],
-                device=DEVICE)
-            ))
-
     # model
     if args.alphafold2_continue:
         model = torch.load(os.path.join(args.prefix, 'model.pkl'))
         mode.eval()
         model.to(DEVICE)
     else:
+        # features
+        feats = [('make_pseudo_beta', {}),
+                 ('make_esm_embedd', dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER)),
+                 ('make_to_device', dict(
+                    fields=['seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta', 'pseudo_beta_mask'],
+                    device=DEVICE))
+                ]
+
         headers = dict(distogram=(dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
                             buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.01)),
                        folding=(dict(structure_module_depth=4, structure_module_heads=4,
                             fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)))
 
+        logging.info('Alphafold2.feats: {}'.format(feats))
         logging.info('Alphafold2.headers: {}'.format(headers))
 
         model = Alphafold2(
@@ -78,6 +77,7 @@ def main(args):
             dim_head = 64,
             predict_coords = False,
             predict_angles = False,
+            feats = feats,
             headers = headers
         ).to(DEVICE)
 
@@ -91,23 +91,17 @@ def main(args):
     for it in range(args.num_batches):
         running_loss = {}
         for jt in range(args.gradient_accumulate_every):
-            batch = feats_builder.build(next(dl))
+            batch = next(dl)
 
             seq, mask = batch['seq'], batch['mask']
             logging.debug('seq.shape: {}'.format(seq.shape))
     
             # sequence embedding (msa / esm / attn / or nothing)
-            msa, embedds = None, batch['emb_seq'] 
-            r = model(
-                seq,
-                mask = mask,
-                embedds = embedds,
-                msa = msa,
-                batch = batch)
+            r = model(batch = batch)
     
             if it == 0 and jt == 0 and args.tensorboard_add_graph:
                 with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
-                    w.add_graph(model, (seq, mask, embedds), verbose=True)
+                    w.add_graph(model, (batch,), verbose=True)
    
             # running loss
             running_loss['all'] = running_loss.get('all', 0) + r.loss.item()

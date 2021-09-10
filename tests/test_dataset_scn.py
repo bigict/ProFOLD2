@@ -1,5 +1,6 @@
 import unittest
 
+import torch
 from profold2.data import scn
 
 
