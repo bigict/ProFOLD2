@@ -15,27 +15,32 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     atom_map = {'N': 0, 'CA': 1, 'C': 2}
 
-    def __init__(self, work_dir, msa_max_size=128, max_seq_length=500) -> None:
+    def __init__(self, data_dir, msa_max_size=128, max_seq_len=1024):
         super().__init__()
-        self.dir = work_dir
+
+        self.data_dir = data_dir
         self.max_msa = msa_max_size
-        self.max_seq_len = max_seq_length
-        with open(os.path.join(self.dir, "pdb_names")) as fin:
-            self.protein_ids = list(map(str.rstrip, fin.readlines())) 
+        self.max_seq_len = max_seq_len
+        with open(os.path.join(self.data_dir, "pdb_names")) as f:
+            self.pids = list(map(str.rstrip, f))
 
     def __getitem__(self, idx):
-        pid = self.protein_ids[idx]
+        pid = self.pids[idx]
+
+        seq_feats = self.get_seq_features(pid)
+        coord_feats = self.get_structure_label_new(pid, seq_feats['str_seq'])
+        return dict(pid=pid, **seq_feats, **coord_feats)
         return dict(pid=pid, 
                 **self.get_seq_features(pid), 
                 **self.get_msa_features(pid),
                 **self.get_structure_label(pid))
 
     def __len__(self):
-        return len(self.protein_ids)
+        return len(self.pids)
 
     def get_msa_features(self, protein_id):
         """Constructs a feature dict of MSA features."""
-        msa_path = os.path.join(self.dir, f'a3ms/{protein_id}.a3m')
+        msa_path = os.path.join(self.data_dir, f'a3ms/{protein_id}.a3m')
         with open(msa_path) as fin:
             string = fin.read()
         msa, del_matirx = parse_a3m(string)
@@ -78,14 +83,33 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         result = torch.cat((msa_one_hot, deletion_features), dim=2)  # (N, L, 23 + 3) <- ...
         return result
 
+    def get_structure_label_new(self, protein_id, str_seq):
+        input_structure_path = os.path.join(self.data_dir, f"pdbs/{protein_id}.pkl")
+        with open(input_structure_path, 'rb') as fin:
+            structure = pickle.load(fin)
+
+        labels = torch.zeros(len(str_seq), 14, 3)
+        label_mask = torch.zeros(len(str_seq), 14)
+        for i, (res_coords, res_letter) in enumerate(zip(structure[:self.max_seq_len], str_seq)):
+            res_name = residue_constants.restype_1to3[res_letter]
+            for atom_name, coords in res_coords.items():
+                try:
+                    atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
+                    labels[i][atom14idx] = torch.from_numpy(coords)
+                    label_mask[i][atom14idx] = 1
+                except ValueError: pass
+
+        return dict(coords=labels, coord_mask=label_mask)
+
     def get_structure_label(self, protein_id):
-        input_structure_path = os.path.join(self.dir, f"pdbs/{protein_id}.pkl")
+        input_structure_path = os.path.join(self.data_dir, f"pdbs/{protein_id}.pkl")
         with open(input_structure_path, 'rb') as fin:
             structure = pickle.load(fin)
         
         seq_len = len(structure)
         result = torch.empty(seq_len, 3, 3)
         for (i, residule) in enumerate(structure):
+            print(dir(residule))
             is_empty = True
             for atom_name, coords in residule.items():
                 is_empty = False
@@ -108,7 +132,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""
-        input_fasta_path = os.path.join(self.dir, f"fastas/{protein_id}.fasta")
+        input_fasta_path = os.path.join(self.data_dir, f"fastas/{protein_id}.fasta")
         with open(input_fasta_path) as f:
             input_fasta_str = f.read()
         input_seqs, input_descs = parse_fasta(input_fasta_str)
@@ -118,16 +142,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         input_sequence = input_seqs[0]
         input_description = input_descs[0]
         num_res = len(input_sequence)
+
         features = {}
         features['aatype'] = torch.tensor(residue_constants.sequence_to_onehot(
             sequence=input_sequence,
             mapping=residue_constants.restype_order_with_x,
             map_unknown_to_x=True)).float()[:self.max_seq_len]
-        # features['between_segment_residues'] = np.zeros((num_res,), dtype=np.int32)
-        # features['domain_name'] = np.array([input_description.encode('utf-8')], dtype=np.object_)
-        features['residue_index'] = torch.tensor(range(num_res)).float()[:self.max_seq_len]
-        # features['seq_length'] = np.array([num_res] * num_res, dtype=np.int32)
-        # features['sequence'] = np.array([input_sequence.encode('utf-8')], dtype=np.object_)
+        features['residue_index'] = torch.arange(
+                max(len(input_sequence), self.max_seq_len), dtype=torch.float)
+        features['str_seq'] = input_sequence[:self.max_seq_len]
+        features['mask'] = torch.ones(max(len(input_sequence), self.max_seq_len))
+
         return features
 
     @staticmethod
@@ -164,8 +189,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         label = {'coord': coord, 'rotation': rotation, 'transition': transition}
         return features, label
 
-def load(work_dir, msa_max_size=128, max_seq_length=500, **kwargs):
-    dataset = ProteinStructureDataset(work_dir, msa_max_size, max_seq_length)
+def load(data_dir, msa_max_size=128, max_seq_len=1024, **kwargs):
+    dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len)
     if not 'collate_fn' in kwargs:
         kwargs['collate_fn'] = ProteinStructureDataset.collate_fn
     return torch.utils.data.DataLoader(dataset, **kwargs)

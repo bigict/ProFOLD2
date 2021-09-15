@@ -38,15 +38,16 @@ def main(args):
     
     # get data
     data = scn.load(
-        max_seq_len = args.max_protein_len,
         casp_version = args.casp_version,
-        thinning = 30,
+        thinning = args.casp_thinning,
         batch_size = args.batch_size,
         num_workers = 0,
+        filter_by_resolution = args.filter_by_resolution if args.filter_by_resolution > 0 else False,
         dynamic_batching = False)
     
     train_loader = data['train']
-    dl = cycle(train_loader)
+    data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len
+    dl = cycle(train_loader, data_cond)
 
     # model
     if args.alphafold2_continue:
@@ -76,7 +77,6 @@ def main(args):
             depth = args.alphafold2_depth,
             heads = 8,
             dim_head = 64,
-            predict_coords = False,
             predict_angles = False,
             feats = feats,
             headers = headers
@@ -108,7 +108,7 @@ def main(args):
             running_loss['all'] = running_loss.get('all', 0) + r.loss.item()
             for h, v in r.headers.items():
                 if 'loss' in v:
-                    running_loss[h] = running_loss.get(h, 0) + v.get('loss').item()
+                    running_loss[h] = running_loss.get(h, 0) + v['loss'].item()
 
             r.loss.backward()
     
@@ -128,11 +128,13 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-o', '--prefix', type=str, default='.', help='prefix of out directory, default=\'.\'')
-    parser.add_argument('-C', '--casp-version', type=int, default=12, help='CASP version, default=12')
+    parser.add_argument('-C', '--casp_version', type=int, default=12, help='CASP version, default=12')
+    parser.add_argument('-T', '--casp_thinning', type=int, default=30, help='CASP version, default=30')
     parser.add_argument('-F', '--features', type=str, default='esm', help='AA residue features one of [esm,msa], default=esm')
     parser.add_argument('-t', '--threads', type=int, default=0, help='number of threads used for intraop parallelism on CPU., default=0')
     parser.add_argument('-m', '--min_protein_len', type=int, default=50, help='filter out proteins whose length<LEN, default=50')
     parser.add_argument('-M', '--max_protein_len', type=int, default=1024, help='filter out proteins whose length>LEN, default=1024')
+    parser.add_argument('-r', '--filter_by_resolution', type=float, default=0, help='filter by resolution<=RES')
 
     parser.add_argument('-n', '--num_batches', type=int, default=100000, help='number of batches, default=10^5')
     parser.add_argument('-k', '--gradient_accumulate_every', type=int, default=16, help='accumulate grads every k times, default=16')
