@@ -10,12 +10,10 @@ from torch.nn import functional as F
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_a3m,parse_fasta
 
+NUM_COORDS_PER_RES=14
 
 class ProteinStructureDataset(torch.utils.data.Dataset):
-
-    atom_map = {'N': 0, 'CA': 1, 'C': 2}
-
-    def __init__(self, data_dir, msa_max_size=128, max_seq_len=1024):
+    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None):
         super().__init__()
 
         self.data_dir = data_dir
@@ -28,12 +26,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         pid = self.pids[idx]
 
         seq_feats = self.get_seq_features(pid)
-        coord_feats = self.get_structure_label_new(pid, seq_feats['str_seq'])
+        coord_feats = self.get_structure_label(pid, seq_feats['str_seq'])
         return dict(pid=pid, **seq_feats, **coord_feats)
-        return dict(pid=pid, 
-                **self.get_seq_features(pid), 
-                **self.get_msa_features(pid),
-                **self.get_structure_label(pid))
 
     def __len__(self):
         return len(self.pids)
@@ -41,9 +35,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     def get_msa_features(self, protein_id):
         """Constructs a feature dict of MSA features."""
         msa_path = os.path.join(self.data_dir, f'a3ms/{protein_id}.a3m')
-        with open(msa_path) as fin:
-            string = fin.read()
-        msa, del_matirx = parse_a3m(string)
+        with open(msa_path) as f:
+            text = f.read()
+        msa, del_matirx = parse_a3m(text)
         msas = (msa,)
         if not msas:
             raise ValueError('At least one MSA must be provided.')
@@ -83,15 +77,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         result = torch.cat((msa_one_hot, deletion_features), dim=2)  # (N, L, 23 + 3) <- ...
         return result
 
-    def get_structure_label_new(self, protein_id, str_seq):
+    def get_structure_label(self, protein_id, str_seq):
         input_structure_path = os.path.join(self.data_dir, f"pdbs/{protein_id}.pkl")
         with open(input_structure_path, 'rb') as fin:
             structure = pickle.load(fin)
 
-        labels = torch.zeros(len(str_seq), 14, 3)
-        label_mask = torch.zeros(len(str_seq), 14)
+        labels = torch.zeros(len(str_seq), NUM_COORDS_PER_RES, 3)
+        label_mask = torch.zeros(len(str_seq), NUM_COORDS_PER_RES)
         for i, (res_coords, res_letter) in enumerate(zip(structure[:self.max_seq_len], str_seq)):
-            res_name = residue_constants.restype_1to3[res_letter]
+            res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
             for atom_name, coords in res_coords.items():
                 try:
                     atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
@@ -99,36 +93,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                     label_mask[i][atom14idx] = 1
                 except ValueError: pass
 
-        return dict(coords=labels, coord_mask=label_mask)
-
-    def get_structure_label(self, protein_id):
-        input_structure_path = os.path.join(self.data_dir, f"pdbs/{protein_id}.pkl")
-        with open(input_structure_path, 'rb') as fin:
-            structure = pickle.load(fin)
-        
-        seq_len = len(structure)
-        result = torch.empty(seq_len, 3, 3)
-        for (i, residule) in enumerate(structure):
-            print(dir(residule))
-            is_empty = True
-            for atom_name, coords in residule.items():
-                is_empty = False
-                if atom_name in self.atom_map:
-                    result[i][self.atom_map[atom_name]] = torch.tensor(coords)
-            if is_empty:
-                result[i].fill_(float('nan'))
-
-        result = result[:self.max_seq_len]
-
-        v1 = result[:, 2:3, :] - result[:, 1:2, :]  # (L, 1, 3)
-        v2 = result[:, 0:1, :] - result[:, 1:2, :]  # (L, 1, 3)
-        e1 = v1 / torch.linalg.norm(v1, ord=2, dim=-1, keepdim=True)  # (L, 1, 3)  <<- (L, 1, 1)
-        u2 = v2 - e1 * torch.bmm(e1, v2.transpose(1, 2))  # (L, 1, 3) <<- (L, 1, 3), (L, 1, 1)
-        e2 = u2 / torch.linalg.norm(u2, ord=2, dim=-1, keepdim=True)  # (L, 1, 3)  <<- (L, 1, 1)
-        e3 = torch.cross(e1, e2, dim=2)  # (L, 1, 3)
-        result2 = torch.cat((e1, e2, e3), dim=1)  # (L, 3, 3) <- ...
-        transition = result[:, 1, :]  # (L, 3)
-        return {'coord': result, 'rotation': result2, 'transition': transition}
+        return dict(coord=labels, coord_mask=label_mask)
 
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""
@@ -141,55 +106,84 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 f'More than one input sequence found in {input_fasta_path}.')
         input_sequence = input_seqs[0]
         input_description = input_descs[0]
-        num_res = len(input_sequence)
 
-        features = {}
-        features['aatype'] = torch.tensor(residue_constants.sequence_to_onehot(
+        input_sequence = input_sequence[:self.max_seq_len]
+
+        seq = torch.tensor(residue_constants.sequence_to_onehot(
             sequence=input_sequence,
             mapping=residue_constants.restype_order_with_x,
-            map_unknown_to_x=True)).float()[:self.max_seq_len]
-        features['residue_index'] = torch.arange(
-                max(len(input_sequence), self.max_seq_len), dtype=torch.float)
-        features['str_seq'] = input_sequence[:self.max_seq_len]
-        features['mask'] = torch.ones(max(len(input_sequence), self.max_seq_len))
+            map_unknown_to_x=True)).argmax(-1)
+        residue_index = torch.arange(len(input_sequence), dtype=torch.float)
+        str_seq = input_sequence
+        mask = torch.ones(len(input_sequence))
 
-        return features
+        return dict(seq=seq,
+                residue_index=residue_index,
+                str_seq=str_seq,
+                mask=mask)
 
     @staticmethod
     def collate_fn(batch):
-        batch_size = len(batch)
-        lengths = [ele[0]['aatype'].size(0) for ele in batch]
-        aatype_emb_size = batch[0][0]['aatype'].size(1)
-        max_len = max(lengths)
-        batch[0][1]  # (N, L, 26)
-        max_msa_number = max([ele[1].size(0) for ele in batch])
-        aatype = torch.full((max_len, batch_size, aatype_emb_size), float('nan'), dtype=torch.float)
-        # (ML, B, E)
-        residue_index = torch.full((max_len, batch_size), float('nan'), dtype=torch.float)  # (ML, B)
-        msa_feature = torch.full((max_msa_number, max_len, batch_size, 26), float('nan'), dtype=torch.float)
-        # (MN, ML, B, 26)
-        coord = torch.full((max_len, 3, batch_size, 3), float('nan'), dtype=torch.float)  # (L, 3, B, 3)
-        rotation = torch.full((max_len, batch_size, 3, 3), float('nan'), dtype=torch.float)  # (L, B, 3, 3)
-        transition = torch.full((max_len, batch_size, 3), float('nan'), dtype=torch.float)  # (L, B, 3)
-        for i, (seq_features, single_msa_feature, label) in enumerate(batch):
-            single_aatype = seq_features['aatype']
-            single_residue_index = seq_features['residue_index']
-            single_length = single_aatype.size(0)
-            single_coord = label['coord']
-            single_rotation = label['rotation']
-            single_transition = label['transition']
-    
-            aatype[:single_length, i, :] = single_aatype
-            residue_index[:single_length, i] = single_residue_index
-            msa_feature[:single_msa_feature.size(0), :single_length, i, :] = single_msa_feature
-            coord[:single_length, :, i, :] = single_coord
-            rotation[:single_length, i, :, :] = single_rotation
-            transition[:single_length, i, :] = single_transition
-        features = {'residue_index': residue_index, 'target_feat': aatype, 'msa_feat': msa_feature}
-        label = {'coord': coord, 'rotation': rotation, 'transition': transition}
-        return features, label
+        fields = ('pid', 'seq', 'mask', 'str_seq', 'coord', 'coord_mask')
+        pids, seqs, masks, str_seqs, coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
+        lengths = tuple(len(s) for s in str_seqs)
+        max_batch_len = max(lengths)
 
-def load(data_dir, msa_max_size=128, max_seq_len=1024, **kwargs):
+        padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
+        padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
+        padded_coords = pad_for_batch(coords, max_batch_len, 'crd')
+        padded_coord_masks = pad_for_batch(coord_masks, max_batch_len, 'crd_msk')
+
+        return dict(pid=pids,
+                seq=padded_seqs,
+                mask=padded_masks,
+                str_seq=str_seqs,
+                coord=padded_coords,
+                coord_mask=padded_coord_masks)
+
+def pad_for_batch(items, batch_length, dtype):
+    """Pad a list of items to batch_length using values dependent on the item type.
+
+    Args:
+        items: List of items to pad (i.e. sequences or masks represented as arrays of
+            numbers, angles, coordinates, pssms).
+        batch_length: The integer maximum length of any of the items in the input. All
+            items are padded so that their length matches this number.
+        dtype: A string ('seq', 'msk', 'crd') reperesenting the type of
+            data included in items.
+
+    Returns:
+         A padded list of the input items, all independently converted to Torch tensors.
+    """
+    batch = []
+    if dtype == 'seq':
+        for seq in items:
+            z = torch.ones(batch_length - seq.shape[0]) * residue_constants.unk_restype_index
+            c = torch.cat((seq, z), dim=0)
+            batch.append(c)
+        batch = torch.stack(batch, dim=0)
+    elif dtype == 'msk':
+        # Mask sequences (1 if present, 0 if absent) are padded with 0s
+        for msk in items:
+            z = torch.zeros(batch_length - msk.shape[0])
+            c = torch.cat((msk, z), dim=0)
+            batch.append(c)
+        batch = torch.stack(batch, dim=0)
+    elif dtype == "crd":
+        for item in items:
+            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES, item.shape[-1]))
+            c = torch.cat((item, z), dim=0)
+            batch.append(c)
+        batch = torch.stack(batch, dim=0)
+    elif dtype == "crd_msk":
+        for item in items:
+            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES))
+            c = torch.cat((item, z), dim=0)
+            batch.append(c)
+        batch = torch.stack(batch, dim=0)
+    return batch
+
+def load(data_dir, msa_max_size=128, max_seq_len=None, **kwargs):
     dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len)
     if not 'collate_fn' in kwargs:
         kwargs['collate_fn'] = ProteinStructureDataset.collate_fn

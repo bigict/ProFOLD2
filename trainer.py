@@ -52,8 +52,8 @@ def main(args):
     # model
     if args.alphafold2_continue:
         model = torch.load(os.path.join(args.prefix, 'model.pkl'))
-        mode.eval()
         model.to(DEVICE)
+        mode.train()
     else:
         # features
         feats = [('make_pseudo_beta', {}),
@@ -149,7 +149,6 @@ if __name__ == '__main__':
     parser.add_argument('--alphafold2_continue', action='store_true', help='load a model and continue to train')
 
     parser.add_argument('--tensorboard_add_graph', action='store_true', help='call tensorboard.add_graph')
-    parser.add_argument('--save_pdb', action='store_true', help='save pdb')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     args = parser.parse_args()
 
