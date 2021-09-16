@@ -5,6 +5,7 @@ import logging
 import resource
 
 import torch
+import torch.nn
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
@@ -59,7 +60,7 @@ def main(args):
         feats = [('make_pseudo_beta', {}),
                  ('make_esm_embedd', dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER)),
                  ('make_to_device', dict(
-                    fields=['seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta', 'pseudo_beta_mask'],
+                    fields=['seq', 'mask', 'coord', 'coord_mask', 'embedds', 'pseudo_beta', 'pseudo_beta_mask'],
                     device=DEVICE))
                 ]
 
@@ -73,6 +74,7 @@ def main(args):
         logging.info('Alphafold2.headers: {}'.format(headers))
 
         model = Alphafold2(
+            num_recycle = args.alphafold2_recycles,
             dim = args.alphafold2_dim,
             depth = args.alphafold2_depth,
             heads = 8,
@@ -141,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='batch size, default=1')
     parser.add_argument('-l', '--learning_rate', type=float, default='3e-4', help='learning rate, default=3e-4')
 
+    parser.add_argument('--alphafold2_recycles', type=int, default=0, help='number of recycles in alphafold2, default=0')
     parser.add_argument('--alphafold2_dim', type=int, default=256, help='dimension of alphafold2, default=256')
     parser.add_argument('--alphafold2_depth', type=int, default=1, help='depth of alphafold2, default=1')
     parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4, help='minimum of dij in alphafold2, default=1e-4')
