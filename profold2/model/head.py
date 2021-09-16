@@ -85,7 +85,7 @@ class FoldingHead(nn.Module):
         self.criterion = nn.MSELoss()
 
     def forward(self, headers, representations, batch):
-        backbones = self.struct_module(representations, batch)
+        backbones, act = self.struct_module(representations, batch)
 
         atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
         atom_mask[..., 1] = 1
@@ -94,7 +94,7 @@ class FoldingHead(nn.Module):
         coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
                                               cloud_mask=batch['coord_mask'], num_coords_per_res=self.num_atoms)
 
-        return dict(backbones=backbones, coords=coords)
+        return dict(backbones=backbones, coords=coords, representations=dict(single=act))
 
     def loss(self, value, batch):
         coords, labels = value['coords'], batch['coord']
@@ -111,13 +111,24 @@ class FoldingHead(nn.Module):
         return dict(loss=loss)
 
 class LDDTHead(nn.Module):
-    """Head to predict the LDDT to be used as a per-residue configence score.
+    """Head to predict the pLDDT to be used as a per-residue configence score.
     """
-    def __init__(self, dim):
+    def __init__(self, dim, buckets_num=50):
         super().__init__()
 
+        self.net = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, dim),
+                nn.ReLU(),
+                nn.Linear(dim, buckets_num),
+                nn.ReLU())
+
     def forward(self, headers, representations, batch):
-        pass
+        if 'folding' in headers and 'act' in headers['folding']:
+            x = headers['folding']['act']
+        else:
+            x = representations['single']
+        return dict(logits=self.net(x))
 
     def loss(self, value, batch):
         pass

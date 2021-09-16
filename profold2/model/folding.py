@@ -402,5 +402,5 @@ class StructureModule(nn.Module):
 
         coords.type(original_dtype)
 
-        return coords
+        return coords, single_repr
 

@@ -21,7 +21,9 @@ def take1st(fn):
     return fc
 
 @take1st
-def make_seq_mask(protein):
+def make_seq_mask(protein, padd_id=20):
+    mask = protein['seq'] != padd_id
+    protein['mask'] = mask.float()
     return protein
 
 @take1st

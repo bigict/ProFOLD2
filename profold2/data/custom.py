@@ -161,26 +161,25 @@ def pad_for_batch(items, batch_length, dtype):
             z = torch.ones(batch_length - seq.shape[0]) * residue_constants.unk_restype_index
             c = torch.cat((seq, z), dim=0)
             batch.append(c)
-        batch = torch.stack(batch, dim=0)
     elif dtype == 'msk':
         # Mask sequences (1 if present, 0 if absent) are padded with 0s
         for msk in items:
             z = torch.zeros(batch_length - msk.shape[0])
             c = torch.cat((msk, z), dim=0)
             batch.append(c)
-        batch = torch.stack(batch, dim=0)
     elif dtype == "crd":
         for item in items:
             z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES, item.shape[-1]))
             c = torch.cat((item, z), dim=0)
             batch.append(c)
-        batch = torch.stack(batch, dim=0)
     elif dtype == "crd_msk":
         for item in items:
             z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES))
             c = torch.cat((item, z), dim=0)
             batch.append(c)
-        batch = torch.stack(batch, dim=0)
+    else:
+        raise ValueError('Not implement yet!')
+    batch = torch.stack(batch, dim=0)
     return batch
 
 def load(data_dir, msa_max_size=128, max_seq_len=None, **kwargs):

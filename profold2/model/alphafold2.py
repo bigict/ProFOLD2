@@ -15,7 +15,6 @@ from profold2.utils import *
 
 @dataclass
 class Recyclables:
-    coords: torch.Tensor
     single_msa_repr_row: torch.Tensor
     pairwise_repr: torch.Tensor
 
@@ -56,7 +55,6 @@ class Alphafold2(nn.Module):
         mlm_random_replace_token_prob = 0.1,
         mlm_keep_token_same_prob = 0.1,
         mlm_exclude_token_ids = (0,),
-        recycling_distance_buckets = 32,
         feats = None,
         headers = None
     ):
@@ -134,8 +132,6 @@ class Alphafold2(nn.Module):
         # recycling params
         self.recycling_msa_norm = nn.LayerNorm(dim)
         self.recycling_pairwise_norm = nn.LayerNorm(dim)
-        self.recycling_distance_embed = nn.Embedding(recycling_distance_buckets, dim)
-        self.recycling_distance_buckets = recycling_distance_buckets
 
         self.feat_builder = FeatureBuilder(feats)
         self.headers = HeaderBuilder.build(dim, headers)
@@ -149,7 +145,8 @@ class Alphafold2(nn.Module):
         templates_angles = None,
         recyclables = None,
         return_recyclables = False,
-        batch = None
+        batch = None,
+        compute_loss = True
     ):
         batch = self.feat_builder(batch)
 
@@ -214,13 +211,6 @@ class Alphafold2(nn.Module):
             m[:, 0] = m[:, 0] + self.recycling_msa_norm(recyclables.single_msa_repr_row)
             x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
 
-            distances = torch.cdist(recyclables.coords, recyclables.coords, p=2)
-            boundaries = torch.linspace(2, 20, steps = self.recycling_distance_buckets, device = device)
-            discretized_distances = torch.bucketize(distances, boundaries[:-1])
-            distance_embed = self.recycling_distance_embed(discretized_distances)
-
-            x = x + distance_embed
-
         # embed templates, if present
         x, x_mask, m, msa_mask = self.template_embedding(
                 x, x_mask, m, msa_mask,
@@ -262,7 +252,9 @@ class Alphafold2(nn.Module):
             if not exists(value):
                 continue
             ret.headers[name] = value
-            if self.training and hasattr(module, 'loss'):
+            if 'representations' in value:
+                representations.update(value['representations'])
+            if self.training and compute_loss and hasattr(module, 'loss'):
                 loss = module.loss(ret.headers[name], batch)
                 ret.headers[name].update(loss)
                 if exists(ret.loss):
@@ -281,7 +273,22 @@ class Alphafold2(nn.Module):
             ret.omega_logits = self.to_prob_omega(omega_input)
 
         if return_recyclables:
-            coords, single_msa_repr_row, pairwise_repr = map(torch.detach, (coords, single_msa_repr_row, pairwise_repr))
-            ret.recyclables = Recyclables(coords, single_msa_repr_row, pairwise_repr)
+            single_msa_repr_row, pairwise_repr = map(torch.detach, (representations['single'], representations['pair']))
+            ret.recyclables = Recyclables(single_msa_repr_row, pairwise_repr)
 
         return ret
+
+class Alphafold2WithRecycles(nn.Module):
+    def __init__(self, num_recycle=0, **kwargs):
+        super().__init__()
+
+        assert num_recycle >= 0
+        self.num_recycle = num_recycle
+        self.impl = Alphafold2(**kwargs)
+
+    def forward(self, **kwargs):
+        ret = ReturnValues()
+        for i in range(self.num_recycle):
+            ret = self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs)
+
+        return self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs)
