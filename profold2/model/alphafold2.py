@@ -279,16 +279,16 @@ class Alphafold2(nn.Module):
         return ret
 
 class Alphafold2WithRecycles(nn.Module):
-    def __init__(self, num_recycle=0, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
 
-        assert num_recycle >= 0
-        self.num_recycle = num_recycle
         self.impl = Alphafold2(**kwargs)
 
-    def forward(self, **kwargs):
+    def forward(self, num_recycle=0, **kwargs):
+        assert num_recycle >= 0
+
         ret = ReturnValues()
-        for i in range(self.num_recycle):
+        for i in range(num_recycle):
             ret = self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs)
 
         return self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs)

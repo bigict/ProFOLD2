@@ -74,7 +74,6 @@ def main(args):
         logging.info('Alphafold2.headers: {}'.format(headers))
 
         model = Alphafold2(
-            num_recycle = args.alphafold2_recycles,
             dim = args.alphafold2_dim,
             depth = args.alphafold2_depth,
             heads = 8,
@@ -100,7 +99,7 @@ def main(args):
             logging.debug('seq.shape: {}'.format(seq.shape))
     
             # sequence embedding (msa / esm / attn / or nothing)
-            r = model(batch = batch)
+            r = model(batch = batch, num_recycle = args.alphafold2_recycles)
     
             if it == 0 and jt == 0 and args.tensorboard_add_graph:
                 with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
