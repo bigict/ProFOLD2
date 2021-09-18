@@ -124,10 +124,11 @@ def main(args):
     writer.close()
 
     # save model
-    torch.save(model, os.path.join(args.prefix, 'model.pkl'))
+    torch.save(model, os.path.join(args.prefix, args.model))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('-X', '--model', type=str, default='model.pth', help='model of alphafold2, default=\'model.pth\'')
     parser.add_argument('-o', '--prefix', type=str, default='.', help='prefix of out directory, default=\'.\'')
     parser.add_argument('-C', '--casp_version', type=int, default=12, help='CASP version, default=12')
     parser.add_argument('-T', '--casp_thinning', type=int, default=30, help='CASP version, default=30')

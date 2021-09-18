@@ -32,6 +32,13 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.pids)
 
+    def get_msa_features_new(self, protein_id):
+        """Constructs a feature dict of MSA features."""
+        msa_path = os.path.join(self.data_dir, f'a3ms/{protein_id}.a3m')
+        with open(msa_path) as f:
+            text = f.read()
+        msa, del_matirx = parse_a3m(text)
+
     def get_msa_features(self, protein_id):
         """Constructs a feature dict of MSA features."""
         msa_path = os.path.join(self.data_dir, f'a3ms/{protein_id}.a3m')
