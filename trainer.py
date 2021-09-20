@@ -22,6 +22,8 @@ def main(args):
     
     # set emebdder model from esm if appropiate - Load ESM-1b model
     if args.features == "esm":
+        if args.hub_dir:
+            torch.hub.set_dir(args.hub_dir)
         esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
     
     # helpers
@@ -44,7 +46,8 @@ def main(args):
         batch_size = args.batch_size,
         num_workers = 0,
         filter_by_resolution = args.filter_by_resolution if args.filter_by_resolution > 0 else False,
-        dynamic_batching = False)
+        dynamic_batching = False,
+        scn_dir=args.scn_dir)
     
     train_loader = data['train']
     data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len
@@ -54,7 +57,7 @@ def main(args):
     if args.alphafold2_continue:
         model = torch.load(os.path.join(args.prefix, 'model.pkl'))
         model.to(DEVICE)
-        mode.train()
+        model.train()
     else:
         # features
         feats = [('make_pseudo_beta', {}),
@@ -152,8 +155,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--tensorboard_add_graph', action='store_true', help='call tensorboard.add_graph')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
-    args = parser.parse_args()
 
+    parser.add_argument('--hub_dir', type=str, help='specify hub_dir')
+    parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data', help='specify scn_dir')
+
+    args = parser.parse_args()
     # logging
 
     if not os.path.exists(args.prefix):
