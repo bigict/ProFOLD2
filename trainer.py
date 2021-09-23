@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import logging
+import random
 import resource
 
 import torch
@@ -14,6 +15,8 @@ from profold2.data import esm,scn,custom
 from profold2.model import Alphafold2
 
 def main(args):
+    random.seed(args.random_seed)
+
     # constants
     DEVICE = constants.DEVICE # defaults to cuda if available, else cpu
     
@@ -65,7 +68,7 @@ def main(args):
                 ]
 
         headers = [('distogram', dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
-                            buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.01)),
+                            buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
                        ('folding', dict(structure_module_depth=4, structure_module_heads=4,
                             fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
                        ('tmscore', {}, {})]
@@ -137,6 +140,7 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--min_protein_len', type=int, default=50, help='filter out proteins whose length<LEN, default=50')
     parser.add_argument('-M', '--max_protein_len', type=int, default=1024, help='filter out proteins whose length>LEN, default=1024')
     parser.add_argument('-r', '--filter_by_resolution', type=float, default=0, help='filter by resolution<=RES')
+    parser.add_argument('--random_seed', type=int, default=None, help='random seed')
 
     parser.add_argument('-n', '--num_batches', type=int, default=100000, help='number of batches, default=10^5')
     parser.add_argument('-k', '--gradient_accumulate_every', type=int, default=16, help='accumulate grads every k times, default=16')

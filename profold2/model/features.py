@@ -51,8 +51,9 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
 
 @take1st
 def make_pseudo_beta(protein, prefix=''):
-    protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
-            pseudo_beta_fn(protein[prefix + 'seq'], protein[prefix + 'coord'], protein[prefix + 'coord_mask']))
+    if prefix + 'seq' in protein and prefix + 'coord' in protein and prefix + 'coord_mask' in protein:
+        protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
+                pseudo_beta_fn(protein[prefix + 'seq'], protein[prefix + 'coord'], protein[prefix + 'coord_mask']))
     return protein
 
 @take1st
@@ -70,7 +71,8 @@ def make_esm_embedd(protein, esm_extractor, repr_layer, device=None, field='embe
 @take1st
 def make_to_device(protein, fields, device):
     for k in fields:
-        protein[k] = protein[k].to(device)
+        if k in protein:
+            protein[k] = protein[k].to(device)
     return protein
 
 @take1st

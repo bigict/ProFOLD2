@@ -18,7 +18,8 @@ PROTTRAN_EMBED_DIM = 1024
 
 # default device
 
-DEVICE_NAME = 'cuda' if torch.cuda.is_available() else 'cpu'
+#DEVICE_NAME = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE_NAME = 'cpu'
 DEVICE = torch.device(DEVICE_NAME)
 
 # aminoacid data

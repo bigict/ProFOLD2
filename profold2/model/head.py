@@ -88,11 +88,13 @@ class FoldingHead(nn.Module):
         backbones, act = self.struct_module(representations, batch)
 
         atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
+        atom_mask[..., 0] = 1
         atom_mask[..., 1] = 1
+        atom_mask[..., 2] = 1
 
         ## build SC container. set SC points to CA and optionally place carbonyl O
         coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
-                                              cloud_mask=batch['coord_mask'], num_coords_per_res=self.num_atoms)
+                                              cloud_mask=batch.get('coord_mask'), num_coords_per_res=self.num_atoms)
 
         return dict(backbones=backbones, coords=coords, representations=dict(single=act))
 
@@ -102,13 +104,15 @@ class FoldingHead(nn.Module):
 
         # rotate / align
         coords_aligned, labels_aligned = Kabsch(
-                rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 
-                rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
+                rearrange(rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
+                rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
 
         loss = torch.clamp(
-                torch.sqrt(self.criterion(coords_aligned, labels_aligned)), 
+                torch.sqrt(self.criterion(
+                    rearrange(coords_aligned, 'd l -> l d'),
+                    rearrange(labels_aligned, 'd l -> l d'))), 
                 self.fape_min, self.fape_max) / self.fape_z
-        return dict(loss=loss)
+        return dict(loss=loss, coords_aligned=coords_aligned, labels_aligned=labels_aligned)
 
 class LDDTHead(nn.Module):
     """Head to predict the pLDDT to be used as a per-residue configence score.
@@ -142,17 +146,23 @@ class TMscoreHead(nn.Module):
     def forward(self, headers, representations, batch):
         assert 'folding' in headers and 'coords' in headers['folding']
 
-        if 'coord' in batch and 'coord_mask' in batch:
+        if 'coords_aligned' in headers['folding'] and 'labels_aligned' in headers['folding']:
+            coords_aligned, labels_aligned = headers['folding']['coords_aligned'], headers['folding']['labels_aligned']
+            return dict(loss=TMscore(
+                    rearrange(coords_aligned, 'd l -> () d l'), rearrange(labels_aligned, 'd l -> () d l'),
+                    L=torch.sum(batch['mask'], dim=-1).item()))
+        elif 'coord' in batch and 'coord_mask' in batch:
             pred, labels = headers['folding']['coords'], batch['coord']
             flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
 
             # rotate / align
             coords_aligned, labels_aligned = Kabsch(
-                    rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask], 
-                    rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask])
+                rearrange(rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
+                rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
 
             return dict(loss=TMscore(
-                    rearrange(coords_aligned, 'l d -> () d l'), rearrange(labels_aligned, 'l d -> () d l')))
+                    rearrange(coords_aligned, 'd l -> () d l'), rearrange(labels_aligned, 'd l -> () d l'),
+                    L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
 class HeaderBuilder:

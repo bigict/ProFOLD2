@@ -13,21 +13,28 @@ from profold2.data.parsers import parse_a3m,parse_fasta
 NUM_COORDS_PER_RES=14
 
 class ProteinStructureDataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None):
+    FEAT_PDB = 0x01
+    FEAT_MSA = 0x02
+    FEAT_ALL = 0xff
+
+    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None, feat_flags=FEAT_ALL):
         super().__init__()
 
         self.data_dir = data_dir
         self.max_msa = msa_max_size
         self.max_seq_len = max_seq_len
+        self.feat_flags = feat_flags
         with open(os.path.join(self.data_dir, "pdb_names")) as f:
             self.pids = list(map(str.rstrip, f))
 
     def __getitem__(self, idx):
         pid = self.pids[idx]
-
         seq_feats = self.get_seq_features(pid)
-        coord_feats = self.get_structure_label(pid, seq_feats['str_seq'])
-        return dict(pid=pid, **seq_feats, **coord_feats)
+
+        ret = dict(pid=pid, **seq_feats)
+        if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+            ret.update(self.get_structure_label(pid, seq_feats['str_seq']))
+        return ret
 
     def __len__(self):
         return len(self.pids)
@@ -90,7 +97,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             structure = pickle.load(fin)
 
         labels = torch.zeros(len(str_seq), NUM_COORDS_PER_RES, 3)
-        label_mask = torch.zeros(len(str_seq), NUM_COORDS_PER_RES)
+        label_mask = torch.zeros(len(str_seq), NUM_COORDS_PER_RES, dtype=torch.int8)
         for i, (res_coords, res_letter) in enumerate(zip(structure[:self.max_seq_len], str_seq)):
             res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
             for atom_name, coords in res_coords.items():
@@ -100,7 +107,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                     label_mask[i][atom14idx] = 1
                 except ValueError: pass
 
-        return dict(coord=labels, coord_mask=label_mask)
+        return dict(coord=labels, coord_mask=label_mask.bool())
 
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""
@@ -119,34 +126,41 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         seq = torch.tensor(residue_constants.sequence_to_onehot(
             sequence=input_sequence,
             mapping=residue_constants.restype_order_with_x,
-            map_unknown_to_x=True)).argmax(-1)
-        residue_index = torch.arange(len(input_sequence), dtype=torch.float)
-        str_seq = input_sequence
-        mask = torch.ones(len(input_sequence))
+            map_unknown_to_x=True), dtype=torch.int).argmax(-1)
+        residue_index = torch.arange(len(input_sequence), dtype=torch.int)
+        str_seq = input_sequence.replace('X', '_')
+        mask = torch.ones(len(input_sequence), dtype=torch.bool)
 
         return dict(seq=seq,
-                residue_index=residue_index,
+                seq_index=residue_index,
                 str_seq=str_seq,
                 mask=mask)
 
-    @staticmethod
-    def collate_fn(batch):
-        fields = ('pid', 'seq', 'mask', 'str_seq', 'coord', 'coord_mask')
-        pids, seqs, masks, str_seqs, coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
+    def collate_fn(self, batch):
+        fields = ('pid', 'seq', 'mask', 'str_seq')
+        pids, seqs, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
         lengths = tuple(len(s) for s in str_seqs)
         max_batch_len = max(lengths)
 
         padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
         padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
-        padded_coords = pad_for_batch(coords, max_batch_len, 'crd')
-        padded_coord_masks = pad_for_batch(coord_masks, max_batch_len, 'crd_msk')
 
-        return dict(pid=pids,
+        ret = dict(pid=pids,
                 seq=padded_seqs,
                 mask=padded_masks,
-                str_seq=str_seqs,
+                str_seq=str_seqs)
+
+        if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+            fields = ('coord', 'coord_mask')
+            coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
+
+            padded_coords = pad_for_batch(coords, max_batch_len, 'crd')
+            padded_coord_masks = pad_for_batch(coord_masks, max_batch_len, 'crd_msk')
+            ret.update(
                 coord=padded_coords,
                 coord_mask=padded_coord_masks)
+
+        return ret
 
 def pad_for_batch(items, batch_length, dtype):
     """Pad a list of items to batch_length using values dependent on the item type.
@@ -165,23 +179,23 @@ def pad_for_batch(items, batch_length, dtype):
     batch = []
     if dtype == 'seq':
         for seq in items:
-            z = torch.ones(batch_length - seq.shape[0]) * residue_constants.unk_restype_index
+            z = torch.ones(batch_length - seq.shape[0], dtype=seq.dtype) * residue_constants.unk_restype_index
             c = torch.cat((seq, z), dim=0)
             batch.append(c)
     elif dtype == 'msk':
         # Mask sequences (1 if present, 0 if absent) are padded with 0s
         for msk in items:
-            z = torch.zeros(batch_length - msk.shape[0])
+            z = torch.zeros(batch_length - msk.shape[0], dtype=msk.dtype)
             c = torch.cat((msk, z), dim=0)
             batch.append(c)
     elif dtype == "crd":
         for item in items:
-            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES, item.shape[-1]))
+            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES, item.shape[-1]), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
             batch.append(c)
     elif dtype == "crd_msk":
         for item in items:
-            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES))
+            z = torch.zeros((batch_length - item.shape[0],  NUM_COORDS_PER_RES), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
             batch.append(c)
     else:
@@ -189,10 +203,10 @@ def pad_for_batch(items, batch_length, dtype):
     batch = torch.stack(batch, dim=0)
     return batch
 
-def load(data_dir, msa_max_size=128, max_seq_len=None, **kwargs):
-    dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len)
+def load(data_dir, msa_max_size=128, max_seq_len=None, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
+    dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len, feat_flags=feat_flags)
     if not 'collate_fn' in kwargs:
-        kwargs['collate_fn'] = ProteinStructureDataset.collate_fn
+        kwargs['collate_fn'] = dataset.collate_fn
     return torch.utils.data.DataLoader(dataset, **kwargs)
 
 if __name__ == '__main__':
