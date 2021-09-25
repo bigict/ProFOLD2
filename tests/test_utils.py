@@ -95,7 +95,7 @@ def test_kabsch():
 def test_tmscore():
     a = torch.randn(2, 3, 8)
     b = torch.randn(2, 3, 8)
-    out = TMscore(a, b)
+    out = TMscore(a, b, L=8)
     assert True
 
 def test_gdt():
@@ -133,7 +133,10 @@ class TestUtils(unittest.TestCase):
         self.assertAlmostEqual(r, 0.0, delta=1e-5)
 
     def test_tmscore(self):
-        pass
+        a = torch.randn(2, 3, 8)
+        b = torch.randn(2, 3, 8)
+        out = TMscore(a, b, L=8)
+        self.assertTrue(True)
 
 if __name__ == '__main__':
     unittest.main()

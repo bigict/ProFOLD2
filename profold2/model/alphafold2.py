@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import logging
+import random
 
 import torch
 from torch import nn
@@ -278,7 +280,7 @@ class Alphafold2(nn.Module):
 
         return ret
 
-class Alphafold2WithRecycles(nn.Module):
+class Alphafold2WithRecycling(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
 
@@ -288,7 +290,14 @@ class Alphafold2WithRecycles(nn.Module):
         assert num_recycle >= 0
 
         ret = ReturnValues()
+        if self.training:
+            num_recycle = random.randint(0, num_recycle)
+
         for i in range(num_recycle):
             ret = self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs)
+            logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
 
-        return self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs)
+        ret = self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs)
+        logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
+
+        return ret

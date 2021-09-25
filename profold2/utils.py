@@ -517,18 +517,18 @@ def gdt_numpy(X, Y, cutoffs, weights=None):
     # weighted mean
     return (GDT*weights).mean(-1)
 
-def tmscore_torch(X, Y):
+def tmscore_torch(X, Y, L):
     """ Assumes x,y are both (B x D x N). see below for wrapper. """
-    L = max(15, X.shape[-1])
-    d0 = 1.24 * (L - 15)**(1/3) - 1.8
+    L = max(15, L)
+    d0 = 1.24 * (L - 15)**(1.0/3.0) - 1.8
     # get distance
     dist = ((X - Y)**2).sum(dim=1).sqrt()
     # formula (see wrapper for source): 
-    return (1 / (1 + (dist/d0)**2)).mean(dim=-1)
+    return (1.0 / (1.0 + (dist/d0)**2)).mean(dim=-1)
 
-def tmscore_numpy(X, Y):
+def tmscore_numpy(X, Y, L):
     """ Assumes x,y are both (B x D x N). see below for wrapper. """
-    L = max(15, X.shape[-1])
+    L = max(15, L)
     d0 = 1.24 * np.cbrt(L - 15) - 1.8
     # get distance
     dist = np.sqrt( ((X - Y)**2).sum(axis=1) )
@@ -706,7 +706,7 @@ def GDT(A, B, *, mode="TS", cutoffs=None, weights=None):
 @expand_arg_dims()
 @set_backend_kwarg
 @invoke_torch_or_numpy(tmscore_torch, tmscore_numpy)
-def TMscore(A, B):
+def TMscore(A, B, *, L):
     """ Returns TMscore as defined here (higher is better):
         >0.5 (likely) >0.6 (highly likely) same folding. 
         = 0.2. https://en.wikipedia.org/wiki/Template_modeling_score
@@ -718,7 +718,7 @@ def TMscore(A, B):
             * mode: one of ["numpy", "torch", "auto"] for backend
         Outputs: tensor/array of size (B,)
     """
-    return A, B
+    return A, B, dict(L=L)
 
 def contacts_auc_torch(pred, truth, ratios=[1,2,5], gap=24, cutoff=8):
     pass

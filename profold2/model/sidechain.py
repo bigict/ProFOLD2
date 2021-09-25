@@ -21,8 +21,10 @@ def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_
     cum_atom_mask = atom_mask.cumsum(dim=-1).tolist()
 
     device = backbones.device
-    batch, length = backbones.shape[0], backbones.shape[1] // cum_atom_mask[-1]
-    predicted  = rearrange(backbones, 'b (l back) d -> b l back d', l=length)
+    #batch, length = backbones.shape[0], backbones.shape[1] // cum_atom_mask[-1]
+    batch, length = backbones.shape[0], backbones.shape[1]
+    #predicted  = rearrange(backbones, 'b (l back) d -> b l back d', l=length)
+    predicted = backbones
 
     # early check if whole chain is already pred
     if cum_atom_mask[-1] == num_coords_per_res:
@@ -38,7 +40,7 @@ def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_
             new_coords[:, :, i] = predicted[:, :, cum_atom_mask[i]-1]
 
     # generate sidechain if not passed
-    for s,seq in enumerate(seqs): 
+    for s, seq in enumerate(seqs): 
         # format seq accordingly
         if isinstance(seq, torch.Tensor):
             padding = (seq == padding_tok).sum().item()
@@ -49,7 +51,7 @@ def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_
         # get scaffolds - will overwrite oxygen since its position is fully determined by N-C-CA
         scaffolds = mp_nerf.proteins.build_scaffolds_from_scn_angles(seq_str, angles=None, device="cpu")
         coords, _ = mp_nerf.proteins.sidechain_fold(wrapper = new_coords[s, :-padding or None].detach(),
-                                                    **scaffolds, c_beta = cum_atom_mask[4]==5)
+                                                    **scaffolds, c_beta = True)
         # add detached scn
         for i,atom in enumerate(atom_mask.tolist()):
             if not atom:

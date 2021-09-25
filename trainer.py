@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import logging
+import random
 import resource
 
 import torch
@@ -14,6 +15,8 @@ from profold2.data import esm,scn,custom
 from profold2.model import Alphafold2
 
 def main(args):
+    random.seed(args.random_seed)
+
     # constants
     DEVICE = constants.DEVICE # defaults to cuda if available, else cpu
     
@@ -22,6 +25,8 @@ def main(args):
     
     # set emebdder model from esm if appropiate - Load ESM-1b model
     if args.features == "esm":
+        if args.hub_dir:
+            torch.hub.set_dir(args.hub_dir)
         esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
     
     # helpers
@@ -44,7 +49,8 @@ def main(args):
         batch_size = args.batch_size,
         num_workers = 0,
         filter_by_resolution = args.filter_by_resolution if args.filter_by_resolution > 0 else False,
-        dynamic_batching = False)
+        dynamic_batching = False,
+        scn_dir=args.scn_dir)
     
     train_loader = data['train']
     data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len
@@ -54,7 +60,7 @@ def main(args):
     if args.alphafold2_continue:
         model = torch.load(os.path.join(args.prefix, 'model.pkl'))
         model.to(DEVICE)
-        mode.train()
+        model.train()
     else:
         # features
         feats = [('make_pseudo_beta', {}),
@@ -65,7 +71,7 @@ def main(args):
                 ]
 
         headers = [('distogram', dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
-                            buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.01)),
+                            buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
                        ('folding', dict(structure_module_depth=4, structure_module_heads=4,
                             fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
                        ('tmscore', {}, {})]
@@ -124,10 +130,11 @@ def main(args):
     writer.close()
 
     # save model
-    torch.save(model, os.path.join(args.prefix, 'model.pkl'))
+    torch.save(model, os.path.join(args.prefix, args.model))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('-X', '--model', type=str, default='model.pth', help='model of alphafold2, default=\'model.pth\'')
     parser.add_argument('-o', '--prefix', type=str, default='.', help='prefix of out directory, default=\'.\'')
     parser.add_argument('-C', '--casp_version', type=int, default=12, help='CASP version, default=12')
     parser.add_argument('-T', '--casp_thinning', type=int, default=30, help='CASP version, default=30')
@@ -136,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--min_protein_len', type=int, default=50, help='filter out proteins whose length<LEN, default=50')
     parser.add_argument('-M', '--max_protein_len', type=int, default=1024, help='filter out proteins whose length>LEN, default=1024')
     parser.add_argument('-r', '--filter_by_resolution', type=float, default=0, help='filter by resolution<=RES')
+    parser.add_argument('--random_seed', type=int, default=None, help='random seed')
 
     parser.add_argument('-n', '--num_batches', type=int, default=100000, help='number of batches, default=10^5')
     parser.add_argument('-k', '--gradient_accumulate_every', type=int, default=16, help='accumulate grads every k times, default=16')
@@ -152,8 +160,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--tensorboard_add_graph', action='store_true', help='call tensorboard.add_graph')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
-    args = parser.parse_args()
 
+    parser.add_argument('--hub_dir', type=str, help='specify hub_dir')
+    parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data', help='specify scn_dir')
+
+    args = parser.parse_args()
     # logging
 
     if not os.path.exists(args.prefix):
