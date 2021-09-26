@@ -141,7 +141,7 @@ def main(args):
     writer.close()
 
     # latest checkpoint
-    if args.checkpoint_every > 0:
+    if args.checkpoint_every > 0 and global_step < args.num_batches and (it + 1) % args.checkpoint_every != 0:
         checkpoint_manager.save(it)
 
     # save model

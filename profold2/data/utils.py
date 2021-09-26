@@ -2,6 +2,7 @@ import logging
 import os
 
 import numpy as np
+import torch
 
 from profold2.common import protein,residue_constants
 
@@ -17,6 +18,10 @@ def save_pdb(step, batch, headers, prefix='/tmp'):
 
         p = os.path.join(prefix, '{}_{}_{}.pdb'.format(pid, step, x))
         with open(p, 'w') as f:
+            if 'mask' in batch:
+                masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
+            else:
+                masked_seq_len = len(str_seq)
             coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype] for restype in aatype])
             coords = headers['folding']['coords'].detach()
 
@@ -25,7 +30,7 @@ def save_pdb(step, batch, headers, prefix='/tmp'):
                 final_atom_positions = coords[x,...].numpy()))
             prot = protein.from_prediction(features=features, result=result)
             f.write(protein.to_pdb(prot))
-            logging.debug('{}/{} PDB save: {}'.format(step, x, pid))
+            logging.debug('step: {}/{} length: {}/{} PDB save: {}'.format(step, x, masked_seq_len, len(str_seq), pid))
 
             if 'coord' in batch:
                 p = os.path.join(prefix, '{}_{}_{}_gt.pdb'.format(pid, step, x))
@@ -37,4 +42,4 @@ def save_pdb(step, batch, headers, prefix='/tmp'):
                         final_atom_positions = coords[x,...].numpy()))
                     prot = protein.from_prediction(features=features, result=result)
                     f.write(protein.to_pdb(prot))
-                    logging.debug('{}/{} PDB save: {} (groundtruth)'.format(step, x, pid))
+                    logging.debug('step: {}/{} length: {}/{} PDB save: {} (groundtruth)'.format(step, x, masked_seq_len, len(str_seq), pid))
