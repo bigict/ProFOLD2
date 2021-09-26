@@ -535,7 +535,6 @@ def tmscore_numpy(X, Y, L):
     """ Assumes x,y are both (B x D x N). see below for wrapper. """
     L = max(21, L)
     d0 = 1.24 * np.cbrt(L - 15) - 1.8
-    d0 = max(d0, 0.5)
     # get distance
     dist = np.sqrt( ((X - Y)**2).sum(axis=1) )
     # formula (see wrapper for source): 
