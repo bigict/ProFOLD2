@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from profold2 import constants
 from profold2.data import esm,scn,custom
 from profold2.model import Alphafold2
+from profold2.model.utils import Checkpoint,CheckpointManager
 
 def main(args):
     random.seed(args.random_seed)
@@ -30,7 +31,7 @@ def main(args):
         esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
     
     # helpers
-    def cycle(loader, cond = lambda x: True):
+    def cycling(loader, cond = lambda x: True):
         epoch = 0
         while True:
             logging.info('epoch: {}'.format(epoch))
@@ -54,55 +55,57 @@ def main(args):
     
     train_loader = data['train']
     data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len
-    dl = cycle(train_loader, data_cond)
+    dl = cycling(train_loader, data_cond)
 
     # model
-    if args.alphafold2_continue:
-        model = torch.load(os.path.join(args.prefix, 'model.pkl'))
-        model.to(DEVICE)
-        model.train()
-    else:
-        # features
-        feats = [('make_pseudo_beta', {}),
-                 ('make_esm_embedd', dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER)),
-                 ('make_to_device', dict(
-                    fields=['seq', 'mask', 'coord', 'coord_mask', 'embedds', 'pseudo_beta', 'pseudo_beta_mask'],
-                    device=DEVICE))
-                ]
+    feats = [('make_pseudo_beta', {}),
+             ('make_esm_embedd', dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER)),
+             ('make_to_device', dict(
+                fields=['seq', 'mask', 'coord', 'coord_mask', 'embedds', 'pseudo_beta', 'pseudo_beta_mask'],
+                device=DEVICE))
+            ]
 
-        headers = [('distogram', dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
-                            buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
-                       ('folding', dict(structure_module_depth=4, structure_module_heads=4,
-                            fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
-                       ('tmscore', {}, {})]
+    headers = [('distogram', dict(buckets_first_break=2.3125, buckets_last_break=21.6875,
+                        buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
+                   ('folding', dict(structure_module_depth=4, structure_module_heads=4,
+                        fape_min=args.alphafold2_fape_min, fape_max=args.alphafold2_fape_max, fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
+                   ('tmscore', {}, {})]
 
-        logging.info('Alphafold2.feats: {}'.format(feats))
-        logging.info('Alphafold2.headers: {}'.format(headers))
+    logging.info('Alphafold2.feats: {}'.format(feats))
+    logging.info('Alphafold2.headers: {}'.format(headers))
 
-        model = Alphafold2(
-            dim = args.alphafold2_dim,
-            depth = args.alphafold2_depth,
-            heads = 8,
-            dim_head = 64,
-            predict_angles = False,
-            feats = feats,
-            headers = headers
-        ).to(DEVICE)
+    model = Alphafold2(
+        dim = args.alphafold2_dim,
+        depth = args.alphafold2_depth,
+        heads = 8,
+        dim_head = 64,
+        predict_angles = False,
+        feats = feats,
+        headers = headers
+    ).to(DEVICE)
 
     # optimizer 
     optim = Adam(model.parameters(), lr = args.learning_rate)
-    
+
     # tensorboard
     writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval'))
-    
+
+    global_step = 0
+    # CheckpointManager
+    if args.checkpoint_every > 0:
+        checkpoint_manager = CheckpointManager(os.path.join(args.prefix, 'checkpoints'),
+                max_to_keep=args.checkpoint_max_to_keep, model=model, optimizer=optim)
+        global_step = checkpoint_manager.restore_or_initialize()
+        model.train()
+
     # training loop
-    for it in range(args.num_batches):
+    for it in range(global_step, args.num_batches):
         running_loss = {}
         for jt in range(args.gradient_accumulate_every):
             batch = next(dl)
 
             seq, mask = batch['seq'], batch['mask']
-            logging.debug('seq.shape: {}'.format(seq.shape))
+            logging.debug('{} {} seq.shape: {}'.format(it, jt, seq.shape))
     
             # sequence embedding (msa / esm / attn / or nothing)
             r = model(batch = batch, num_recycle = args.alphafold2_recycles)
@@ -127,6 +130,10 @@ def main(args):
         optim.step()
         optim.zero_grad()
 
+        if args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0:
+            # Save a checkpoint every N iters.
+            checkpoint_manager.save(it)
+
     writer.close()
 
     # save model
@@ -146,6 +153,8 @@ if __name__ == '__main__':
     parser.add_argument('--random_seed', type=int, default=None, help='random seed')
 
     parser.add_argument('-n', '--num_batches', type=int, default=100000, help='number of batches, default=10^5')
+    parser.add_argument('-N', '--checkpoint_max_to_keep', type=int, default=5, help='the maximum number of checkpoints to keep, default=5')
+    parser.add_argument('-K', '--checkpoint_every', type=int, default=100, help='save a checkpoint every K times, default=100')
     parser.add_argument('-k', '--gradient_accumulate_every', type=int, default=16, help='accumulate grads every k times, default=16')
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='batch size, default=1')
     parser.add_argument('-l', '--learning_rate', type=float, default='3e-4', help='learning rate, default=3e-4')
@@ -156,7 +165,6 @@ if __name__ == '__main__':
     parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4, help='minimum of dij in alphafold2, default=1e-4')
     parser.add_argument('--alphafold2_fape_max', type=float, default=10.0, help='maximum of dij in alphafold2, default=10.0')
     parser.add_argument('--alphafold2_fape_z', type=float, default=10.0, help='Z of dij in alphafold2, default=10.0')
-    parser.add_argument('--alphafold2_continue', action='store_true', help='load a model and continue to train')
 
     parser.add_argument('--tensorboard_add_graph', action='store_true', help='call tensorboard.add_graph')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
@@ -167,8 +175,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # logging
 
-    if not os.path.exists(args.prefix):
-        os.makedirs(os.path.abspath(args.prefix))
+    os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
+    if args.checkpoint_every > 0:
+        os.makedirs(os.path.abspath(os.path.join(args.prefix, 'checkpoints')), exist_ok=True)
     logging.basicConfig(
             format = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s',
             level = logging.DEBUG if args.verbose else logging.INFO,
