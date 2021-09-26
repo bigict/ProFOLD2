@@ -140,6 +140,10 @@ def main(args):
 
     writer.close()
 
+    # latest checkpoint
+    if args.checkpoint_every > 0:
+        checkpoint_manager.save(it)
+
     # save model
     torch.save(model, os.path.join(args.prefix, args.model))
 
