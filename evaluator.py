@@ -13,6 +13,7 @@ from einops import rearrange
 from profold2 import constants
 from profold2.common import protein,residue_constants
 from profold2.data import esm,scn,custom
+from profold2.data.utils import save_pdb
 from profold2.utils import Kabsch,TMscore
 
 def main(args):
@@ -86,44 +87,7 @@ def main(args):
                     tmscore, n = tmscore + tms.item(), n + 1
 
                 if args.save_pdb:
-                    if not os.path.exists(os.path.join(args.prefix, 'pdbs')):
-                        os.makedirs(os.path.join(args.prefix, 'pdbs'))
-                    b, N = batch['seq'].shape
-
-                    for x, pid in enumerate(batch['pid']):
-                        str_seq = batch['str_seq'][x]
-                        #aatype = batch['seq'][x,...].numpy()
-                        aatype = np.array([residue_constants.restype_order_with_x.get(aa, residue_constants.unk_restype_index) for aa in str_seq])
-                        features = dict(aatype=aatype, 
-                                residue_index=np.arange(N))
-
-                        p = os.path.join(args.prefix, 'pdbs', '{}_{}_{}.pdb'.format(pid, i, x))
-                        with open(p, 'w') as f:
-                            #if 'coord_mask' in batch:
-                            #    coord_mask = batch['coord_mask'][x,...].numpy()
-                            #else:
-                            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype] for restype in aatype])
-
-                            result = dict(structure_module=dict(
-                                final_atom_mask = coord_mask,
-                                final_atom_positions = r.headers['folding']['coords'][x,...].numpy()))
-                            prot = protein.from_prediction(features=features, result=result)
-                            f.write(protein.to_pdb(prot))
-                            logging.info('{}/{} PDB save: {}'.format(i, x, pid))
-
-                        if not 'coord' in batch:
-                            continue
-
-                        p = os.path.join(args.prefix, 'pdbs', '{}_{}_{}_gt.pdb'.format(pid, i, x))
-                        with open(p, 'w') as f:
-                            coord_mask = batch['coord_mask'][x,...].numpy()
-                            result = dict(structure_module=dict(
-                                final_atom_mask = coord_mask,
-                                final_atom_positions = batch['coord'][x,...].numpy()))
-                            prot = protein.from_prediction(features=features, result=result)
-                            f.write(protein.to_pdb(prot))
-                            logging.info('{}/{} PDB save: {} gt'.format(i, x, pid))
-
+                    save_pdb(i, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
             else:
                 raise ValueError('{} are not implemented yet!'.format(','.join(r.headers.keys())))
 
@@ -153,11 +117,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # logging
-
-    if not os.path.exists(args.prefix):
-        os.makedirs(os.path.abspath(args.prefix))
-        if args.save_pdb and not os.path.exists(os.path.join(args.prefix, 'pdbs')):
-            os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')))
+    os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
+    if args.save_pdb:
+        os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')), exist_ok=True)
     logging.basicConfig(
             format = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s',
             level = logging.DEBUG if args.verbose else logging.INFO,
