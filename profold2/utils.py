@@ -524,7 +524,7 @@ def gdt_numpy(X, Y, cutoffs, weights=None):
 
 def tmscore_torch(X, Y, L):
     """ Assumes x,y are both (B x D x N). see below for wrapper. """
-    L = max(19, L)
+    L = max(21, L)
     d0 = 1.24 * (L - 15)**(1.0/3.0) - 1.8
     # get distance
     dist = ((X - Y)**2).sum(dim=1).sqrt()
@@ -533,7 +533,7 @@ def tmscore_torch(X, Y, L):
 
 def tmscore_numpy(X, Y, L):
     """ Assumes x,y are both (B x D x N). see below for wrapper. """
-    L = max(19, L)
+    L = max(21, L)
     d0 = 1.24 * np.cbrt(L - 15) - 1.8
     d0 = max(d0, 0.5)
     # get distance
