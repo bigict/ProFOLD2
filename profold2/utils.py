@@ -2,6 +2,7 @@
 import contextlib
 from functools import wraps
 from inspect import isfunction
+import uuid
 
 import numpy as np
 import torch
@@ -10,7 +11,6 @@ import torch
 import profold2.constants as constants
 
 # helpers
-
 def exists(val):
     return val is not None
 
@@ -18,6 +18,11 @@ def default(val, d):
     if exists(val):
         return val
     return d() if isfunction(d) else d
+
+def unique_id():
+    """Generate a unique ID as specified in RFC 4122."""
+    # See https://docs.python.org/3/library/uuid.html
+    return str(uuid.uuid4())
 
 # constants: same as in alphafold2.py
 
@@ -748,3 +753,4 @@ def contacts_auc_numpy(pred, truth, ratios=[1,2,5], gap=24, cutoff=8):
 @invoke_torch_or_numpy(contacts_auc_torch, contacts_auc_numpy)
 def contacts_auc(pred, truth, **kwargs):
     return pred, truth, kwargs
+
