@@ -23,7 +23,7 @@ def take1st(fn):
 @take1st
 def make_seq_mask(protein, padd_id=20):
     mask = protein['seq'] != padd_id
-    protein['mask'] = mask.float()
+    protein['mask'] = mask.bool()
     return protein
 
 @take1st

@@ -6,6 +6,7 @@ import sidechainnet
 from sidechainnet.utils.sequence import VOCAB
 from sidechainnet.structure.build_info import NUM_COORDS_PER_RES,BB_BUILD_INFO,SC_BUILD_INFO
 
+from profold2.common import residue_constants
 from profold2.utils import *
 
 def _make_cloud_mask(aa):
@@ -60,7 +61,7 @@ def get_collate_fn(max_seq_len, aggregate_input, seqs_as_onehot=None):
     def collate_fn(insts):
         batch = scn_collate_fn(insts)
         coords = rearrange(batch.crds, '... (l c) d -> ... l c d', c=NUM_COORDS_PER_RES)[...,:max_seq_len,:,:]
-        int_seqs = batch.int_seqs[...,:max_seq_len]
+        int_seqs = batch.int_seqs[...,:max_seq_len].apply_(lambda x: residue_constants.restype_order_with_x.get(VOCAB.int2char(x), residue_constants.unk_restype_index))
         return dict(pid=batch.pids, 
                     seq=int_seqs,
                     mask=batch.msks[...,:max_seq_len],
