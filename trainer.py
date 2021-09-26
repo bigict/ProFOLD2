@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import esm,scn,custom
+from profold2.data.utils import save_pdb
 from profold2.model import Alphafold2
 from profold2.model.utils import Checkpoint,CheckpointManager
 
@@ -121,6 +122,9 @@ def main(args):
                     running_loss[h] = running_loss.get(h, 0) + v['loss'].item()
 
             r.loss.backward()
+
+            if 'tmscore' in r.headers and r.headers['tmscore']['loss'].item() >= args.save_pdb:
+                save_pdb(it, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
     
         for k, v in running_loss.items():
             v /= (args.batch_size*args.gradient_accumulate_every)
@@ -166,6 +170,7 @@ if __name__ == '__main__':
     parser.add_argument('--alphafold2_fape_max', type=float, default=10.0, help='maximum of dij in alphafold2, default=10.0')
     parser.add_argument('--alphafold2_fape_z', type=float, default=10.0, help='Z of dij in alphafold2, default=10.0')
 
+    parser.add_argument('--save_pdb', type=float, default=1.0, help='save pdb files when TMscore>=VALUE, default=1.0')
     parser.add_argument('--tensorboard_add_graph', action='store_true', help='call tensorboard.add_graph')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
@@ -173,11 +178,13 @@ if __name__ == '__main__':
     parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data', help='specify scn_dir')
 
     args = parser.parse_args()
-    # logging
 
+    # logging
     os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
     if args.checkpoint_every > 0:
         os.makedirs(os.path.abspath(os.path.join(args.prefix, 'checkpoints')), exist_ok=True)
+    if args.save_pdb <= 1.0:
+        os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')), exist_ok=True)
     logging.basicConfig(
             format = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s',
             level = logging.DEBUG if args.verbose else logging.INFO,
