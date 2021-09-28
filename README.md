@@ -25,7 +25,7 @@ ProFOLD2 - A protein 3D structure prediction application
   $./env/bin/python trainer.py --prefix=OUTPUT_DIR
   ```
   
-  There are a lot of parameters to can tuning, run
+  There are a lot of parameters, you can run
     
   ```bash
   $./env/bin/python trainer.py -h
