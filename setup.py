@@ -1,3 +1,5 @@
+"""Install script for setuptools."""
+
 from setuptools import setup, find_packages
 
 setup(
