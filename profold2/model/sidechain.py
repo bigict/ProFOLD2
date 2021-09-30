@@ -1,8 +1,89 @@
 import torch
+from torch import nn
 from einops import rearrange
 import mp_nerf
 
 from profold2.constants import *
+
+def l2_normalize(x, dim=-1, epsilon=1e-12):
+  return x / torch.sqrt(
+      torch.max(torch.sum(x**2, dim=dim, keepdims=True), epsilon))
+
+class InputProjection(nn.Module):
+    def __init__(self, dim, channel):
+        super().__init__()
+        self.net = nn.Sequential(nn.ReLU(), nn.Linear(dim, channel))
+
+    def forward(self, representations_list):
+        act = [self.net(x) for x in representations_list]
+        # Sum the activation list (equivalent to concat then Linear).
+        return sum(act)
+
+class ResidueBlock(nn.Module):
+    def __init__(self, dim, channel):
+        super().__init__()
+        self.net = nn.Sequential(nn.ReLU(), nn.Linear(dim, channel), nn.ReLU(), nn.Linear(channel, channel))
+
+    def forward(self, act, recycles=1):
+        for _ in range(recycles):
+            act += self.net(act)
+        return act
+
+class TorisonAngles(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.net = nn.Sequential(nn.ReLU(), nn.Linear(dim, 14))
+
+    def forward(self, act):
+        angles = rearrange(self.net(act), 'b (l w) -> b l w', w=2)
+        return l2_normalize(angles, dim=-1)
+
+class MultiRigidSidechain(nn.Module):
+    """Class to make side chain atoms."""
+    def __init__(self, dim, channel, residual_recycles=1):
+        super().__init__()
+
+        self.input_projection = InputProjection(dim, channel)
+
+        self.residual_block = ResidueBlock(dim, channel)
+        self.residual_recycles = residual_recycles
+
+        self.torison_angles = TorisonAngles(dim)
+
+    def forward(self, rigids, representations_list, aatype):
+        """Predict side chains using multi-rigid representations.
+
+        Args:
+          affine: The affines for each residue (translations in angstroms).
+          representations_list: A list of activations to predict side chains from.
+          aatype: Amino acid types.
+
+        Returns:
+          Dict containing atom positions and frames (in angstroms).
+        """
+        act = self.input_projection(representations_list)
+
+        # Mapping with some residual blocks.
+        act = self.residual_block(act, self.residual_recycles)
+
+        # Map activations to torsion angles. Shape: (N, 7, 2).
+        angles = self.torison_angles(act)
+
+        # Map torsion angles to frames.
+        all_frames_to_global = all_atom.torsion_angles_to_frames(
+            aatype, rigids, angles)
+
+        # Use frames and literature positions to create the final atom coordinates.
+        # r3.Vecs with shape (N, 14).
+        pred_positions = all_atom.frames_and_literature_positions_to_atom14_pos(
+            aatype, all_frames_to_global)
+
+        outputs.update({
+            'angles_sin_cos': angles,  # (N, 7, 2)
+            'atom_pos': pred_positions,  # r3.Vecs (N, 14, 3)
+            'frames': all_frames_to_global,  # r3.Rigids (N, 8)
+        })
+        return outputs
 
 def fold(seqs, backbones, atom_mask, cloud_mask=None, padding_tok=20,num_coords_per_res=NUM_COORDS_PER_RES):
     """ Gets a backbone of the protein, returns the whole coordinates
