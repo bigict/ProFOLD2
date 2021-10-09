@@ -1,4 +1,5 @@
 import functools
+from inspect import isfunction
 
 import torch
 from einops import rearrange
@@ -70,6 +71,8 @@ def make_esm_embedd(protein, esm_extractor, repr_layer, device=None, field='embe
 
 @take1st
 def make_to_device(protein, fields, device):
+    if isfunction(device):
+        device = device()
     for k in fields:
         if k in protein:
             protein[k] = protein[k].to(device)
