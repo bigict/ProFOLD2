@@ -315,9 +315,11 @@ class Alphafold2WithRecycling(nn.Module):
 
         for i in range(num_recycle):
             ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs))
-            logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
+            if 'tmscore' in ret.headers:
+                logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item()))
 
         ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs))
-        logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
+        if 'tmscore' in ret.headers:
+            logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item()))
 
         return ret.asdict()

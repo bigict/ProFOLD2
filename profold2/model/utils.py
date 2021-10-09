@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 import torch
+from torch import nn
 
 from profold2.utils import unique_id
 
@@ -108,7 +109,11 @@ class Checkpoint:
                         "reload. Skipping it."
                     )
                     continue
-                getattr(self, name).load_state_dict(state_dict)
+                obj = getattr(self, name)
+                if isinstance(obj, nn.Module):
+                    obj.load_state_dict(state_dict, strict=False)
+                else:
+                    obj.load_state_dict(state_dict)
             return True
         except Exception as e:
             print(e)
