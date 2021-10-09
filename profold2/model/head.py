@@ -49,7 +49,7 @@ class DistogramHead(nn.Module):
 
         assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(self.buckets)
+        sq_breaks = torch.square(self.buckets).to(positions.device)
 
         dist2 = torch.sum(
             torch.square(
@@ -172,8 +172,8 @@ class HeaderBuilder:
             lddt = LDDTHead,
             tmscore = TMscoreHead)
     @staticmethod
-    def build(dim, config):
+    def build(dim, config, device=None):
         if exists(config):
-            return list((k, HeaderBuilder._headers[k](dim=dim, **args), options)
+            return list((k, HeaderBuilder._headers[k](dim=dim, **args).to(device=device), options)
                     for k, args, options in config)
         return []

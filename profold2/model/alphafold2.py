@@ -20,8 +20,11 @@ class Recyclables:
     single_msa_repr_row: torch.Tensor
     pairwise_repr: torch.Tensor
 
+    def asdict(self):
+        return dict(single_msa_repr_row=self.single_msa_repr_row, pairwise_repr=self.pairwise_repr)
+
 @dataclass
-class ReturnValues:
+class _ReturnValues:
     theta: torch.Tensor = None
     phi: torch.Tensor = None
     omega: torch.Tensor = None
@@ -29,6 +32,21 @@ class ReturnValues:
     recyclables: Recyclables = None
     headers: dict = None
     loss: torch.Tensor = None
+
+class ReturnValues(_ReturnValues):
+    def __init__(self, **kwargs):
+        if 'recyclables' in kwargs and exists(kwargs['recyclables']):
+            kwargs['recyclables'] = Recyclables(**kwargs['recyclables'])
+        super().__init__(**kwargs)
+    
+    def asdict(self):
+        return dict(theta=self.theta,
+                phi=self.phi,
+                omega=self.omega,
+                msa_mlm_loss=self.msa_mlm_loss,
+                recyclables=self.recyclables.asdict() if exists(self.recyclables) else self.recyclables,
+                headers=self.headers,
+                loss=self.loss)
 
 class Alphafold2(nn.Module):
     def __init__(
@@ -57,6 +75,7 @@ class Alphafold2(nn.Module):
         mlm_random_replace_token_prob = 0.1,
         mlm_keep_token_same_prob = 0.1,
         mlm_exclude_token_ids = (0,),
+        device = None,
         feats = None,
         headers = None
     ):
@@ -71,7 +90,7 @@ class Alphafold2(nn.Module):
         # extra msa embedding
         self.extra_msa_evoformer = Evoformer(
             dim = dim,
-            depth = extra_msa_evoformer_layers,
+            depth = depth,
             seq_len = max_seq_len,
             heads = heads,
             dim_head = dim_head,
@@ -92,7 +111,6 @@ class Alphafold2(nn.Module):
                 templates_angles_feats_dim = templates_angles_feats_dim)
 
         # projection for angles, if needed
-
         self.predict_angles = predict_angles
         self.symmetrize_omega = symmetrize_omega
 
@@ -102,11 +120,9 @@ class Alphafold2(nn.Module):
             self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
 
         # custom embedding projection
-
         self.embedd_project = nn.Linear(num_embedds, dim)
 
         # main trunk modules
-
         self.evoformer = Evoformer(
             dim = dim,
             depth = depth,
@@ -129,14 +145,17 @@ class Alphafold2(nn.Module):
             exclude_token_ids = mlm_exclude_token_ids
         )
 
-        # to coordinate output
-
         # recycling params
         self.recycling_msa_norm = nn.LayerNorm(dim)
         self.recycling_pairwise_norm = nn.LayerNorm(dim)
 
         self.feat_builder = FeatureBuilder(feats)
-        self.headers = HeaderBuilder.build(dim, headers)
+
+        self.headers = HeaderBuilder.build(dim, headers, device=device)
+        for n, h, _ in self.headers:
+          self.add_module(f'head_{n}', h)
+
+        self.to(device=device)
 
     def forward(
         self,
@@ -278,13 +297,14 @@ class Alphafold2(nn.Module):
             single_msa_repr_row, pairwise_repr = map(torch.detach, (representations['single'], representations['pair']))
             ret.recyclables = Recyclables(single_msa_repr_row, pairwise_repr)
 
-        return ret
+        return ret.asdict()
 
 class Alphafold2WithRecycling(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
 
         self.impl = Alphafold2(**kwargs)
+        logging.debug('{}'.format(self.impl))
 
     def forward(self, num_recycle=0, **kwargs):
         assert num_recycle >= 0
@@ -294,10 +314,10 @@ class Alphafold2WithRecycling(nn.Module):
             num_recycle = random.randint(0, num_recycle)
 
         for i in range(num_recycle):
-            ret = self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs)
+            ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs))
             logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
 
-        ret = self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs)
+        ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs))
         logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item() if 'tmscore' in ret.headers else '-'))
 
-        return ret
+        return ret.asdict()

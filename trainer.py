@@ -1,8 +1,8 @@
 """Tools for train, run
-		```bash
-		$python trainer.py -h
-		```
-		for further help.
+     ```bash
+     $python trainer.py -h
+     ```
+     for further help.
 """
 import os
 import argparse
@@ -11,23 +11,73 @@ import random
 import resource
 
 import torch
-import torch.nn
+from torch import nn
+import torch.multiprocessing as mp
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import esm, scn
 from profold2.data.utils import save_pdb
-from profold2.model import Alphafold2
+from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
 
+class WorkerLogFilter(logging.Filter):
+  def __init__(self, rank=-1):
+    super().__init__()
+    self._rank = rank
 
-def main(args):  # pylint: disable=W0621
+  def filter(self, record):
+    if self._rank != -1:
+      record.msg = f'Rank {self._rank} | {record.msg}'
+    return True
+
+def ctx_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
+
+  # logging
+  logger = logging.getLogger()
+
+  ctx_handler = logging.handlers.QueueHandler(log_queue)
+  if args.gpu_list:
+    ctx_filter = WorkerLogFilter(args.gpu_list[rank])
+    ctx_handler.addFilter(ctx_filter)
+  logger.addHandler(ctx_handler)
+
+  level=logging.DEBUG if args.verbose else logging.INFO
+  logger.setLevel(level)
+
+  if args.gpu_list:
+    logging.info('torch.distributed.init_process_group: rank=%d, world_size=%d',
+            args.gpu_list[rank], len(args.gpu_list))
+    torch.distributed.init_process_group(
+            backend='nccl',
+            init_method='file:///tmp/profold2.dist',
+            rank=args.gpu_list[rank],
+            world_size=len(args.gpu_list))
+
+def ctx_cleanup(args):  # pylint: disable=redefined-outer-name
+  if args.gpu_list:
+    torch.distributed.destroy_process_group()
+
+def ctx_device(rank, args):  # pylint: disable=redefined-outer-name
+  if args.gpu_list and rank < len(args.gpu_list):
+    assert args.gpu_list[rank] < torch.cuda.device_count()
+    return rank
+  return torch.device('cpu')
+
+def ctx_model(rank, model, args):  # pylint: disable=redefined-outer-name
+  if args.gpu_list and rank < len(args.gpu_list):
+    logging.info('wrap model with torch.nn.parallel.DistributedDataParallel')
+    return nn.parallel.DistributedDataParallel(
+        model, device_ids=[args.gpu_list[rank]], find_unused_parameters=True)
+  return model
+
+def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
 
-  # constants
-  device = constants.DEVICE  # defaults to cuda if available, else cpu
+  ctx_setup(rank, log_queue, args)
 
+  device = ctx_device(rank, args)
   if args.threads > 0:
     torch.set_num_threads(args.threads)
 
@@ -77,25 +127,19 @@ def main(args):  # pylint: disable=W0621
   headers = [('distogram',
               dict(buckets_first_break=2.3125,
                    buckets_last_break=21.6875,
-                   buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
-             ('folding',
-              dict(structure_module_depth=4,
-                   structure_module_heads=4,
-                   fape_min=args.alphafold2_fape_min,
-                   fape_max=args.alphafold2_fape_max,
-                   fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
-             ('tmscore', {}, {})]
+                   buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1))]
 
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = Alphafold2(dim=args.alphafold2_dim,
+  model = ctx_model(rank, Alphafold2(dim=args.alphafold2_dim,
                      depth=args.alphafold2_depth,
                      heads=8,
                      dim_head=64,
                      predict_angles=False,
                      feats=feats,
-                     headers=headers).to(device)
+                     headers=headers,
+                     device=device), args)
 
   # optimizer
   optim = Adam(model.parameters(), lr=args.learning_rate)
@@ -116,6 +160,8 @@ def main(args):  # pylint: disable=W0621
 
   # training loop
   for it in range(global_step, args.num_batches):
+    optim.zero_grad()
+
     running_loss = {}
     for jt in range(args.gradient_accumulate_every):
       batch = next(dl)
@@ -124,7 +170,8 @@ def main(args):  # pylint: disable=W0621
       logging.debug('%d %d seq.shape: %s', it, jt, seq.shape)
 
       # sequence embedding (msa / esm / attn / or nothing)
-      r = model(batch=batch, num_recycle=args.alphafold2_recycles)  # pylint: disable=E1102
+      r = ReturnValues(**model(batch=batch,
+          num_recycle=args.alphafold2_recycles))
 
       if it == 0 and jt == 0 and args.tensorboard_add_graph:
         with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
@@ -138,8 +185,8 @@ def main(args):  # pylint: disable=W0621
 
       r.loss.backward()
 
-      if 'tmscore' in r.headers and r.headers['tmscore']['loss'].item(
-      ) >= args.save_pdb:
+      if 'tmscore' in r.headers and \
+          r.headers['tmscore']['loss'].item() >= args.save_pdb:
         save_pdb(it, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
 
     for k, v in running_loss.items():
@@ -148,7 +195,6 @@ def main(args):  # pylint: disable=W0621
       writer.add_scalar(f'Loss/train@{k}', v, it)
 
     optim.step()
-    optim.zero_grad()
 
     if args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0:
       # Save a checkpoint every N iters.
@@ -164,134 +210,10 @@ def main(args):  # pylint: disable=W0621
   # save model
   torch.save(model, os.path.join(args.prefix, args.model))
 
+  ctx_cleanup(args)
 
-if __name__ == '__main__':
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-X',
-                      '--model',
-                      type=str,
-                      default='model.pth',
-                      help='model of alphafold2, default=\'model.pth\'')
-  parser.add_argument('-o',
-                      '--prefix',
-                      type=str,
-                      default='.',
-                      help='prefix of out directory, default=\'.\'')
-  parser.add_argument('-C',
-                      '--casp_version',
-                      type=int,
-                      default=12,
-                      help='CASP version, default=12')
-  parser.add_argument('-T',
-                      '--casp_thinning',
-                      type=int,
-                      default=30,
-                      help='CASP version, default=30')
-  parser.add_argument('-F',
-                      '--features',
-                      type=str,
-                      default='esm',
-                      help='AA residue features one of [esm,msa], default=esm')
-  parser.add_argument(
-      '-t',
-      '--threads',
-      type=int,
-      default=0,
-      help='number of threads used for intraop parallelism on CPU., default=0')
-  parser.add_argument('-m',
-                      '--min_protein_len',
-                      type=int,
-                      default=50,
-                      help='filter out proteins whose length<LEN, default=50')
-  parser.add_argument(
-      '-M',
-      '--max_protein_len',
-      type=int,
-      default=1024,
-      help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('-r',
-                      '--filter_by_resolution',
-                      type=float,
-                      default=0,
-                      help='filter by resolution<=RES')
-  parser.add_argument('--random_seed',
-                      type=int,
-                      default=None,
-                      help='random seed')
-
-  parser.add_argument('-n',
-                      '--num_batches',
-                      type=int,
-                      default=100000,
-                      help='number of batches, default=10^5')
-  parser.add_argument(
-      '-N',
-      '--checkpoint_max_to_keep',
-      type=int,
-      default=5,
-      help='the maximum number of checkpoints to keep, default=5')
-  parser.add_argument('-K',
-                      '--checkpoint_every',
-                      type=int,
-                      default=100,
-                      help='save a checkpoint every K times, default=100')
-  parser.add_argument('-k',
-                      '--gradient_accumulate_every',
-                      type=int,
-                      default=16,
-                      help='accumulate grads every k times, default=16')
-  parser.add_argument('-b',
-                      '--batch_size',
-                      type=int,
-                      default=1,
-                      help='batch size, default=1')
-  parser.add_argument('-l',
-                      '--learning_rate',
-                      type=float,
-                      default='3e-4',
-                      help='learning rate, default=3e-4')
-
-  parser.add_argument('--alphafold2_recycles',
-                      type=int,
-                      default=0,
-                      help='number of recycles in alphafold2, default=0')
-  parser.add_argument('--alphafold2_dim',
-                      type=int,
-                      default=256,
-                      help='dimension of alphafold2, default=256')
-  parser.add_argument('--alphafold2_depth',
-                      type=int,
-                      default=1,
-                      help='depth of alphafold2, default=1')
-  parser.add_argument('--alphafold2_fape_min',
-                      type=float,
-                      default=1e-4,
-                      help='minimum of dij in alphafold2, default=1e-4')
-  parser.add_argument('--alphafold2_fape_max',
-                      type=float,
-                      default=10.0,
-                      help='maximum of dij in alphafold2, default=10.0')
-  parser.add_argument('--alphafold2_fape_z',
-                      type=float,
-                      default=10.0,
-                      help='Z of dij in alphafold2, default=10.0')
-
-  parser.add_argument('--save_pdb',
-                      type=float,
-                      default=1.0,
-                      help='save pdb files when TMscore>=VALUE, default=1.0')
-  parser.add_argument('--tensorboard_add_graph',
-                      action='store_true',
-                      help='call tensorboard.add_graph')
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
-
-  parser.add_argument('--hub_dir', type=str, help='specify hub_dir')
-  parser.add_argument('--scn_dir',
-                      type=str,
-                      default='./sidechainnet_data',
-                      help='specify scn_dir')
-
-  args = parser.parse_args()
+def main(args):  # pylint: disable=redefined-outer-name
+  mp.set_start_method('spawn', force=True)
 
   # logging
   os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
@@ -301,23 +223,40 @@ if __name__ == '__main__':
   if args.save_pdb <= 1.0:
     os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')),
                 exist_ok=True)
+  handlers = [
+      logging.StreamHandler(),
+      logging.FileHandler(
+          os.path.join(
+              args.prefix,
+              f'{os.path.splitext(os.path.basename(__file__))[0]}.log'))]
+
+  def handler_apply(h, f, *arg):
+    f(*arg)
+    return h
+  level=logging.DEBUG if args.verbose else logging.INFO
+  handlers = list(map(lambda x: handler_apply(x, x.setLevel, level), handlers))
+  formatter = logging.Formatter(
+      '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s')
+  handlers = list(map(lambda x: handler_apply(x, x.setFormatter, formatter),
+      handlers))
+
   logging.basicConfig(
-      format=
-      '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s',
-      level=logging.DEBUG if args.verbose else logging.INFO,
-      handlers=[
-          logging.StreamHandler(),
-          logging.FileHandler(
-              os.path.join(
-                  args.prefix,
-									f'{os.path.splitext(os.path.basename(__file__))[0]}.log'))
-      ])
+      format=formatter,
+      level=level,
+      handlers=handlers)
+
+  log_queue = mp.Queue(-1)
+  listener = logging.handlers.QueueListener(log_queue, *handlers,
+      respect_handler_level=True)
+  listener.start()
 
   logging.info('-----------------')
   logging.info('Arguments: %s', args)
   logging.info('-----------------')
 
-  main(args)
+  mp.spawn(train, args=(log_queue, args),
+          nprocs=len(args.gpu_list) if args.gpu_list else 1,
+          join=True)
 
   logging.info('-----------------')
   logging.info('Resources(myself): %s',
@@ -325,3 +264,71 @@ if __name__ == '__main__':
   logging.info('Resources(children): %s',
       resource.getrusage(resource.RUSAGE_CHILDREN))
   logging.info('-----------------')
+
+  listener.stop()
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-X', '--model', type=str, default='model.pth',
+      help='model of alphafold2, default=\'model.pth\'')
+  parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
+      help='list of GPU IDs')
+  parser.add_argument('-o', '--prefix', type=str, default='.',
+      help='prefix of out directory, default=\'.\'')
+  parser.add_argument('-C', '--casp_version', type=int, default=12,
+      help='CASP version, default=12')
+  parser.add_argument('-T', '--casp_thinning', type=int, default=30,
+      help='CASP version, default=30')
+  parser.add_argument('-F', '--features', type=str, default='esm',
+      help='AA residue features one of [esm,msa], default=esm')
+  parser.add_argument('-t', '--threads', type=int, default=0,
+      help='number of threads used for intraop parallelism on CPU., default=0')
+  parser.add_argument('-m', '--min_protein_len', type=int, default=50,
+      help='filter out proteins whose length<LEN, default=50')
+  parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
+      help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
+      help='filter by resolution<=RES')
+  parser.add_argument('--random_seed', type=int, default=None,
+      help='random seed')
+
+  parser.add_argument('-n', '--num_batches', type=int, default=100000,
+      help='number of batches, default=10^5')
+  parser.add_argument('-N', '--checkpoint_max_to_keep', type=int, default=5,
+      help='the maximum number of checkpoints to keep, default=5')
+  parser.add_argument('-K', '--checkpoint_every', type=int, default=100,
+      help='save a checkpoint every K times, default=100')
+  parser.add_argument('-k',
+      '--gradient_accumulate_every', type=int, default=16,
+      help='accumulate grads every k times, default=16')
+  parser.add_argument('-b', '--batch_size', type=int, default=1,
+      help='batch size, default=1')
+  parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
+      help='learning rate, default=3e-4')
+
+  parser.add_argument('--alphafold2_recycles', type=int, default=0,
+      help='number of recycles in alphafold2, default=0')
+  parser.add_argument('--alphafold2_dim', type=int, default=256,
+      help='dimension of alphafold2, default=256')
+  parser.add_argument('--alphafold2_depth', type=int, default=1,
+      help='depth of alphafold2, default=1')
+  parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4,
+      help='minimum of dij in alphafold2, default=1e-4')
+  parser.add_argument('--alphafold2_fape_max', type=float, default=10.0,
+      help='maximum of dij in alphafold2, default=10.0')
+  parser.add_argument('--alphafold2_fape_z', type=float, default=10.0,
+      help='Z of dij in alphafold2, default=10.0')
+
+  parser.add_argument('--save_pdb', type=float, default=1.0,
+      help='save pdb files when TMscore>=VALUE, default=1.0')
+  parser.add_argument('--tensorboard_add_graph', action='store_true',
+      help='call tensorboard.add_graph')
+  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+
+  parser.add_argument('--hub_dir', type=str, help='specify hub_dir')
+  parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
+      help='specify scn_dir')
+
+  args = parser.parse_args()
+
+  main(args)

@@ -390,7 +390,7 @@ class PairwiseEmbedding(nn.Module):
         x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim = -1)
         x = rearrange(x_left, 'b i d -> b i () d') + rearrange(x_right, 'b j d-> b () j d') # create pair-wise residue embeds
         x_mask = rearrange(x_mask, 'b i -> b i ()') * rearrange(x_mask, 'b j -> b () j') if exists(x_mask) else None
-        if self.relative_pos_emb:
+        if exists(self.relative_pos_emb):
             seq_index = default(seq_index, lambda: torch.arange(n, device=device))
             x += self.relative_pos_emb(seq_index)
         return x, x_mask
