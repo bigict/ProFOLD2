@@ -32,8 +32,7 @@ class WorkerLogFilter(logging.Filter):
       record.msg = f'Rank {self._rank} | {record.msg}'
     return True
 
-def ctx_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
-
+def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # logging
   logger = logging.getLogger()
 
@@ -51,23 +50,23 @@ def ctx_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             args.gpu_list[rank], len(args.gpu_list))
     torch.distributed.init_process_group(
             backend='nccl',
-            init_method='file:///tmp/profold2.dist',
+            init_method=f'file://{args.ipc_file}',
             rank=args.gpu_list[rank],
             world_size=len(args.gpu_list))
 
-def ctx_cleanup(args):  # pylint: disable=redefined-outer-name
+def worker_cleanup(args):  # pylint: disable=redefined-outer-name
   if args.gpu_list:
     torch.distributed.destroy_process_group()
 
-def ctx_device(rank, args):  # pylint: disable=redefined-outer-name
+def worker_device(rank, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
     assert args.gpu_list[rank] < torch.cuda.device_count()
     return rank
   return torch.device('cpu')
 
-def ctx_model(rank, model, args):  # pylint: disable=redefined-outer-name
+def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
-    logging.info('wrap model with torch.nn.parallel.DistributedDataParallel')
+    logging.info('wrap model with nn.parallel.DistributedDataParallel class')
     return nn.parallel.DistributedDataParallel(
         model, device_ids=[args.gpu_list[rank]], find_unused_parameters=True)
   return model
@@ -75,9 +74,9 @@ def ctx_model(rank, model, args):  # pylint: disable=redefined-outer-name
 def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
 
-  ctx_setup(rank, log_queue, args)
+  worker_setup(rank, log_queue, args)
 
-  device = ctx_device(rank, args)
+  device = worker_device(rank, args)
   if args.threads > 0:
     torch.set_num_threads(args.threads)
 
@@ -124,16 +123,24 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             ],
                  device=device))]
 
-  headers = [('distogram',
-              dict(buckets_first_break=2.3125,
-                   buckets_last_break=21.6875,
-                   buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1))]
+  headers = [
+      ('distogram',
+          dict(buckets_first_break=2.3125,
+              buckets_last_break=21.6875,
+              buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
+      ('folding',
+          dict(structure_module_depth=args.alphafold2_structure_module_depth,
+              structure_module_heads=4,
+              fape_min=args.alphafold2_fape_min,
+              fape_max=args.alphafold2_fape_max,
+              fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
+      ('tmscore', {}, {})]
 
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = ctx_model(rank, Alphafold2(dim=args.alphafold2_dim,
-                     depth=args.alphafold2_depth,
+  model = worker_model(rank, Alphafold2(dim=args.alphafold2_dim,
+                     depth=args.alphafold2_evoformer_depth,
                      heads=8,
                      dim_head=64,
                      predict_angles=False,
@@ -210,7 +217,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # save model
   torch.save(model, os.path.join(args.prefix, args.model))
 
-  ctx_cleanup(args)
+  worker_cleanup(args)
 
 def main(args):  # pylint: disable=redefined-outer-name
   mp.set_start_method('spawn', force=True)
@@ -269,10 +276,12 @@ def main(args):  # pylint: disable=redefined-outer-name
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('-X', '--model', type=str, default='model.pth',
-      help='model of alphafold2, default=\'model.pth\'')
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
+  parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
+      help='ipc file to initialize the process group')
+  parser.add_argument('-X', '--model', type=str, default='model.pth',
+      help='model of alphafold2, default=\'model.pth\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-C', '--casp_version', type=int, default=12,
@@ -310,8 +319,11 @@ if __name__ == '__main__':
       help='number of recycles in alphafold2, default=0')
   parser.add_argument('--alphafold2_dim', type=int, default=256,
       help='dimension of alphafold2, default=256')
-  parser.add_argument('--alphafold2_depth', type=int, default=1,
-      help='depth of alphafold2, default=1')
+  parser.add_argument('--alphafold2_evoformer_depth', type=int, default=1,
+      help='depth of evoformer in alphafold2, default=1')
+  parser.add_argument('--alphafold2_structure_module_depth', type=int,
+      default=1,
+      help='depth of structure module in alphafold2, default=1')
   parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4,
       help='minimum of dij in alphafold2, default=1e-4')
   parser.add_argument('--alphafold2_fape_max', type=float, default=10.0,
