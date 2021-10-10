@@ -157,6 +157,9 @@ class Alphafold2(nn.Module):
 
         self.to(device=device)
 
+    def embeddings(self):
+        return dict(token=self.token_emb.weight, pairwise=self.to_pairwise_repr.embeddings())
+
     def forward(
         self,
         extra_msa = None,
@@ -305,6 +308,9 @@ class Alphafold2WithRecycling(nn.Module):
 
         self.impl = Alphafold2(**kwargs)
         logging.debug('{}'.format(self.impl))
+
+    def embeddings(self):
+        return self.impl.embeddings()
 
     def forward(self, num_recycle=0, **kwargs):
         assert num_recycle >= 0
