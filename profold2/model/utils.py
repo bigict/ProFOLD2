@@ -110,13 +110,14 @@ class Checkpoint:
                     )
                     continue
                 obj = getattr(self, name)
+                logging.debug('loading %s ...', name)
                 if isinstance(obj, nn.Module):
                     obj.load_state_dict(state_dict, strict=False)
                 else:
                     obj.load_state_dict(state_dict)
             return True
         except Exception as e:
-            print(e)
+            logging.error(e)
             return False
 
 

@@ -172,8 +172,13 @@ class HeaderBuilder:
             lddt = LDDTHead,
             tmscore = TMscoreHead)
     @staticmethod
-    def build(dim, config, device=None):
+    def build(dim, config, parent=None, device=None):
+        def gen():
+            for name, args, options in config:
+                h = HeaderBuilder._headers[name](dim=dim, **args).to(device=device)
+                if exists(parent) and isinstance(parent, nn.Module):
+                    parent.add_module(f'head_{name}', h)
+                yield name, h, options
         if exists(config):
-            return list((k, HeaderBuilder._headers[k](dim=dim, **args).to(device=device), options)
-                    for k, args, options in config)
+            return list(gen())
         return []
