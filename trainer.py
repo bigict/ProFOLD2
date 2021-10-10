@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import esm, scn
-from profold2.data.utils import save_pdb
+from profold2.data.utils import embedding_get_labels, pdb_save
 from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
 
@@ -153,6 +153,20 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # tensorboard
   writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval'))
+  def model_add_embeddings(writer, model, it):
+    def add_embeddings(embedds, prefix=''):
+      for k, v in embedds.items():
+        if isinstance(v, dict):
+          add_embeddings(v, prefix=f'{prefix}{k}_')
+        else:
+          writer.add_embedding(v, metadata=embedding_get_labels(k, v),
+              global_step=it, tag=f'{prefix}{k}')
+
+    if isinstance(model, nn.parallel.DistributedDataParallel):
+      embeddings = model.module.embeddings()
+    else:
+      embeddings = model.embeddings()
+    add_embeddings(embeddings)
 
   global_step = 0
   # CheckpointManager
@@ -162,7 +176,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         max_to_keep=args.checkpoint_max_to_keep,
         model=model,
         optimizer=optim)
-    global_step = checkpoint_manager.restore_or_initialize()
+    global_step = checkpoint_manager.restore_or_initialize() + 1
     model.train()
 
   # training loop
@@ -192,9 +206,9 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
       r.loss.backward()
 
-      if 'tmscore' in r.headers and \
-          r.headers['tmscore']['loss'].item() >= args.save_pdb:
-        save_pdb(it, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
+      if ('tmscore' in r.headers and
+          r.headers['tmscore']['loss'].item() >= args.save_pdb):
+        pdb_save(it, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
@@ -203,19 +217,28 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     optim.step()
 
-    if args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0:
+    if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
+        (not args.gpu_list or rank == 0)):
       # Save a checkpoint every N iters.
       checkpoint_manager.save(it)
+
+      # Add embeddings
+      model_add_embeddings(writer, model, it)
 
   writer.close()
 
   # latest checkpoint
-  if args.checkpoint_every > 0 and global_step < args.num_batches and (
-      it + 1) % args.checkpoint_every != 0:
+  if (global_step < args.num_batches and
+      args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every != 0 and
+      (not args.gpu_list or rank == 0)):
     checkpoint_manager.save(it)
 
+    # Add embeddings
+    model_add_embeddings(writer, model, it)
+
   # save model
-  torch.save(model, os.path.join(args.prefix, args.model))
+  if not args.gpu_list or rank == 0:
+    torch.save(model, os.path.join(args.prefix, args.model))
 
   worker_cleanup(args)
 
@@ -321,8 +344,8 @@ if __name__ == '__main__':
       help='dimension of alphafold2, default=256')
   parser.add_argument('--alphafold2_evoformer_depth', type=int, default=1,
       help='depth of evoformer in alphafold2, default=1')
-  parser.add_argument('--alphafold2_structure_module_depth', type=int,
-      default=1,
+  parser.add_argument('--alphafold2_structure_module_depth',
+      type=int, default=1,
       help='depth of structure module in alphafold2, default=1')
   parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4,
       help='minimum of dij in alphafold2, default=1e-4')

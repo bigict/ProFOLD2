@@ -6,7 +6,13 @@ import torch
 
 from profold2.common import protein,residue_constants
 
-def save_pdb(step, batch, headers, prefix='/tmp'):
+def embedding_get_labels(name, mat):
+    if name == 'token':
+        return [residue_constants.restypes_with_x[i if i < len(residue_constants.restypes_with_x) else -1]
+                for i in range(mat.shape[0])]
+    return None
+
+def pdb_save(step, batch, headers, prefix='/tmp'):
     b, N = batch['seq'].shape
 
     for x, pid in enumerate(batch['pid']):

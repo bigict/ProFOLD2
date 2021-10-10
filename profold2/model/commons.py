@@ -384,6 +384,9 @@ class PairwiseEmbedding(nn.Module):
         self.to_pairwise_repr = nn.Linear(dim, dim*2)
         self.relative_pos_emb = RelativePositionEmbedding(dim, max_rel_dist) if max_rel_dist > 0 else None
 
+    def embeddings(self):
+        return dict(position=self.relative_pos_emb.embedding.weight)
+
     def forward(self, x, x_mask, seq_index = None):
         (_, n), device = x.shape[:2], x.device
 

@@ -180,16 +180,16 @@ class CheckpointManager:
 
         Returns:
             The global iteration step. This is parsed from the latest checkpoint
-            file if one is found, else 0 is returned.
+            file if one is found, else -1 is returned.
         """
         ckpts = CheckpointManager.list_checkpoints(self.directory)
         if not ckpts:
-            return 0
+            return -1
         last_ckpt = ckpts[-1]
         status = self.checkpoint.restore(last_ckpt)
         if not status:
             logging.info("Could not restore latest checkpoint file.")
-            return 0
+            return -1
         return int(last_ckpt.stem)
 
     def save(self, global_step: int) -> None:
