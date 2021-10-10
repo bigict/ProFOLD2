@@ -151,9 +151,7 @@ class Alphafold2(nn.Module):
 
         self.feat_builder = FeatureBuilder(feats)
 
-        self.headers = HeaderBuilder.build(dim, headers, device=device)
-        for n, h, _ in self.headers:
-          self.add_module(f'head_{n}', h)
+        self.headers = HeaderBuilder.build(dim, headers, parent=self, device=device)
 
         self.to(device=device)
 
