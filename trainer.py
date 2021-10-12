@@ -62,7 +62,8 @@ def worker_cleanup(args):  # pylint: disable=redefined-outer-name
 def worker_device(rank, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
     assert args.gpu_list[rank] < torch.cuda.device_count()
-    return rank
+    torch.cuda.set_device(args.gpu_list[rank])
+    return args.gpu_list[rank]
   return torch.device('cpu')
 
 def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
@@ -141,14 +142,15 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = worker_model(rank, Alphafold2(dim=args.alphafold2_dim,
+  model = Alphafold2(dim=args.alphafold2_dim,
                      depth=args.alphafold2_evoformer_depth,
                      heads=8,
                      dim_head=64,
                      predict_angles=False,
                      feats=feats,
-                     headers=headers,
-                     device=device), args)
+                     headers=headers
+                     ).to(device=device)
+  model = worker_model(rank, model, args)
 
   # optimizer
   optim = Adam(model.parameters(), lr=args.learning_rate)

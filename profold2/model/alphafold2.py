@@ -75,7 +75,6 @@ class Alphafold2(nn.Module):
         mlm_random_replace_token_prob = 0.1,
         mlm_keep_token_same_prob = 0.1,
         mlm_exclude_token_ids = (0,),
-        device = None,
         feats = None,
         headers = None
     ):
@@ -151,9 +150,7 @@ class Alphafold2(nn.Module):
 
         self.feat_builder = FeatureBuilder(feats)
 
-        self.headers = HeaderBuilder.build(dim, headers, parent=self, device=device)
-
-        self.to(device=device)
+        self.headers = HeaderBuilder.build(dim, headers, parent=self)
 
     def embeddings(self):
         return dict(token=self.token_emb.weight, pairwise=self.to_pairwise_repr.embeddings())
