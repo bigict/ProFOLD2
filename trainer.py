@@ -46,12 +46,13 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logger.setLevel(level)
 
   if args.gpu_list:
-    logging.info('torch.distributed.init_process_group: rank=%d, world_size=%d',
-            args.gpu_list[rank], len(args.gpu_list))
+    logging.info(
+            'torch.distributed.init_process_group: rank=%d@%d, world_size=%d',
+            rank, args.gpu_list[rank], len(args.gpu_list))
     torch.distributed.init_process_group(
             backend='nccl',
             init_method=f'file://{args.ipc_file}',
-            rank=args.gpu_list[rank],
+            rank=rank,
             world_size=len(args.gpu_list))
 
 def worker_cleanup(args):  # pylint: disable=redefined-outer-name
@@ -67,8 +68,9 @@ def worker_device(rank, args):  # pylint: disable=redefined-outer-name
 def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
     logging.info('wrap model with nn.parallel.DistributedDataParallel class')
-    return nn.parallel.DistributedDataParallel(
-        model, device_ids=[args.gpu_list[rank]], find_unused_parameters=True)
+    model = nn.parallel.DistributedDataParallel(
+        model, device_ids=[args.gpu_list[rank]], find_unused_parameters=False)
+    model._set_static_graph()  # pylint: disable=protected-access
   return model
 
 def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
@@ -84,7 +86,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.features == 'esm':
     if args.hub_dir:
       torch.hub.set_dir(args.hub_dir)
-    esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)  # pylint: disable=W0612
+    esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
 
   # helpers
   def cycling(loader, cond=lambda x: True):
@@ -265,13 +267,12 @@ def main(args):  # pylint: disable=redefined-outer-name
     return h
   level=logging.DEBUG if args.verbose else logging.INFO
   handlers = list(map(lambda x: handler_apply(x, x.setLevel, level), handlers))
-  formatter = logging.Formatter(
-      '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s')
-  handlers = list(map(lambda x: handler_apply(x, x.setFormatter, formatter),
-      handlers))
+  fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
+  handlers = list(map(lambda x: handler_apply(
+      x, x.setFormatter, logging.Formatter(fmt)), handlers))
 
   logging.basicConfig(
-      format=formatter,
+      format=fmt,
       level=level,
       handlers=handlers)
 

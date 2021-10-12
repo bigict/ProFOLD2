@@ -1,20 +1,19 @@
 import torch
 from torch import nn,einsum
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange,repeat
 from einops.layers.torch import Rearrange
 
 from profold2.utils import default,exists
 
 # helpers
-
 def init_zero_(layer):
     nn.init.constant_(layer.weight, 0.)
     if exists(layer.bias):
         nn.init.constant_(layer.bias, 0.)
 
 # helper classes
-
 class Always(nn.Module):
     def __init__(self, val):
         super().__init__()
@@ -24,7 +23,6 @@ class Always(nn.Module):
         return self.val
 
 # feed forward
-
 class GEGLU(nn.Module):
     def forward(self, x):
         x, gates = x.chunk(2, dim = -1)
@@ -398,3 +396,27 @@ class PairwiseEmbedding(nn.Module):
             x += self.relative_pos_emb(seq_index)
         return x, x_mask
 
+def checkpoint_sequential_nargs(functions, segments, input, **kwargs):
+    # Hack for keyword-only parameter in a python 2.7-compliant way
+    preserve = kwargs.pop('preserve_rng_state', True)
+    if kwargs:
+        raise ValueError("Unexpected keyword arguments: " + ",".join(arg for arg in kwargs))
+
+    def run_function(start, end, functions):
+        def forward(*input):
+            for j in range(start, end + 1):
+                input = functions[j](input)
+            return input
+        return forward
+
+    if isinstance(functions, torch.nn.Sequential):
+        functions = list(functions.children())
+
+    segment_size = len(functions) // segments
+    # the last chunk has to be non-volatile
+    end = -1
+    for start in range(0, segment_size * (segments - 1), segment_size):
+        end = start + segment_size - 1
+        input = checkpoint(run_function(start, end, functions), *input,
+                           preserve_rng_state=preserve)
+    return run_function(end + 1, len(functions) - 1, functions)(*input)

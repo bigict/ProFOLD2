@@ -1,5 +1,4 @@
 from torch import nn
-from torch.utils.checkpoint import checkpoint_sequential
 
 from profold2.model.commons import *
 
@@ -142,6 +141,5 @@ class Evoformer(nn.Module):
         msa_mask = None
     ):
         inp = (x, m, mask, msa_mask)
-        x, m, *_ = checkpoint_sequential(self.layers, 1, inp)
+        x, m, *_ = checkpoint_sequential_nargs(self.layers, len(self.layers), inp)
         return x, m
-
