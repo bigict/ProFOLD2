@@ -29,7 +29,7 @@ def pdb_save(step, batch, headers, prefix='/tmp'):
             else:
                 masked_seq_len = len(str_seq)
             coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype] for restype in aatype])
-            coords = headers['folding']['coords'].detach()
+            coords = headers['folding']['coords'].detach().cpu()
 
             result = dict(structure_module=dict(
                 final_atom_mask = coord_mask,
@@ -41,8 +41,8 @@ def pdb_save(step, batch, headers, prefix='/tmp'):
             if 'coord' in batch:
                 p = os.path.join(prefix, '{}_{}_{}_gt.pdb'.format(pid, step, x))
                 with open(p, 'w') as f:
-                    coord_mask = batch['coord_mask'].detach()
-                    coords = batch['coord'].detach()
+                    coord_mask = batch['coord_mask'].detach().cpu()
+                    coords = batch['coord'].detach().cpu()
                     result = dict(structure_module=dict(
                         final_atom_mask = coord_mask[x,...].numpy(),
                         final_atom_positions = coords[x,...].numpy()))
