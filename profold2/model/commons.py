@@ -300,7 +300,7 @@ class OuterMean(nn.Module):
 
         if exists(mask):
             # masked mean, if there are padding in the rows of the MSA
-            mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()')
+            mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()') > 0
             outer = outer.masked_fill(~mask, 0.)
             outer = outer.mean(dim = 1) / (mask.sum(dim = 1) + self.eps)
         else:

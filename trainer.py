@@ -6,6 +6,7 @@
 """
 import os
 import argparse
+from contextlib import contextmanager
 import logging
 import random
 import resource
@@ -35,7 +36,6 @@ class WorkerLogFilter(logging.Filter):
 def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # logging
   logger = logging.getLogger()
-
   ctx_handler = logging.handlers.QueueHandler(log_queue)
   if args.gpu_list:
     ctx_filter = WorkerLogFilter(args.gpu_list[rank])
@@ -62,17 +62,35 @@ def worker_cleanup(args):  # pylint: disable=redefined-outer-name
 def worker_device(rank, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
     assert args.gpu_list[rank] < torch.cuda.device_count()
-    torch.cuda.set_device(args.gpu_list[rank])
+    #torch.cuda.set_device(args.gpu_list[rank])
     return args.gpu_list[rank]
   return torch.device('cpu')
 
 def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
   if args.gpu_list and rank < len(args.gpu_list):
+    device = worker_device(rank, args)
+    model.to(device)
+
     logging.info('wrap model with nn.parallel.DistributedDataParallel class')
     model = nn.parallel.DistributedDataParallel(
-        model, device_ids=[args.gpu_list[rank]], find_unused_parameters=False)
+        model,
+        device_ids=[args.gpu_list[rank]], output_device=args.gpu_list[rank],
+        find_unused_parameters=False)
     model._set_static_graph()  # pylint: disable=protected-access
   return model
+
+@contextmanager
+def worker_no_sync(no_sync, model, args):  # pylint: disable=redefined-outer-name
+  del args  # pylint: disable=unused-argument
+  if no_sync and isinstance(model, nn.parallel.DistributedDataParallel):
+    old_require_backward_grad_sync = model.require_backward_grad_sync
+    model.require_backward_grad_sync = False
+    try:
+      yield
+    finally:
+      model.require_backward_grad_sync = old_require_backward_grad_sync
+  else:
+    yield
 
 def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
@@ -83,11 +101,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.threads > 0:
     torch.set_num_threads(args.threads)
 
-  # set emebdder model from esm if appropiate - Load ESM-1b model
-  if args.features == 'esm':
-    if args.hub_dir:
-      torch.hub.set_dir(args.hub_dir)
-    esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)
+  if args.hub_dir:
+    torch.hub.set_dir(args.hub_dir)
 
   # helpers
   def cycling(loader, cond=lambda x: True):
@@ -103,11 +118,21 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       epoch += 1
 
   # get data
+  feats = [('make_pseudo_beta', {}),
+           ('make_to_device',
+            dict(fields=[
+                'seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta',
+                'pseudo_beta_mask'
+            ], device=device)),
+           ('make_esm_embedd',
+            dict(model=esm.ESM_MODEL_PATH, repr_layer=esm.ESM_EMBED_LAYER,
+                max_seq_len=args.max_protein_len, device=device))]
   data = scn.load(casp_version=args.casp_version,
                   thinning=args.casp_thinning,
                   batch_size=args.batch_size,
-                  num_workers=0,
+                  num_workers=args.num_workers,
                   filter_by_resolution=args.filter_by_resolution,
+                  feats=feats,
                   dynamic_batching=False,
                   scn_dir=args.scn_dir)
 
@@ -116,16 +141,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   dl = cycling(train_loader, data_cond)
 
   # model
-  feats = [('make_pseudo_beta', {}),
-           ('make_esm_embedd',
-            dict(esm_extractor=esm_extractor, repr_layer=esm.ESM_EMBED_LAYER)),
-           ('make_to_device',
-            dict(fields=[
-                'seq', 'mask', 'coord', 'coord_mask', 'embedds', 'pseudo_beta',
-                'pseudo_beta_mask'
-            ],
-                 device=device))]
-
   headers = [
       ('distogram',
           dict(buckets_first_break=2.3125,
@@ -142,15 +157,12 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = Alphafold2(dim=args.alphafold2_dim,
+  model = worker_model(rank, Alphafold2(dim=args.alphafold2_dim,
                      depth=args.alphafold2_evoformer_depth,
                      heads=8,
                      dim_head=64,
                      predict_angles=False,
-                     feats=feats,
-                     headers=headers
-                     ).to(device=device)
-  model = worker_model(rank, model, args)
+                     headers=headers), args)
 
   # optimizer
   optim = Adam(model.parameters(), lr=args.learning_rate)
@@ -338,6 +350,8 @@ if __name__ == '__main__':
       help='accumulate grads every k times, default=16')
   parser.add_argument('-b', '--batch_size', type=int, default=1,
       help='batch size, default=1')
+  parser.add_argument('--num_workers', type=int, default=1,
+      help='number of workers, default=1')
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 

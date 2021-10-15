@@ -14,6 +14,8 @@ ESM_MODEL_PATH = ["facebookresearch/esm", "esm1b_t33_650M_UR50S"]
 
 # adapted from https://github.com/facebookresearch/esm
 
+_extractor_dict = {}
+
 class ESMEmbeddingExtractor:
     def __init__(self, repo_or_dir, model):
         self.model, alphabet = torch.hub.load(repo_or_dir, model)
@@ -44,3 +46,13 @@ class ESMEmbeddingExtractor:
             return results['representations'][repr_layer][...,1:max_seq_len+1,:], results['contacts']
         return results['representations'][repr_layer][...,1:max_seq_len+1,:]
 
+    @staticmethod
+    def get(repo_or_dir, model, device=None):
+        global _extractor_dict
+
+        if (repo_or_dir, model) not in _extractor_dict:
+            obj = ESMEmbeddingExtractor(repo_or_dir, model)
+            if exists(device):
+                obj.model.to(device=device)
+            _extractor_dict[(repo_or_dir, model)] = obj
+        return _extractor_dict[(repo_or_dir, model)]

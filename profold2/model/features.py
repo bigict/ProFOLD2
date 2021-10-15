@@ -5,6 +5,7 @@ import torch
 from einops import rearrange
 
 from profold2.common import residue_constants
+from profold2.data.esm import ESMEmbeddingExtractor
 from profold2.utils import default,exists
 
 _feats_fn = {}
@@ -62,8 +63,9 @@ def make_random_seed_to_crop(protein):
     return protein
 
 @take1st
-def make_esm_embedd(protein, esm_extractor, repr_layer, device=None, field='embedds'):
-    data = list(zip(protein['pid'], protein['str_seq']))
+def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds'):
+    esm_extractor = ESMEmbeddingExtractor.get(*model, device=device)
+    data = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
     protein[field] = rearrange(
             esm_extractor.extract(data, repr_layer=repr_layer, device=device),
             'b l c -> b () l c')

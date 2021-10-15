@@ -8,7 +8,6 @@ from einops import rearrange,repeat
 
 from profold2 import constants
 from profold2.model.evoformer import *
-from profold2.model.features import FeatureBuilder
 from profold2.model.head import HeaderBuilder
 from profold2.model.mlm import MLM
 from profold2.utils import *
@@ -148,8 +147,6 @@ class Alphafold2(nn.Module):
         self.recycling_msa_norm = nn.LayerNorm(dim)
         self.recycling_pairwise_norm = nn.LayerNorm(dim)
 
-        self.feat_builder = FeatureBuilder(feats)
-
         self.headers = HeaderBuilder.build(dim, headers, parent=self)
 
     def embeddings(self):
@@ -167,8 +164,6 @@ class Alphafold2(nn.Module):
         batch = None,
         compute_loss = True
     ):
-        batch = self.feat_builder(batch)
-
         seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
         msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
         embedds, = map(batch.get, ('embedds',))
