@@ -101,9 +101,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.threads > 0:
     torch.set_num_threads(args.threads)
 
-  if args.hub_dir:
-    torch.hub.set_dir(args.hub_dir)
-
   # helpers
   def cycling(loader, cond=lambda x: True):
     epoch = 0
@@ -259,6 +256,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   worker_cleanup(args)
 
 def main(args):  # pylint: disable=redefined-outer-name
+  # set torch local cache home
+  if args.torch_home:
+    os.environ['TORCH_HOME'] = args.torch_home
+
   mp.set_start_method('spawn', force=True)
 
   # logging
@@ -377,7 +378,7 @@ if __name__ == '__main__':
       help='call tensorboard.add_graph')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
-  parser.add_argument('--hub_dir', type=str, help='specify hub_dir')
+  parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
   parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
       help='specify scn_dir')
 
