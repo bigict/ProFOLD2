@@ -28,8 +28,9 @@ def pdb_save(step, batch, headers, prefix='/tmp'):
                 masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
             else:
                 masked_seq_len = len(str_seq)
-            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype] for restype in aatype])
-            coords = headers['folding']['coords'].detach().cpu()
+            coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
+            _, _, num_atoms, _ = coords.shape
+            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
 
             result = dict(structure_module=dict(
                 final_atom_mask = coord_mask,
