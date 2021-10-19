@@ -161,7 +161,8 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         elif 'coord' in batch and 'coord_mask' in batch:
             pred, labels = headers['folding']['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
-            flat_cloud_mask = rearrange(batch['coord_mask'][...,:self.num_atoms,:], 'b l c -> b (l c)')
+            coord_mask = batch['coord_mask'][...,:self.num_atoms]
+            flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
 
             # rotate / align
             coords_aligned, labels_aligned = Kabsch(

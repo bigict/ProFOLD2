@@ -14,18 +14,15 @@ from einops import rearrange
 
 # models & data
 from profold2 import constants
-from profold2.data import esm, scn, custom
-from profold2.data.utils import save_pdb
+from profold2.data import scn, custom
+from profold2.data.utils import pdb_save
+from profold2.model import ReturnValues
 from profold2.utils import Kabsch, TMscore
 
 
 def main(args):  # pylint: disable=W0621
   if args.threads > 0:
     torch.set_num_threads(args.threads)
-
-  # set emebdder model from esm if appropiate - Load ESM-1b model
-  if args.features == 'esm':
-    esm_extractor = esm.ESMEmbeddingExtractor(*esm.ESM_MODEL_PATH)  # pylint: disable=W0612
 
   if args.casp_version > 12:
     test_loader = custom.load(
@@ -63,40 +60,44 @@ def main(args):  # pylint: disable=W0621
 
     logging.debug('seq.shape: %s', batch['seq'].shape)
 
-    with torch.no_grad():
-      # predict - out is (batch, L * 3, 3)
-      r = model(batch=batch, num_recycle=args.alphafold2_recycles)
+    # predict - out is (batch, L * 3, 3)
+    r = ReturnValues(**model(batch=batch, num_recycle=args.alphafold2_recycles))
 
-      if 'folding' in r.headers:
-        assert 'coords' in r.headers['folding']
-        if 'coord' in batch:
-          flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+    if 'folding' in r.headers:
+      assert 'coords' in r.headers['folding']
+      if 'coord' in batch:
+        coords = r.headers['folding']['coords']  # (b l c d)
+        _, _, num_atoms, _ = coords.shape
 
-          # rotate / align
-          coords_aligned, labels_aligned = Kabsch(
-              rearrange(
-                  rearrange(r.headers['folding']['coords'],
-                            'b l c d -> b (l c) d')[flat_cloud_mask],
-                  'c d -> d c'),
-              rearrange(
-                  rearrange(batch['coord'],
-                            'b l c d -> b (l c) d')[flat_cloud_mask],
-                  'c d -> d c'))
-          logging.debug('coords_aligned: %s', coords_aligned.shape)
-          logging.debug('labels_aligned: %s', labels_aligned.shape)
+        labels = batch['coord'][...,:num_atoms,:]
+        flat_cloud_mask = rearrange(
+            batch['coord_mask'][...,:num_atoms], 'b l c -> b (l c)')
 
-          tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
-                        rearrange(labels_aligned, 'd l -> () d l'),
-                        L=torch.sum(batch['mask'], dim=-1))
-          logging.info('%d pid: %s TM-score: %f',
-              i, ','.join(batch['pid']), tms.item())
+        # rotate / align
+        coords_aligned, labels_aligned = Kabsch(
+            rearrange(
+                rearrange(coords,
+                          'b l c d -> b (l c) d')[flat_cloud_mask],
+                'c d -> d c'),
+            rearrange(
+                rearrange(labels,
+                          'b l c d -> b (l c) d')[flat_cloud_mask],
+                'c d -> d c'))
+        logging.debug('coords_aligned: %s', coords_aligned.shape)
+        logging.debug('labels_aligned: %s', labels_aligned.shape)
 
-          tmscore, n = tmscore + tms.item(), n + 1
+        tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
+                      rearrange(labels_aligned, 'd l -> () d l'),
+                      L=torch.sum(batch['mask'], dim=-1))
+        logging.info('%d pid: %s TM-score: %f',
+            i, ','.join(batch['pid']), tms.item())
 
-        if args.save_pdb:
-          save_pdb(i, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
-      else:
-        raise ValueError('folding are not implemented yet!')
+        tmscore, n = tmscore + tms.item(), n + 1
+
+      if args.save_pdb:
+        pdb_save(i, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
+    else:
+      raise ValueError('folding are not implemented yet!')
 
   if n > 0:
     logging.info('%d TM-score: %f (average)', n, tmscore / n)
