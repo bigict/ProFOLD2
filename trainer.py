@@ -7,6 +7,7 @@
 import os
 import argparse
 from contextlib import contextmanager
+import functools
 import logging
 import random
 import resource
@@ -92,14 +93,15 @@ def worker_no_sync(no_sync, model, args):  # pylint: disable=redefined-outer-nam
   else:
     yield
 
+def worker_data_init_fn(rank, args=None):  # pylint: disable=redefined-outer-name
+  del rank
+  if args:
+    random.seed(args.random_seed)
+
 def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
 
   worker_setup(rank, log_queue, args)
-
-  device = worker_device(rank, args)
-  if args.threads > 0:
-    torch.set_num_threads(args.threads)
 
   # helpers
   def cycling(loader, cond=lambda x: True):
@@ -115,6 +117,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       epoch += 1
 
   # get data
+  device = worker_device(rank, args)
   feats = [('make_pseudo_beta', {}),
            ('make_to_device',
             dict(fields=[
@@ -134,7 +137,12 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                   scn_dir=args.scn_dir)
 
   train_loader = data['train']
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=C0301
+  if not train_loader.worker_init_fn:
+    logging.info('set worker_init_fn')
+    train_loader.worker_init_fn = functools.partial(
+                                            worker_data_init_fn, args=args)
+
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
   dl = cycling(train_loader, data_cond)
 
   # model
@@ -142,13 +150,13 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       ('distogram',
           dict(buckets_first_break=2.3125,
               buckets_last_break=21.6875,
-              buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=0.1)),
+              buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=1.0)),
       ('folding',
           dict(structure_module_depth=args.alphafold2_structure_module_depth,
               structure_module_heads=4,
               fape_min=args.alphafold2_fape_min,
               fape_max=args.alphafold2_fape_max,
-              fape_z=args.alphafold2_fape_z), dict(weight=1.0)),
+              fape_z=args.alphafold2_fape_z), dict(weight=0.1)),
       ('tmscore', {}, {})]
 
   logging.info('Alphafold2.feats: %s', feats)
@@ -251,7 +259,11 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # save model
   if not args.gpu_list or rank == 0:
-    torch.save(model, os.path.join(args.prefix, args.model))
+    torch.save(dict(feats=feats,
+            model=model.module
+                if isinstance(model, nn.parallel.DistributedDataParallel)
+                else model),
+        os.path.join(args.prefix, args.model))
 
   worker_cleanup(args)
 
@@ -327,10 +339,6 @@ if __name__ == '__main__':
       help='CASP version, default=12')
   parser.add_argument('-T', '--casp_thinning', type=int, default=30,
       help='CASP version, default=30')
-  parser.add_argument('-F', '--features', type=str, default='esm',
-      help='AA residue features one of [esm,msa], default=esm')
-  parser.add_argument('-t', '--threads', type=int, default=0,
-      help='number of threads used for intraop parallelism on CPU., default=0')
   parser.add_argument('-m', '--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
@@ -339,6 +347,10 @@ if __name__ == '__main__':
       help='filter by resolution<=RES')
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
+
+  parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
+  parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
+      help='specify scn_dir')
 
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')
@@ -377,10 +389,6 @@ if __name__ == '__main__':
   parser.add_argument('--tensorboard_add_graph', action='store_true',
       help='call tensorboard.add_graph')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
-
-  parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
-  parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
-      help='specify scn_dir')
 
   args = parser.parse_args()
 
