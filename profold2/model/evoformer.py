@@ -112,12 +112,10 @@ class EvoformerBlock(nn.Module):
         attn, ff, msa_attn, msa_ff = self.layer
 
         # msa attention and transition
-
         m = msa_attn(m, mask = msa_mask, pairwise_repr = x)
         m = msa_ff(m) + m
 
         # pairwise attention and transition
-
         x = attn(x, mask = mask, msa_repr = m, msa_mask = msa_mask)
         x = ff(x) + x
 

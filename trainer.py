@@ -126,7 +126,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             ], device=device)),
            ('make_esm_embedd',
             dict(model=esm.ESM_MODEL_PATH, repr_layer=esm.ESM_EMBED_LAYER,
-                max_seq_len=args.max_protein_len, device=device))]
+                device=device))]
   data = scn.load(casp_version=args.casp_version,
                   thinning=args.casp_thinning,
                   batch_size=args.batch_size,
