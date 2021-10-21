@@ -95,7 +95,6 @@ class Attention(nn.Module):
         q = q * self.scale
 
         # query / key similarities
-
         if exists(tie_dim):
             # as in the paper, for the extra MSAs
             # they average the queries along the rows of the MSAs
@@ -182,7 +181,6 @@ class AxialAttention(nn.Module):
         x = self.norm(x)
 
         # axial attention
-
         if self.col_attn:
             axial_dim = w
             mask_fold_axial_eq = 'b h w -> (b w) h'

@@ -90,10 +90,12 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   if args.casp_version > 12:
     test_loader = custom.load(
-        data_dir=args.casp_data,
-        feat_flags=~custom.ProteinStructureDataset.FEAT_PDB,
-        batch_size=args.batch_size,
-        num_workers=0)
+                    data_dir=args.casp_data,
+                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB,
+                    batch_size=args.batch_size,
+                    shuffle=True,
+                    feats=feats,
+                    num_workers=0)
   else:
     data = scn.load(casp_version=args.casp_version,
                     thinning=args.casp_thinning,
@@ -115,6 +117,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       continue
     args.num_batches -= 1
 
+    logging.debug('seq.pids: %s', ','.join(batch['pid']))
     logging.debug('seq.shape: %s', batch['seq'].shape)
 
     # predict - out is (batch, L * 3, 3)
@@ -170,7 +173,7 @@ def main(args):  # pylint: disable=W0621
 
   # logging
   os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
-  if args.save_pdb <= 1.0:
+  if args.save_pdb:
     os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')),
                 exist_ok=True)
   handlers = [
