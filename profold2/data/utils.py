@@ -4,7 +4,7 @@ import os
 import numpy as np
 import torch
 
-from profold2.common import protein,residue_constants
+from profold2.common import protein, residue_constants
 
 def embedding_get_labels(name, mat):
     if name == 'token':
