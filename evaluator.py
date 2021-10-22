@@ -41,7 +41,7 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   level=logging.DEBUG if args.verbose else logging.INFO
   logger.setLevel(level)
 
-  if args.gpu_list or args.map_location:
+  if (args.gpu_list or args.map_location) and torch.cuda.is_available():
     world_size = len(args.gpu_list) if args.gpu_list else 1
     logging.info(
             'torch.distributed.init_process_group: rank=%d@%d, world_size=%d',
@@ -53,7 +53,7 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             world_size=world_size)
 
 def worker_cleanup(args):  # pylint: disable=redefined-outer-name
-  if args.gpu_list or args.map_location:
+  if (args.gpu_list or args.map_location) and torch.cuda.is_available():
     torch.distributed.destroy_process_group()
 
 def worker_device(rank, args):  # pylint: disable=redefined-outer-name

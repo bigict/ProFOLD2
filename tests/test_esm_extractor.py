@@ -20,6 +20,22 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(representations.shape, (len(data), max_seq_len, ESM_EMBED_DIM))
         self.assertEqual(contacts.shape, (len(data), max_seq_len, max_seq_len))
 
+    def test_esm_extractor2(self):
+        esm = ESMEmbeddingExtractor(*ESM_MODEL_PATH)
+        # Prepare data (first 2 sequences from ESMStructuralSplitDataset superfamily / 4)
+        data = [
+            ("proteinx", ''.join(["MK"]*513)),
+            ("protein1", "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"),
+            ("protein2", "KALTARQQEVFDLIRDHISQTGMPPTRAEIAQRLGFRSPNAAEEHLKALARKGVIEIVSGASRGIRLLQEE")
+        ]
+        representations = esm.extract(data, repr_layer=ESM_EMBED_LAYER, return_contacts=False)
+        # nodes
+        # representations: (b l d)
+        # contacts: (b l l)
+        max_seq_len = max(map(lambda x: len(x[1]), data))
+        self.assertEqual(representations.shape, (len(data), max_seq_len, ESM_EMBED_DIM))
+        #self.assertEqual(contacts.shape, (len(data), max_seq_len, max_seq_len))
+
     def test_msa_extractor(self):
         esm = ESMEmbeddingExtractor(*MSA_MODEL_PATH)
         # Make an "MSA" of size 3
