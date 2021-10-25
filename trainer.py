@@ -132,6 +132,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                   batch_size=args.batch_size,
                   num_workers=args.num_workers,
                   filter_by_resolution=args.filter_by_resolution,
+                  max_seq_len=args.max_protein_len-1,
                   feats=feats,
                   dynamic_batching=False,
                   scn_dir=args.scn_dir)
