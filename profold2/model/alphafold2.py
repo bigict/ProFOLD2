@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import functools
 import logging
 import random
 
@@ -78,6 +79,7 @@ class Alphafold2(nn.Module):
         headers = None
     ):
         super().__init__()
+
         self.dim = dim
 
         # token embedding
@@ -154,19 +156,20 @@ class Alphafold2(nn.Module):
 
     def forward(
         self,
+        batch,
+        *,
         extra_msa = None,
         extra_msa_mask = None,
         templates_feats = None,
         templates_mask = None,
         templates_angles = None,
-        recyclables = None,
         return_recyclables = False,
-        batch = None,
         compute_loss = True
     ):
         seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
         msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
         embedds, = map(batch.get, ('embedds',))
+        recyclables, = map(batch.get, ('recyclables',))
 
         assert not (self.disable_token_embed and not exists(seq_embed)), 'sequence embedding must be supplied if one has disabled token embedding'
         assert not (self.disable_token_embed and not exists(msa_embed)), 'msa embedding must be supplied if one has disabled token embedding'
@@ -297,24 +300,35 @@ class Alphafold2WithRecycling(nn.Module):
         super().__init__()
 
         self.impl = Alphafold2(**kwargs)
-        logging.debug('{}'.format(self.impl))
+        logging.debug('{}'.format(self))
 
     def embeddings(self):
         return self.impl.embeddings()
 
-    def forward(self, num_recycle=0, **kwargs):
+    def forward(self, batch, *, num_recycle=0, **kwargs):
         assert num_recycle >= 0
+
+        # variables
+        seq = batch['seq']
+        b, n, device = *seq.shape[:2], seq.device
+        # FIXME: fake recyclables
+        if 'recyclables' not in batch:
+            batch['recyclables'] = Recyclables(single_msa_repr_row=torch.zeros(b, n, self.impl.dim, device=device),
+                        pairwise_repr=torch.zeros(b, n, n, self.impl.dim, device=device))
 
         ret = ReturnValues()
         if self.training:
             num_recycle = random.randint(0, num_recycle)
+        cycling_function = functools.partial(self.impl, return_recyclables=True, compute_loss=False, **kwargs)
 
-        for i in range(num_recycle):
-            ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=True, compute_loss=False, **kwargs))
-            if 'tmscore' in ret.headers:
-                logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item()))
+        with torch.no_grad():
+            for i in range(num_recycle):
+                ret = ReturnValues(**cycling_function(batch))
+                if 'tmscore' in ret.headers:
+                    logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item()))
+                batch['recyclables'] = ret.recyclables
 
-        ret = ReturnValues(**self.impl(recyclables=ret.recyclables, return_recyclables=False, compute_loss=True, **kwargs))
+        ret = ReturnValues(**self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs))
         if 'tmscore' in ret.headers:
             logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item()))
 

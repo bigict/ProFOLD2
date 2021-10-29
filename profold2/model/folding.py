@@ -349,7 +349,7 @@ class StructureModule(nn.Module):
         self.msa_to_single_repr_dim = nn.Linear(dim, dim)
         self.trunk_to_pairwise_repr_dim = nn.Linear(dim, dim)
 
-        self.to_points = nn.Linear(dim, 9)
+        self.to_points = nn.Linear(dim, 6)
 
     def forward(self, representations, batch):
         b, n, device = *batch['seq'].shape[:2], batch['seq'].device
@@ -392,13 +392,18 @@ class StructureModule(nn.Module):
 
                 quaternion_update, translation_update = self.to_quaternion_update(single_repr).chunk(2, dim = -1)
                 quaternion_update = F.pad(quaternion_update, (1, 0), value = 1.)
+                # FIX: make sure quaternion_update is standardized
+                quaternion_update = quaternion_update / torch.linalg.norm(quaternion_update, dim=-1, keepdim=True)
 
                 quaternions = quaternion_multiply(quaternions, quaternion_update)
                 translations = translations + torch.einsum('b n c, b n c r -> b n r', translation_update, rotations)
 
-            points_local = rearrange(self.to_points(single_repr), 'b n (l c) -> b n l c', c=3)
             rotations = quaternion_to_matrix(quaternions)
-            coords = torch.einsum('b n l c, b n c d -> b n l d', points_local, rotations) + repeat(translations, 'b n d -> b n l d', l=3)
+            n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n c r -> b n r', point_local, rotations) + translations,
+                    self.to_points(single_repr).chunk(2, dim=-1))
+            coords = torch.stack((n_point_global, translations, c_point_global), dim=-2)
+            #points_local = rearrange(self.to_points(single_repr), 'b n (l c) -> b n l c', c=3)
+            #coords = torch.einsum('b n l c, b n c d -> b n l d', points_local, rotations) + repeat(translations, 'b n d -> b n l d', l=3)
 
         coords.type(original_dtype)
 
