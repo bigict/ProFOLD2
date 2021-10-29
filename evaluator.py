@@ -121,7 +121,9 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     logging.debug('seq.shape: %s', batch['seq'].shape)
 
     # predict - out is (batch, L * 3, 3)
-    r = ReturnValues(**model(batch=batch, num_recycle=args.alphafold2_recycles))
+    with torch.no_grad():
+      r = ReturnValues(**model(batch=batch,
+                               num_recycle=args.alphafold2_recycles))
 
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']

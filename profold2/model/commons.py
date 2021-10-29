@@ -415,6 +415,9 @@ def checkpoint_sequential_nargs(functions, segments, input, **kwargs):
     end = -1
     for start in range(0, segment_size * (segments - 1), segment_size):
         end = start + segment_size - 1
-        input = checkpoint(run_function(start, end, functions), *input,
+        if torch.is_grad_enabled():
+            input = checkpoint(run_function(start, end, functions), *input,
                            preserve_rng_state=preserve)
+        else:
+            input = run_function(start, end, functions)(*input)
     return run_function(end + 1, len(functions) - 1, functions)(*input)
