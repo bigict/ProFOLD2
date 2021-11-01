@@ -4,9 +4,15 @@ import os
 import numpy as np
 import torch
 
-from profold2.common import protein,residue_constants
+from profold2.common import protein, residue_constants
 
-def save_pdb(step, batch, headers, prefix='/tmp'):
+def embedding_get_labels(name, mat):
+    if name == 'token':
+        return [residue_constants.restypes_with_x[i if i < len(residue_constants.restypes_with_x) else -1]
+                for i in range(mat.shape[0])]
+    return None
+
+def pdb_save(step, batch, headers, prefix='/tmp'):
     b, N = batch['seq'].shape
 
     for x, pid in enumerate(batch['pid']):
@@ -22,8 +28,9 @@ def save_pdb(step, batch, headers, prefix='/tmp'):
                 masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
             else:
                 masked_seq_len = len(str_seq)
-            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype] for restype in aatype])
-            coords = headers['folding']['coords'].detach()
+            coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
+            _, _, num_atoms, _ = coords.shape
+            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
 
             result = dict(structure_module=dict(
                 final_atom_mask = coord_mask,
@@ -35,8 +42,8 @@ def save_pdb(step, batch, headers, prefix='/tmp'):
             if 'coord' in batch:
                 p = os.path.join(prefix, '{}_{}_{}_gt.pdb'.format(pid, step, x))
                 with open(p, 'w') as f:
-                    coord_mask = batch['coord_mask'].detach()
-                    coords = batch['coord'].detach()
+                    coord_mask = batch['coord_mask'].detach().cpu()
+                    coords = batch['coord'].detach().cpu()
                     result = dict(structure_module=dict(
                         final_atom_mask = coord_mask[x,...].numpy(),
                         final_atom_positions = coords[x,...].numpy()))

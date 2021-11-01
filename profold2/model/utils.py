@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 import torch
+from torch import nn
 
 from profold2.utils import unique_id
 
@@ -108,10 +109,15 @@ class Checkpoint:
                         "reload. Skipping it."
                     )
                     continue
-                getattr(self, name).load_state_dict(state_dict)
+                obj = getattr(self, name)
+                logging.debug('loading %s ...', name)
+                if isinstance(obj, nn.Module):
+                    obj.load_state_dict(state_dict, strict=False)
+                else:
+                    obj.load_state_dict(state_dict)
             return True
         except Exception as e:
-            print(e)
+            logging.error(e)
             return False
 
 
@@ -175,16 +181,16 @@ class CheckpointManager:
 
         Returns:
             The global iteration step. This is parsed from the latest checkpoint
-            file if one is found, else 0 is returned.
+            file if one is found, else -1 is returned.
         """
         ckpts = CheckpointManager.list_checkpoints(self.directory)
         if not ckpts:
-            return 0
+            return -1
         last_ckpt = ckpts[-1]
         status = self.checkpoint.restore(last_ckpt)
         if not status:
             logging.info("Could not restore latest checkpoint file.")
-            return 0
+            return -1
         return int(last_ckpt.stem)
 
     def save(self, global_step: int) -> None:

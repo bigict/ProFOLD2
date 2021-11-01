@@ -1,20 +1,19 @@
 import torch
 from torch import nn,einsum
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange,repeat
 from einops.layers.torch import Rearrange
 
 from profold2.utils import default,exists
 
 # helpers
-
 def init_zero_(layer):
     nn.init.constant_(layer.weight, 0.)
     if exists(layer.bias):
         nn.init.constant_(layer.bias, 0.)
 
 # helper classes
-
 class Always(nn.Module):
     def __init__(self, val):
         super().__init__()
@@ -24,7 +23,6 @@ class Always(nn.Module):
         return self.val
 
 # feed forward
-
 class GEGLU(nn.Module):
     def forward(self, x):
         x, gates = x.chunk(2, dim = -1)
@@ -97,7 +95,6 @@ class Attention(nn.Module):
         q = q * self.scale
 
         # query / key similarities
-
         if exists(tie_dim):
             # as in the paper, for the extra MSAs
             # they average the queries along the rows of the MSAs
@@ -184,7 +181,6 @@ class AxialAttention(nn.Module):
         x = self.norm(x)
 
         # axial attention
-
         if self.col_attn:
             axial_dim = w
             mask_fold_axial_eq = 'b h w -> (b w) h'
@@ -302,7 +298,7 @@ class OuterMean(nn.Module):
 
         if exists(mask):
             # masked mean, if there are padding in the rows of the MSA
-            mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()')
+            mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()') > 0
             outer = outer.masked_fill(~mask, 0.)
             outer = outer.mean(dim = 1) / (mask.sum(dim = 1) + self.eps)
         else:
@@ -384,14 +380,44 @@ class PairwiseEmbedding(nn.Module):
         self.to_pairwise_repr = nn.Linear(dim, dim*2)
         self.relative_pos_emb = RelativePositionEmbedding(dim, max_rel_dist) if max_rel_dist > 0 else None
 
+    def embeddings(self):
+        return dict(position=self.relative_pos_emb.embedding.weight)
+
     def forward(self, x, x_mask, seq_index = None):
         (_, n), device = x.shape[:2], x.device
 
         x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim = -1)
         x = rearrange(x_left, 'b i d -> b i () d') + rearrange(x_right, 'b j d-> b () j d') # create pair-wise residue embeds
         x_mask = rearrange(x_mask, 'b i -> b i ()') * rearrange(x_mask, 'b j -> b () j') if exists(x_mask) else None
-        if self.relative_pos_emb:
+        if exists(self.relative_pos_emb):
             seq_index = default(seq_index, lambda: torch.arange(n, device=device))
             x += self.relative_pos_emb(seq_index)
         return x, x_mask
 
+def checkpoint_sequential_nargs(functions, segments, input, **kwargs):
+    # Hack for keyword-only parameter in a python 2.7-compliant way
+    preserve = kwargs.pop('preserve_rng_state', True)
+    if kwargs:
+        raise ValueError("Unexpected keyword arguments: " + ",".join(arg for arg in kwargs))
+
+    def run_function(start, end, functions):
+        def forward(*input):
+            for j in range(start, end + 1):
+                input = functions[j](input)
+            return input
+        return forward
+
+    if isinstance(functions, torch.nn.Sequential):
+        functions = list(functions.children())
+
+    segment_size = len(functions) // segments
+    # the last chunk has to be non-volatile
+    end = -1
+    for start in range(0, segment_size * (segments - 1), segment_size):
+        end = start + segment_size - 1
+        if torch.is_grad_enabled():
+            input = checkpoint(run_function(start, end, functions), *input,
+                           preserve_rng_state=preserve)
+        else:
+            input = run_function(start, end, functions)(*input)
+    return run_function(end + 1, len(functions) - 1, functions)(*input)

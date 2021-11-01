@@ -49,7 +49,7 @@ class DistogramHead(nn.Module):
 
         assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(self.buckets)
+        sq_breaks = torch.square(self.buckets).to(positions.device)
 
         dist2 = torch.sum(
             torch.square(
@@ -74,10 +74,11 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=14, fape_min=1e-6, fape_max=15, fape_z=15):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
         self.num_atoms = num_atoms
+        assert self.num_atoms in [3, 14]
 
         self.fape_min = fape_min
         self.fape_max = fape_max
@@ -87,20 +88,24 @@ class FoldingHead(nn.Module):
     def forward(self, headers, representations, batch):
         backbones, act = self.struct_module(representations, batch)
 
-        atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
-        atom_mask[..., 0] = 1
-        atom_mask[..., 1] = 1
-        atom_mask[..., 2] = 1
+        if self.num_atoms > 3:
+            atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
+            atom_mask[..., 0] = 1
+            atom_mask[..., 1] = 1
+            atom_mask[..., 2] = 1
 
-        ## build SC container. set SC points to CA and optionally place carbonyl O
-        coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
-                                              cloud_mask=batch.get('coord_mask'), num_coords_per_res=self.num_atoms)
+            # build SC container. set SC points to CA and optionally place carbonyl O
+            coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
+                                                  cloud_mask=batch.get('coord_mask'), num_coords_per_res=self.num_atoms)
+        else:
+            coords = backbones
 
         return dict(backbones=backbones, coords=coords, representations=dict(single=act))
 
     def loss(self, value, batch):
-        coords, labels = value['coords'], batch['coord']
-        flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+        coords, labels = value['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
+        coord_mask = batch['coord_mask'][...,:self.num_atoms]
+        flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
 
         # rotate / align
         coords_aligned, labels_aligned = Kabsch(
@@ -140,8 +145,11 @@ class LDDTHead(nn.Module):
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
     """
-    def __init__(self, dim):
+    def __init__(self, dim, num_atoms=3):
         super().__init__()
+
+        self.num_atoms = num_atoms
+        assert self.num_atoms in [3, 14]
 
     def forward(self, headers, representations, batch):
         assert 'folding' in headers and 'coords' in headers['folding']
@@ -152,8 +160,9 @@ class TMscoreHead(nn.Module):
                     rearrange(coords_aligned, 'd l -> () d l'), rearrange(labels_aligned, 'd l -> () d l'),
                     L=torch.sum(batch['mask'], dim=-1).item()))
         elif 'coord' in batch and 'coord_mask' in batch:
-            pred, labels = headers['folding']['coords'], batch['coord']
-            flat_cloud_mask = rearrange(batch['coord_mask'], 'b l c -> b (l c)')
+            pred, labels = headers['folding']['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
+            coord_mask = batch['coord_mask'][...,:self.num_atoms]
+            flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
 
             # rotate / align
             coords_aligned, labels_aligned = Kabsch(
@@ -172,8 +181,13 @@ class HeaderBuilder:
             lddt = LDDTHead,
             tmscore = TMscoreHead)
     @staticmethod
-    def build(dim, config):
+    def build(dim, config, parent=None):
+        def gen():
+            for name, args, options in config:
+                h = HeaderBuilder._headers[name](dim=dim, **args)
+                if exists(parent) and isinstance(parent, nn.Module):
+                    parent.add_module(f'head_{name}', h)
+                yield name, h, options
         if exists(config):
-            return list((k, HeaderBuilder._headers[k](dim=dim, **args), options)
-                    for k, args, options in config)
+            return list(gen())
         return []

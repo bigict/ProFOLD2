@@ -1,5 +1,4 @@
 from torch import nn
-from torch.utils.checkpoint import checkpoint_sequential
 
 from profold2.model.commons import *
 
@@ -113,12 +112,10 @@ class EvoformerBlock(nn.Module):
         attn, ff, msa_attn, msa_ff = self.layer
 
         # msa attention and transition
-
         m = msa_attn(m, mask = msa_mask, pairwise_repr = x)
         m = msa_ff(m) + m
 
         # pairwise attention and transition
-
         x = attn(x, mask = mask, msa_repr = m, msa_mask = msa_mask)
         x = ff(x) + x
 
@@ -142,6 +139,5 @@ class Evoformer(nn.Module):
         msa_mask = None
     ):
         inp = (x, m, mask, msa_mask)
-        x, m, *_ = checkpoint_sequential(self.layers, 1, inp)
+        x, m, *_ = checkpoint_sequential_nargs(self.layers, len(self.layers), inp)
         return x, m
-
