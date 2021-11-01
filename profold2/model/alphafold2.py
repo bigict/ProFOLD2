@@ -120,7 +120,13 @@ class Alphafold2(nn.Module):
             self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(num_embedds, dim)
+        # self.embedd_project = nn.Linear(num_embedds, dim)
+        self.embedd_project = nn.Sequential(
+            nn.Linear(num_embedds,num_embedds),
+            nn.GELU(),
+            nn.LayerNorm(num_embedds),
+            nn.Linear(num_embedds,dim)
+        )
 
         # main trunk modules
         self.evoformer = Evoformer(
