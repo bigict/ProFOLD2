@@ -52,7 +52,7 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             rank, args.gpu_list[rank], len(args.gpu_list))
     torch.distributed.init_process_group(
             backend='nccl',
-            init_method=f'file://{args.ipc_file}',
+            init_method=f'tcp://127.0.0.1:{args.port}',
             rank=rank,
             world_size=len(args.gpu_list))
 
@@ -273,6 +273,11 @@ def main(args):  # pylint: disable=redefined-outer-name
   if args.torch_home:
     os.environ['TORCH_HOME'] = args.torch_home
 
+  while os.popen(f'netstat -tln | grep {args.port}').read()!='':
+    args.port+=1
+  if args.port>=65535:
+    raise ValueError("tcp port should be less than 65535")
+
   mp.set_start_method('spawn', force=True)
 
   # logging
@@ -330,8 +335,8 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
-  parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
-      help='ipc file to initialize the process group')
+  parser.add_argument('--port', type=int, default=8000, choices=range(1,65535),
+      help='tcp port to initialize the process group')
   parser.add_argument('-X', '--model', type=str, default='model.pth',
       help='model of alphafold2, default=\'model.pth\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
