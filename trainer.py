@@ -276,7 +276,7 @@ def main(args):  # pylint: disable=redefined-outer-name
   while os.popen(f'netstat -tln | grep {args.port}').read()!='':
     args.port+=1
   if args.port>=65535:
-    raise ValueError("tcp port should be less than 65535")
+    raise ValueError('tcp port should be less than 65535')
 
   mp.set_start_method('spawn', force=True)
 
