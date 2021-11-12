@@ -119,6 +119,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # get data
   device = worker_device(rank, args)
   feats = [('make_pseudo_beta', {}),
+           ('make_backbone_affine', {}),
            ('make_to_device',
             dict(fields=[
                 'seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta',
@@ -157,7 +158,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
               structure_module_heads=4,
               fape_min=args.alphafold2_fape_min,
               fape_max=args.alphafold2_fape_max,
-              fape_z=args.alphafold2_fape_z), dict(weight=0.1)),
+              fape_z=args.alphafold2_fape_z,
+              fape_weight=args.alphafold2_fape_w), dict(weight=0.1)),
       ('tmscore', {}, {})]
 
   logging.info('Alphafold2.feats: %s', feats)
@@ -349,7 +351,8 @@ if __name__ == '__main__':
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
 
-  parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
+  parser.add_argument('--torch_home', type=str,
+      help='set env `TORCH_HOME`, default=${HOME}/.catch/torch')
   parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
       help='specify scn_dir')
 
@@ -384,6 +387,8 @@ if __name__ == '__main__':
       help='maximum of dij in alphafold2, default=10.0')
   parser.add_argument('--alphafold2_fape_z', type=float, default=10.0,
       help='Z of dij in alphafold2, default=10.0')
+  parser.add_argument('--alphafold2_fape_w', type=float, default=0.0,
+      help='weight of fape loss in alphafold2, default=0.0')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
