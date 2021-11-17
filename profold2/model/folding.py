@@ -1,13 +1,17 @@
+import logging
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
-from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
 
 from profold2.model.commons import init_zero_
+from profold2.model.functional import quaternion_multiply, quaternion_to_matrix
 from profold2.utils import *
+
+logger = logging.getLogger(__name__)
 
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
@@ -158,7 +162,7 @@ class InvariantPointAttention(nn.Module):
         results = torch.cat(results, dim = -1)
         return self.to_out(results)
 
-def FeedForward(dim, mult = 1., num_layers = 2, act = nn.ReLU):
+def Transition(dim, mult = 1., num_layers = 2, act = nn.ReLU):
     layers = []
     dim_hidden = dim * mult
 
@@ -185,31 +189,25 @@ class IPABlock(nn.Module):
         dim,
         ff_mult = 1,
         ff_num_layers = 3,     # in the paper, they used 3 layer transition (feedforward) block
-        post_norm = True,      # in the paper, they used post-layernorm - offering pre-norm as well
         **kwargs
     ):
         super().__init__()
-        self.post_norm = post_norm
 
         self.attn_norm = nn.LayerNorm(dim)
         self.attn = InvariantPointAttention(dim = dim, **kwargs)
 
         self.ff_norm = nn.LayerNorm(dim)
-        self.ff = FeedForward(dim, mult = ff_mult, num_layers = ff_num_layers)
+        self.ff = Transition(dim, mult = ff_mult, num_layers = ff_num_layers)
 
     def forward(self, x, **kwargs):
-        post_norm = self.post_norm
+        x = self.attn(x, **kwargs) + x
+        x = self.attn_norm(x)
 
-        attn_input = x if post_norm else self.attn_norm(x)
-        x = self.attn(attn_input, **kwargs) + x
-        x = self.attn_norm(x) if post_norm else x
-
-        ff_input = x if post_norm else self.ff_norm(x)
-        x = self.ff(ff_input) + x
-        x = self.ff_norm(x) if post_norm else x
+        x = self.ff(x) + x
+        x = self.ff_norm(x)
         return x
 
-# structure module - iteratively updating rotations and translations
+# StructureModule - iteratively updating rotations and translations
 
 # this portion is not accurate to AF2, as AF2 applies a FAPE auxiliary loss on each layer, as well as a stop gradient on the rotations
 # just an attempt to see if this could evolve to something more generally usable
@@ -217,6 +215,7 @@ class StructureModule(nn.Module):
     def __init__(self, dim, structure_module_depth, structure_module_heads):
         super().__init__()
 
+        assert structure_module_depth >= 1
         self.structure_module_depth = structure_module_depth
         with torch_default_dtype(torch.float32):
             self.ipa_block = IPABlock(
@@ -245,17 +244,19 @@ class StructureModule(nn.Module):
         original_dtype = single_repr.dtype
         single_repr, pairwise_repr = map(lambda t: t.float(), (single_repr, pairwise_repr))
 
+        outputs = []
+
         # iterative refinement with equivariant transformer in high precision
         with torch_default_dtype(torch.float32):
             quaternions = torch.tensor([1., 0., 0., 0.], device = device) # initial rotations
             quaternions = repeat(quaternions, 'd -> b n d', b = b, n = n)
-            rotations = quaternion_to_matrix(quaternions)
             translations = torch.zeros((b, n, 3), device = device)
 
             # go through the layers and apply invariant point attention and feedforward
             for i in range(self.structure_module_depth):
                 is_last = i == (self.structure_module_depth - 1)
 
+                rotations = quaternion_to_matrix(quaternions)
                 # the detach comes from
                 # https://github.com/deepmind/alphafold/blob/0bab1bf84d9d887aba5cfb6d09af1e8c3ecbc408/alphafold/model/folding.py#L383
                 if not is_last:
@@ -275,14 +276,14 @@ class StructureModule(nn.Module):
                 # FIX: make sure quaternion_update is standardized
                 quaternion_update = quaternion_update / torch.linalg.norm(quaternion_update, dim=-1, keepdim=True)
 
-                quaternions = quaternion_multiply(quaternion_update, quaternions)
-                rotations = quaternion_to_matrix(quaternions)
-                translations = translation_update + torch.einsum('b n c, b n r c -> b n r', translations, rotations)
+                quaternions = quaternion_multiply(quaternions, quaternion_update)
+                translations = torch.einsum('b n c, b n r c -> b n r', translation_update, rotations) + translations
 
-            n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n r c -> b n r', point_local, rotations) + translations,
-                    self.to_points(single_repr).chunk(2, dim=-1))
-            coords = torch.stack((n_point_global, translations, c_point_global), dim=-2)
+                if self.training or is_last:
+                    n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n c r -> b n r', point_local, rotations) + translations,
+                            self.to_points(single_repr).chunk(2, dim=-1))
+                    backbones = torch.stack((n_point_global, translations, c_point_global), dim=-2)
+                    backbones.type(original_dtype)
+                    outputs.append(dict(frames=(rotations, translations), act=single_repr, backbones=backbones))
 
-        coords.type(original_dtype)
-
-        return (rotations, translations), coords, single_repr
+        return outputs

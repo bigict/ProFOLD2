@@ -12,6 +12,7 @@ import logging
 import random
 import resource
 
+import numpy as np
 import torch
 from torch import nn
 import torch.multiprocessing as mp
@@ -97,9 +98,11 @@ def worker_data_init_fn(rank, args=None):  # pylint: disable=redefined-outer-nam
   del rank
   if args:
     random.seed(args.random_seed)
+    np.random.seed(args.random_seed)
 
 def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
+  np.random.seed(args.random_seed)
 
   worker_setup(rank, log_queue, args)
 
@@ -159,7 +162,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
               fape_min=args.alphafold2_fape_min,
               fape_max=args.alphafold2_fape_max,
               fape_z=args.alphafold2_fape_z,
-              fape_weight=args.alphafold2_fape_w), dict(weight=0.1)),
+              fape_weight=args.alphafold2_fape_w,
+              fape_reduction=args.alphafold2_fape_reduction), dict(weight=0.1)),
       ('tmscore', {}, {})]
 
   logging.info('Alphafold2.feats: %s', feats)
@@ -389,6 +393,8 @@ if __name__ == '__main__':
       help='Z of dij in alphafold2, default=10.0')
   parser.add_argument('--alphafold2_fape_w', type=float, default=0.0,
       help='weight of fape loss in alphafold2, default=0.0')
+  parser.add_argument('--alphafold2_fape_reduction', type=int, default=None,
+      help='reduction of fape loss in alphafold2, default=None')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')

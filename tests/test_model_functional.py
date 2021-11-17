@@ -113,6 +113,24 @@ class TestUtils(unittest.TestCase):
         ##print(torch.sum(xij*xij, -1))
         #print(torch.sum(m_diff*m_diff, dim=-1).shape)
 
+    def test_rigids_from_angles(self):
+        b, n = 1, 10
+        aatypes = torch.randint(0, 20, size=(b, n))
+        backb_points = torch.rand(b, n, 3, 3)
+        backb_frames = F.rigids_from_3x3(backb_points)
+        angles = torch.rand(b, n, 3, 2)
+        angles = angles / torch.linalg.norm(angles, dim=-1, keepdim=True) + 1e-12
+        x = F.rigids_from_angles(aatypes, backb_frames, angles)
+        print('test_rigids_from_angles: ', x[0].shape, x[1].shape)
+
+    def test_rigids_to_positions(self):
+        b, n = 1, 10
+        aatypes = torch.randint(0, 20, size=(b, n))
+        backb_points = torch.rand(b, n, 14, 3, 3)
+        backb_frames = F.rigids_from_3x3(backb_points)
+        x = F.rigids_to_positions(backb_frames, aatypes)
+        print(x)
+
     def test_fape2(self):
         true_points = torch.rand(1, 5, 3, 3)
         true_frames = F.rigids_from_3x3(true_points)

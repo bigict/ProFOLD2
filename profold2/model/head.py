@@ -1,3 +1,6 @@
+import functools
+import logging
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -5,6 +8,8 @@ from einops import rearrange
 
 from profold2.model import functional, folding, sidechain
 from profold2.utils import *
+
+logger = logging.getLogger(__name__)
 
 def softmax_cross_entropy(logits, labels):
   """Computes softmax cross entropy given logits and one-hot class labels."""
@@ -74,7 +79,7 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15, fape_weight=1.):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15, fape_weight=1., fape_reduction=None):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
         self.num_atoms = num_atoms
@@ -84,10 +89,13 @@ class FoldingHead(nn.Module):
         self.fape_max = fape_max
         self.fape_z = fape_z
         self.fape_weight = fape_weight
-        self.criterion = nn.MSELoss()
+
+        self.fape_reduction = fape_reduction
 
     def forward(self, headers, representations, batch):
-        frames, backbones, act = self.struct_module(representations, batch)
+        #(rotations, translations), act = self.struct_module(representations, batch)
+        outputs = self.struct_module(representations, batch)
+        (rotations, translations), act, backbones = map(lambda key: outputs[-1][key], ('frames', 'act', 'backbones'))
 
         if self.num_atoms > 3:
             atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
@@ -101,7 +109,7 @@ class FoldingHead(nn.Module):
         else:
             coords = backbones
 
-        return dict(frames=frames, backbones=backbones, coords=coords, representations=dict(single=act))
+        return dict(frames=(rotations, translations), backbones=backbones, coords=coords, representations=dict(single=act), traj=outputs)
 
     def loss(self, value, batch):
         coords, labels = value['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
@@ -113,19 +121,29 @@ class FoldingHead(nn.Module):
                 rearrange(rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
                 rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
 
-        loss = (1.0 - self.fape_weight) * torch.clamp(
-                torch.sqrt(self.criterion(
-                    rearrange(coords_aligned, 'd l -> l d'),
-                    rearrange(labels_aligned, 'd l -> l d'))),
-                self.fape_min, self.fape_max) / self.fape_z
+        # loss
+        loss = .0
+        if 1.0 - self.fape_weight > 0:
+            loss += (1.0 - self.fape_weight) * torch.clamp(
+                    torch.sqrt(F.mse_loss(
+                        rearrange(coords_aligned, 'd l -> l d'),
+                        rearrange(labels_aligned, 'd l -> l d'))),
+                    self.fape_min, self.fape_max) / self.fape_z
+        if self.fape_weight > 0:
+            assert self.num_atoms >= 3 and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
 
-        if self.num_atoms >= 3 and 'backbone_affine' in batch and 'backbone_affine_mask' in batch and self.fape_weight > 0:
-            pred_frames, true_frames = value['frames'], batch['backbone_affine']
-            frames_mask = batch['backbone_affine_mask']
-            pred_points, true_points = coords, labels
-            points_mask = coord_mask
-            loss += self.fape_weight * functional.fape(
-                    pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
+            true_frames, true_points = batch['backbone_affine'], labels
+            frames_mask, points_mask = batch['backbone_affine_mask'], coord_mask
+
+            def yield_fape_loss(outputs):
+                for i, traj in enumerate(outputs):
+                    pred_frames, pred_points = map(lambda key: traj[key], ('frames', 'backbones'))
+                    r = functional.fape(
+                            pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
+                    logger.debug('FoldingHead.loss(%d): %s', i, r.item())
+                    yield r
+
+            loss += self.fape_weight*sum(yield_fape_loss(value['traj'][self.fape_reduction:])) / len(value['traj'][self.fape_reduction:])
 
         return dict(loss=loss, coords_aligned=coords_aligned, labels_aligned=labels_aligned)
 
