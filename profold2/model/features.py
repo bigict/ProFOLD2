@@ -61,10 +61,10 @@ def make_pseudo_beta(protein, prefix=''):
 
 @take1st
 def make_backbone_affine(protein):
-    assert 'coord' in protein and 'coord_mask' in protein
-    assert protein['coord'].shape[-2] >= 3
-    protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
-    protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
+    if 'coord' in protein and 'coord_mask' in protein:
+        assert protein['coord'].shape[-2] >= 3
+        protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
+        protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
     return protein
 
 @take1st

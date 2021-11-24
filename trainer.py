@@ -391,9 +391,9 @@ if __name__ == '__main__':
       help='maximum of dij in alphafold2, default=10.0')
   parser.add_argument('--alphafold2_fape_z', type=float, default=10.0,
       help='Z of dij in alphafold2, default=10.0')
-  parser.add_argument('--alphafold2_fape_w', type=float, default=0.0,
-      help='weight of fape loss in alphafold2, default=0.0')
-  parser.add_argument('--alphafold2_fape_reduction', type=int, default=None,
+  parser.add_argument('--alphafold2_fape_w', type=float, default=1.0,
+      help='weight of fape loss in alphafold2, default=1.0')
+  parser.add_argument('--alphafold2_fape_reduction', type=int, default=-1,
       help='reduction of fape loss in alphafold2, default=None')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,

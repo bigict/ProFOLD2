@@ -227,8 +227,11 @@ class StructureModule(nn.Module):
 
         init_zero_(self.ipa_block.attn.to_out)
 
-        self.msa_to_single_repr_dim = nn.Linear(dim, dim)
-        self.trunk_to_pairwise_repr_dim = nn.Linear(dim, dim)
+        self.msa_to_single_repr_dim = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, dim))
+        self.trunk_to_pairwise_repr_dim = nn.Sequential(
+                nn.LayerNorm(dim))
 
         self.to_points = nn.Linear(dim, 6)
 
