@@ -1,0 +1,364 @@
+import collections
+
+import torch
+from einops import rearrange, repeat
+
+from profold2.common import residue_constants
+
+"""
+The transformation matrices returned from the functions in this file assume
+the points on which the transformation will be applied are column vectors.
+i.e. the R matrix is structured as
+
+    R = [
+            [Rxx, Rxy, Rxz],
+            [Ryx, Ryy, Ryz],
+            [Rzx, Rzy, Rzz],
+        ]  # (3, 3)
+
+This matrix can be applied to column vectors by post multiplication
+by the points e.g.
+
+    points = [[0], [1], [2]]  # (3 x 1) xyz coordinates of a point
+    transformed_points = R * points
+
+To apply the same matrix to points which are row vectors, the R matrix
+can be transposed and pre multiplied by the points:
+
+e.g.
+    points = [[0, 1, 2]]  # (1 x 3) xyz coordinates of a point
+    transformed_points = points * R.transpose(1, 0)
+"""
+
+def quaternion_to_matrix(quaternions):
+    """
+    Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: quaternions with real part first,
+            as tensor of shape (..., 4).
+
+    Returns:
+        Rotation matrices as tensor of shape (..., 3, 3).
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    return o.reshape(quaternions.shape[:-1] + (3, 3))
+
+def _copysign(a, b):
+    """
+    Return a tensor where each element has the absolute value taken from the,
+    corresponding element of a, with sign taken from the corresponding
+    element of b. This is like the standard copysign floating-point operation,
+    but is not careful about negative 0 and NaN.
+
+    Args:
+        a: source tensor.
+        b: tensor whose signs will be used, of the same shape as a.
+
+    Returns:
+        Tensor of the same shape as a with the signs of b.
+    """
+    signs_differ = (a < 0) != (b < 0)
+    return torch.where(signs_differ, -a, a)
+
+
+def _sqrt_positive_part(x):
+    """
+    Returns torch.sqrt(torch.max(0, x))
+    but with a zero subgradient where x is 0.
+    """
+    ret = torch.zeros_like(x)
+    positive_mask = x > 0
+    ret[positive_mask] = torch.sqrt(x[positive_mask])
+    return ret
+
+
+def matrix_to_quaternion(matrix):
+    """
+    Convert rotations given as rotation matrices to quaternions.
+
+    Args:
+        matrix: Rotation matrices as tensor of shape (..., 3, 3).
+
+    Returns:
+        quaternions with real part first, as tensor of shape (..., 4).
+    """
+    if matrix.size(-1) != 3 or matrix.size(-2) != 3:
+        raise ValueError(f"Invalid rotation matrix  shape f{matrix.shape}.")
+    m00 = matrix[..., 0, 0]
+    m11 = matrix[..., 1, 1]
+    m22 = matrix[..., 2, 2]
+    o0 = 0.5 * _sqrt_positive_part(1 + m00 + m11 + m22)
+    x = 0.5 * _sqrt_positive_part(1 + m00 - m11 - m22)
+    y = 0.5 * _sqrt_positive_part(1 - m00 + m11 - m22)
+    z = 0.5 * _sqrt_positive_part(1 - m00 - m11 + m22)
+    o1 = _copysign(x, matrix[..., 2, 1] - matrix[..., 1, 2])
+    o2 = _copysign(y, matrix[..., 0, 2] - matrix[..., 2, 0])
+    o3 = _copysign(z, matrix[..., 1, 0] - matrix[..., 0, 1])
+    return torch.stack((o0, o1, o2, o3), -1)
+
+def standardize_quaternion(quaternions):
+    """
+    Convert a unit quaternion to a standard form: one in which the real
+    part is non negative.
+
+    Args:
+        quaternions: Quaternions with real part first,
+            as tensor of shape (..., 4).
+
+    Returns:
+        Standardized quaternions as tensor of shape (..., 4).
+    """
+    return torch.where(quaternions[..., 0:1] < 0, -quaternions, quaternions)
+
+
+def quaternion_raw_multiply(a, b):
+    """
+    Multiply two quaternions.
+    Usual torch rules for broadcasting apply.
+
+    Args:
+        a: Quaternions as tensor of shape (..., 4), real part first.
+        b: Quaternions as tensor of shape (..., 4), real part first.
+
+    Returns:
+        The product of a and b, a tensor of quaternions shape (..., 4).
+    """
+    aw, ax, ay, az = torch.unbind(a, -1)
+    bw, bx, by, bz = torch.unbind(b, -1)
+    ow = aw * bw - ax * bx - ay * by - az * bz
+    ox = aw * bx + ax * bw + ay * bz - az * by
+    oy = aw * by - ax * bz + ay * bw + az * bx
+    oz = aw * bz + ax * by - ay * bx + az * bw
+    return torch.stack((ow, ox, oy, oz), -1)
+
+
+def quaternion_multiply(a, b):
+    """
+    Multiply two quaternions representing rotations, returning the quaternion
+    representing their composition, i.e. the versor with nonnegative real part.
+    Usual torch rules for broadcasting apply.
+
+    Args:
+        a: Quaternions as tensor of shape (..., 4), real part first.
+        b: Quaternions as tensor of shape (..., 4), real part first.
+
+    Returns:
+        The product of a and b, a tensor of quaternions of shape (..., 4).
+    """
+    ab = quaternion_raw_multiply(a, b)
+    return standardize_quaternion(ab)
+
+
+def lddt(pred_points, true_points, points_mask, cutoff=15.):
+    """Computes the lddt score for a batch of coordinates.
+        https://academic.oup.com/bioinformatics/article/29/21/2722/195896
+        Inputs: 
+        * pred_coords: (b, l, d) array of predicted 3D points.
+        * true_points: (b, l, d) array of true 3D points.
+        * points_mask : (b, l) binary-valued array. 1 for points that exist in
+            the true points
+        * cutoff: maximum inclusion radius in reference struct.
+        Outputs:
+        * (b, l) lddt scores ranging between 0 and 1
+    """
+    assert len(pred_points.shape) == 3 and pred_points.shape[-1] == 3
+    assert len(true_points.shape) == 3 and true_points.shape[-1] == 3
+
+    eps = 1e-10
+
+    # Compute true and predicted distance matrices. 
+    pred_cdist = torch.cdist(pred_points, pred_points, p=2) + eps
+    true_cdist = torch.cdist(true_points, true_points, p=2) + eps
+
+    cdist_to_score = ((true_cdist < cutoff) *
+            (rearrange(points_mask, 'b i -> b i ()')*rearrange(points_mask, 'b j -> b () j')) *
+            (1.0 - torch.eye(true_cdist.shape[1])))  # Exclude self-interaction
+
+    # Shift unscored distances to be far away
+    dist_l1 = torch.abs(true_cdist - pred_cdist)
+
+    # True lDDT uses a number of fixed bins.
+    # We ignore the physical plausibility correction to lDDT, though.
+    score = 0.25 * sum([dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0)])
+
+    # Normalize over the appropriate axes.
+    norm = 1. / (eps + torch.sum(cdist_to_score, dim=-1))
+    return norm * (eps + torch.sum(cdist_to_score * score, dim=-1))
+
+Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
+
+def rigids_from_3x3(points, epsilon=1e-6):
+    """Create rigids from 3 points.
+    This creates a set of rigid transformations from 3 points by Gram Schmidt
+    orthogonalization.
+    """
+    # Shape (b, l, 3, 3)
+    assert points.shape[-2:] == (3, 3)
+    v1 = points[...,0,:] - points[...,1,:]
+    v2 = points[...,2,:] - points[...,1,:]
+
+    e1 = v1 / torch.clamp(torch.linalg.norm(v1, dim=-1, keepdim=True), min=epsilon)
+    c = torch.sum(e1 * v2, dim=-1, keepdim=True)
+    u2 = v2 - e1*c
+    e2 = u2 / torch.clamp(torch.linalg.norm(u2, dim=-1, keepdim=True), min=epsilon)
+    e3 = torch.cross(e1, e2, dim=-1)
+    R = torch.stack((e1, e2, e3), dim=-1)
+    t = points[...,1,:]
+
+    return R, t
+
+def rigids_from_4x4(m):
+    """Create rigids from 4x4 array
+    """
+    # Shape (..., 4, 4)
+    assert m.shape[-2:] == (4, 4)
+    return m[...,:3,:3], m[...,:3,3]
+
+def rigids_batched_gather(params, indices):
+    b, device = indices.shape[0], indices.device
+    params = torch.from_numpy(params).to(device)
+    params = repeat(params, 'n ... -> b n ...', b=b)
+    c = len(params.shape) - len(indices.shape)
+    assert c >= 0
+    ext = list(map(chr, range(ord('o'), ord('o') + c)))
+    kwargs = dict(zip(ext, params.shape[-c:]))
+    ext = ' '.join(ext)
+    return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
+
+def rigids_to_positions(frames, aatypes):
+    group_idx = rigids_batched_gather(
+        residue_constants.restype_atom14_to_rigid_group, aatypes)
+
+    # Gather the literature atom positions for each residue.
+    # Shape (b, l, 14, 3)
+    group_pos = rigids_batched_gather(
+        residue_constants.restype_atom14_rigid_group_positions, aatypes)
+
+    rotations, translations = frames
+
+    # Transform each atom from it's local frame to the global frame.
+    atom_pos = torch.einsum('... w,b ... h w -> ... h', group_pos, rotations) + translations
+
+    return atom_pos
+
+def rigids_slice(frames, start=0, end=None):
+    rotations, translations = frames
+    return rotations[...,start:end,:,:], translations[...,start:end,:]
+
+def rigids_rearrange(frames, ops):
+    rotations, translations = frames
+    return rearrange(rotations, ops), rearrange(translations, ops)
+
+def rigids_multiply(a, b):
+    rots_a, trans_a = a
+    rots_b, trans_b = b
+    rotations = torch.einsum('... h d,... d w -> ... h w', rots_a, rots_b)
+    translations = torch.einsum('... w,... w h -> ... h', trans_b, rots_a) + trans_a
+    return rotations, translations
+
+def rigids_rotate(frames, mat3x3):
+    rotations, translations = frames
+    rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
+    return rotations, translations
+
+def rigids_from_angles(aatypes, backb_frames, angles):
+    """Create rigids from torsion angles
+    """
+    # Shape (b, l, 3 3), (b, l, 3)
+    backb_rotations, backb_trans = backb_frames
+    assert backb_rotations.shape[-2:] == (3, 3) and backb_trans.shape[-1] == 3
+    # Shape (b, l)
+    assert aatypes.shape == backb_rotations.shape[:2]
+    # Shape (b, l, n, 2) s.t. n <= 7
+    assert angles.shape[-1] == 2 and angles.shape[-2] <= 7
+    assert angles.shape[:2] == aatypes.shape
+    
+    b, l, n = angles.shape[:3]
+
+    # Gather the default frames for all rigids (b, l, 8, 3, 3), (b, l, 8, 3)
+    m = rigids_batched_gather(residue_constants.restype_rigid_group_default_frame, aatypes)
+    default_frames = rigids_slice(rigids_from_4x4(m), 0, n+1)
+
+    #
+    # Create the rotation matrices according to the given angles
+    #
+
+    # Insert zero rotation for backbone group.
+    # Shape (b, l, n+1, 2)
+    angles = torch.cat((
+            rearrange(torch.stack((torch.ones_like(aatypes), torch.zeros_like(aatypes)), dim=-1), 'b l r -> b l () r'),
+            angles), dim=-2)
+    sin_angles, cos_angles = torch.unbind(angles, dim=-1)
+    zeros, ones = torch.zeros_like(sin_angles), torch.ones_like(cos_angles)
+    # Shape (b, l, n+1, 3, 3)
+    rotations = torch.stack((
+            ones, zeros, zeros,
+            zeros, cos_angles, -sin_angles,
+            zeros, sin_angles, cos_angles), dim=-1)
+    rotations = rearrange(rotations, '... (h w) -> ... h w', h=3, w=3)
+
+    # Apply rotations to the frames.
+    atom_frames = rigids_rotate(default_frames, rotations)
+
+    # \chi_2, \chi_3, and \chi_4 frames do not transform to the backbone frame but to
+    # the previous frame. So chain them up accordingly.
+    def to_prev_frames(frames, idx):
+        rotations, translations = frames
+        rotations[...,idx,:,:], translations[...,idx,:] = rigids_multiply(
+                (rotations[...,idx-1,:,:], translations[...,idx-1,:]), (rotations[...,idx,:,:], translations[...,idx,:]))
+        return rotations, translations
+        
+    for i in range(5, n+1):
+        atom_frames = to_prev_frames(atom_frames, i)
+    
+    return rigids_multiply(atom_frames, rigids_rearrange(backb_frames, 'b l ... -> b l () ...'))
+
+def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, clamp_distance=None, epsilon=1e-8):
+    """ FAPE(Frame Aligined Point Error) - Measure point error under different alignments
+    """
+    # Shape (b, l, 3 3), (b, l, 3)
+    pred_rotations, pred_trans = pred_frames
+    assert pred_rotations.shape[-2:] == (3, 3) and pred_trans.shape[-1] == 3
+    # Shape (b, l, 3 3), (b, l, 3)
+    true_rotations, true_trans = true_frames
+    assert true_rotations.shape[-2:] == (3, 3) and true_trans.shape[-1] == 3
+    # Shape (b, l)
+    assert frames_mask.shape == points_mask.shape[:-1]
+    # Shape (b, l, n, 3)
+    assert pred_points.shape[-1] == 3 and true_points.shape[-1] == 3
+    # Shape (b, l, n)
+    assert pred_points.shape[:3] == points_mask.shape
+
+    def to_local(rotations, translations, points):
+        rotations = rearrange(rotations, 'b l h w -> b l w h')
+        translations = -torch.einsum('b l w,b l h w -> b l h', translations, rotations)
+        return torch.einsum('b j n w,b i h w -> b i j n h', points, rotations) + rearrange(translations, 'b i h -> b i () () h')
+    
+    pred_xij = to_local(pred_rotations, pred_trans, pred_points)
+    true_xij = to_local(true_rotations, true_trans, true_points)
+
+    # Shape (b, l, l, n)
+    dij = torch.sqrt(
+            torch.sum((pred_xij - true_xij)**2, dim=-1) + epsilon)
+    if clamp_distance:
+        dij = torch.clip(dij, 0, clamp_distance)
+    dij_mask = rearrange(frames_mask, 'b i -> b i () ()') * rearrange(points_mask, 'b j n -> b () j n')
+
+    return torch.sum(dij * dij_mask) / (epsilon + torch.sum(dij_mask))

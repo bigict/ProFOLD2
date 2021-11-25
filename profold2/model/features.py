@@ -6,6 +6,7 @@ from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
+from profold2.model.functional import rigids_from_3x3
 from profold2.utils import default,exists
 
 _feats_fn = {}
@@ -56,6 +57,14 @@ def make_pseudo_beta(protein, prefix=''):
     if prefix + 'seq' in protein and prefix + 'coord' in protein and prefix + 'coord_mask' in protein:
         protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
                 pseudo_beta_fn(protein[prefix + 'seq'], protein[prefix + 'coord'], protein[prefix + 'coord_mask']))
+    return protein
+
+@take1st
+def make_backbone_affine(protein):
+    if 'coord' in protein and 'coord_mask' in protein:
+        assert protein['coord'].shape[-2] >= 3
+        protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
+        protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
     return protein
 
 @take1st
