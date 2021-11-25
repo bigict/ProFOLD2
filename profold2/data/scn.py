@@ -112,11 +112,11 @@ def _collate_fn(insts, max_seq_len=None, aggregate_input=True, seqs_as_onehot=No
 
     return batch
 
-def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, feats=None, **kwargs):
+def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, feats=None, is_training=True, **kwargs):
     if collate_fn is None:
         collate_fn = functools.partial(_collate_fn, max_seq_len=max_seq_len,
                 aggregate_input=aggregate_model_input,
-                seqs_as_onehot=seq_as_onehot, feat_builder=FeatureBuilder(feats))
+                seqs_as_onehot=seq_as_onehot, feat_builder=FeatureBuilder(feats, is_training=is_training))
     if 'with_pytorch' not in kwargs:
         kwargs['with_pytorch'] = 'dataloaders'
     return sidechainnet.load(

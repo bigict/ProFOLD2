@@ -228,10 +228,10 @@ def pad_for_batch(items, batch_length, dtype):
     batch = torch.stack(batch, dim=0)
     return batch
 
-def load(data_dir, msa_max_size=128, max_seq_len=None, feats=None, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
+def load(data_dir, msa_max_size=128, max_seq_len=None, feats=None, is_training=True, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
     dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len, feat_flags=feat_flags)
     if not 'collate_fn' in kwargs:
-        kwargs['collate_fn'] = functools.partial(dataset.collate_fn, feat_builder=FeatureBuilder(feats))
+        kwargs['collate_fn'] = functools.partial(dataset.collate_fn, feat_builder=FeatureBuilder(feats, is_training=is_training))
     return torch.utils.data.DataLoader(dataset, **kwargs)
 
 if __name__ == '__main__':
