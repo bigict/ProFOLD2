@@ -95,6 +95,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                     batch_size=args.batch_size,
                     shuffle=True,
                     feats=feats,
+                    is_training=False,
                     num_workers=0)
   else:
     data = scn.load(casp_version=args.casp_version,
@@ -103,6 +104,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                     num_workers=0,
                     filter_by_resolution=args.filter_by_resolution,
                     feats=feats,
+                    is_training=False,
                     dynamic_batching=False)
 
     test_loader = data[args.casp_data]
