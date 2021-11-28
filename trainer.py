@@ -146,7 +146,12 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     train_loader.worker_init_fn = functools.partial(
                                             worker_data_init_fn, args=args)
 
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
+  filter_blacklist = set()
+  if args.filter_by_blacklist:
+    with open(args.filter_by_blacklist, 'r', encoding='utf-8') as f:
+      for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+        filter_blacklist.add(line)
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist))  # pylint: disable=line-too-long
   dl = cycling(train_loader, data_cond)
 
   # model
@@ -351,6 +356,8 @@ if __name__ == '__main__':
       help='filter out proteins whose length>LEN, default=1024')
   parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
       help='filter by resolution<=RES')
+  parser.add_argument('-R', '--filter_by_blacklist', type=str, default=None,
+      help='filter out proteins whose id in BLACKLIST, default=None')
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
 
