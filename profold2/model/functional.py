@@ -1,6 +1,7 @@
 import collections
 
 import torch
+from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
@@ -184,8 +185,8 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
     eps = 1e-10
 
     # Compute true and predicted distance matrices. 
-    pred_cdist = torch.cdist(pred_points, pred_points, p=2) + eps
-    true_cdist = torch.cdist(true_points, true_points, p=2) + eps
+    pred_cdist = torch.cdist(pred_points, pred_points, p=2)
+    true_cdist = torch.cdist(true_points, true_points, p=2)
 
     cdist_to_score = ((true_cdist < cutoff) *
             (rearrange(points_mask, 'b i -> b i ()')*rearrange(points_mask, 'b j -> b () j')) *
@@ -199,8 +200,18 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
     score = 0.25 * sum([dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0)])
 
     # Normalize over the appropriate axes.
-    norm = 1. / (eps + torch.sum(cdist_to_score, dim=-1))
-    return norm * (eps + torch.sum(cdist_to_score * score, dim=-1))
+    return (torch.sum(cdist_to_score * score, dim=-1) + eps)/(torch.sum(cdist_to_score, dim=-1) + eps)
+
+def plddt(logits):
+    """Compute per-residue pLDDT from logits
+    """
+    device = logits.device if hasattr(logits, 'device') else None
+    # Shape (b, l, c)
+    b, c = logits.shape[0], logits.shape[-1]
+    width = 1.0 / c
+    centers = torch.arange(start=0.5*width, end=1.0, step=width, device=device)
+    probs = F.softmax(logits, dim=-1)
+    return torch.einsum('c,... c -> ...', centers, probs)
 
 Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
 

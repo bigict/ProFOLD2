@@ -168,6 +168,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
               fape_z=args.alphafold2_fape_z,
               fape_weight=args.alphafold2_fape_w,
               fape_reduction=args.alphafold2_fape_reduction), dict(weight=0.1)),
+      ('lddt', dict(max_resolution=3.0), dict(weight=0.1)),
       ('tmscore', {}, {})]
 
   logging.info('Alphafold2.feats: %s', feats)

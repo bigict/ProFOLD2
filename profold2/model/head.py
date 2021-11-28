@@ -1,3 +1,4 @@
+import sys
 import functools
 import logging
 
@@ -6,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 
+from profold2.common import residue_constants
 from profold2.model import functional, folding, sidechain
 from profold2.utils import *
 
@@ -150,49 +152,63 @@ class FoldingHead(nn.Module):
 class LDDTHead(nn.Module):
     """Head to predict the pLDDT to be used as a per-residue configence score.
     """
-    def __init__(self, dim, buckets_num=50):
+    def __init__(self, dim, buckets_num=50, min_resolution=.0, max_resolution=sys.float_info.max):
         super().__init__()
 
         self.net = nn.Sequential(
                 nn.LayerNorm(dim),
                 nn.Linear(dim, dim),
                 nn.ReLU(),
-                nn.Linear(dim, buckets_num),
-                nn.ReLU())
+                nn.Linear(dim, dim),
+                nn.ReLU(),
+                nn.Linear(dim, buckets_num))
         self.buckets_num = buckets_num
+
+        self.min_resolution = min_resolution
+        self.max_resolution = max_resolution
 
     def forward(self, headers, representations, batch):
         if 'folding' in headers and 'act' in headers['folding']:
             x = headers['folding']['act']
         else:
             x = representations['single']
-        return dict(logits=self.net(x))
-
-    def loss(self, headers, value, batch):
         assert 'folding' in headers and 'coords' in headers['folding']
+        return dict(logits=self.net(x), coords=headers['folding']['coords'])
+
+    def loss(self, value, batch):
+        assert 'coords' in value and 'logits' in value
 
         ca_idx = residue_constants.atom_order['CA']
 
         # Shape (b, l, d)
-        pred_points = rearrange(headers['folding']['coords'][...,ca_idx,:], 'b l c d -> b (l c) d')
+        pred_points = value['coords'][...,ca_idx,:]
         # Shape (b, l, d)
-        true_points = rearrange(batch['coord'][...,ca_idx,:], 'b l c d -> b (l c) d')
+        true_points = batch['coord'][...,ca_idx,:]
         # Shape (b, l)
-        points_mask = rearrange(batch['coord_mask'][...,ca_idx], 'b l c -> b (l c)')
-        with torch.no_grade():
+        points_mask = batch['coord_mask'][...,ca_idx]
+        with torch.no_grad():
             # Shape (b, l)
             lddt_ca = functional.lddt(pred_points, true_points, points_mask)
             # protect against out of range for lddt_ca == 1
-            bin_index = torch.min(
-                    torch.floor(lddt_ca * self.buckets_num).int(),
-                    self.buckets_num - 1)
+            bin_index = torch.clamp(
+                    torch.floor(lddt_ca * self.buckets_num).long(),
+                    max=self.buckets_num - 1)
             labels = F.one_hot(bin_index, self.buckets_num)
+
         errors = softmax_cross_entropy(labels=labels, logits=value['logits'])
 
-        loss = (
-            torch.sum(errors * true_points) /
-            (1e-6 + torch.sum(true_points)))
-        return dict(loss=avg_error)
+        # Filter by resolution
+        b = points_mask.shape[0]
+        mask = torch.zeros(b, device=points_mask.device)
+        if 'resolution' in batch and exists(batch['resolution']):
+            assert len(batch['resolution']) == b
+            for i in range(b):
+                if exists(batch['resolution'][i]) and (self.min_resolution <= batch['resolution'][i] and batch['resolution'][i] <= self.max_resolution):
+                    mask[i] = 1
+        points_mask = torch.einsum('b,b ... -> b ...', mask, points_mask)
+        loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
+        logger.debug('LDDTHead.loss: %s', loss.item())
+        return dict(loss=loss)
 
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
@@ -226,8 +242,21 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
+class ConfidenceHead(nn.Module):
+    """Head to predict confidence.
+    """
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, headers, representations, batch):
+        metrics = {}
+        if 'lddt' in headers and 'logits' in headers['lddt']:
+            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        return metrics
+
 class HeaderBuilder:
     _headers = dict(
+            confidence = ConfidenceHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,

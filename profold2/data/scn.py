@@ -110,6 +110,7 @@ def _collate_fn(insts, max_seq_len=None, aggregate_input=True, seqs_as_onehot=No
                 str_seq=str_seqs,
                 coord=coords,
                 coord_mask=cloud_mask(int_seqs, coords=coords),
+                resolution=batch.resolutions,
                 clips=clips)
 
     # build new features
