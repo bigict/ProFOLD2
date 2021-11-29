@@ -104,8 +104,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                     num_workers=0,
                     filter_by_resolution=args.filter_by_resolution,
                     feats=feats,
-                    is_training=False,
-                    dynamic_batching=False)
+                    is_training=False)
 
     test_loader = data[args.casp_data]
   data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=C0301
