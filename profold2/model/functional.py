@@ -190,7 +190,7 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
 
     cdist_to_score = ((true_cdist < cutoff) *
             (rearrange(points_mask, 'b i -> b i ()')*rearrange(points_mask, 'b j -> b () j')) *
-            (1.0 - torch.eye(true_cdist.shape[1])))  # Exclude self-interaction
+            (1.0 - torch.eye(true_cdist.shape[1], device=points_mask.device)))  # Exclude self-interaction
 
     # Shift unscored distances to be far away
     dist_l1 = torch.abs(true_cdist - pred_cdist)

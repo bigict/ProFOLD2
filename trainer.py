@@ -6,8 +6,8 @@
 """
 import os
 import argparse
-from contextlib import contextmanager
 import functools
+import json
 import logging
 import random
 import resource
@@ -81,19 +81,6 @@ def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
     model._set_static_graph()  # pylint: disable=protected-access
   return model
 
-@contextmanager
-def worker_no_sync(no_sync, model, args):  # pylint: disable=redefined-outer-name
-  del args  # pylint: disable=unused-argument
-  if no_sync and isinstance(model, nn.parallel.DistributedDataParallel):
-    old_require_backward_grad_sync = model.require_backward_grad_sync
-    model.require_backward_grad_sync = False
-    try:
-      yield
-    finally:
-      model.require_backward_grad_sync = old_require_backward_grad_sync
-  else:
-    yield
-
 def worker_data_init_fn(rank, args=None):  # pylint: disable=redefined-outer-name
   del rank
   if args:
@@ -131,6 +118,15 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
            ('make_esm_embedd',
             dict(model=esm.ESM_MODEL_PATH, repr_layer=esm.ESM_EMBED_LAYER,
                 device=device))]
+  if args.alphafold2_features:
+    with open(args.alphafold2_features, 'r', encoding='utf-8') as f:
+      data = f.read()
+      feats = json.loads(data)
+      for i in range(len(feats)):
+        feat_name, feat_args = feats[i]
+        if 'device' in feat_args and feat_args['device'] == '%(device)s':
+          feat_args['device'] = device
+          feats[i] = (feat_name, feat_args)
   data = scn.load(casp_version=args.casp_version,
                   thinning=args.casp_thinning,
                   batch_size=args.batch_size,
@@ -170,6 +166,17 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
               fape_reduction=args.alphafold2_fape_reduction), dict(weight=0.1)),
       ('lddt', dict(max_resolution=3.0), dict(weight=0.1)),
       ('tmscore', {}, {})]
+  if args.alphafold2_headers:
+    with open(args.alphafold2_headers, 'r', encoding='utf-8') as f:
+      data = f.read()
+      headers = json.loads(data % dict(
+          buckets_num=constants.DISTOGRAM_BUCKETS,
+          structure_module_depth=args.alphafold2_structure_module_depth,
+          fape_min=args.alphafold2_fape_min,
+          fape_max=args.alphafold2_fape_max,
+          fape_z=args.alphafold2_fape_z,
+          fape_weight=args.alphafold2_fape_w,
+          fape_reduction=args.alphafold2_fape_reduction))
 
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
@@ -383,6 +390,10 @@ if __name__ == '__main__':
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 
+  parser.add_argument('--alphafold2_features', type=str, default=None,
+      help='json format features of alphafold2, default=None')
+  parser.add_argument('--alphafold2_headers', type=str, default=None,
+      help='json format headers of alphafold2, default=None')
   parser.add_argument('--alphafold2_recycles', type=int, default=0,
       help='number of recycles in alphafold2, default=0')
   parser.add_argument('--alphafold2_dim', type=int, default=256,
