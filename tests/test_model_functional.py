@@ -9,13 +9,68 @@ from profold2.model import functional as F
 
 class TestUtils(unittest.TestCase):
     def test_lddt(self):
-        a = torch.randn(1, 137, 3)
-        b = torch.randn(1, 137, 3)
-        cloud_mask = torch.ones(a.shape[:-1]).bool()
-        lddt_result = F.lddt(a, b, cloud_mask)
-        # print(lddt_result)
-        self.assertTrue(True)
+        params = [
+                ('same',
+                    [[[0, 0, 0], [5, 0, 0], [10, 0, 0]]],
+                    [[[0, 0, 0], [5, 0, 0], [10, 0, 0]]],
+                    [[1, 1, 1]]),
+                ('all_shifted',
+                    [[[0, 0, 0], [5, 0, 0], [10, 0, 0]]],
+                    [[[-1, 0, 0], [4, 0, 0], [9, 0, 0]]],
+                    [[1, 1, 1]]),
+                ('all_rotated',
+                    [[[0, 0, 0], [5, 0, 0], [10, 0, 0]]],
+                    [[[0, 0, 0], [0, 5, 0], [0, 10, 0]]],
+                    [[1, 1, 1]]),
+                ('half_a_dist',
+                    [[[0, 0, 0], [5, 0, 0]]],
+                    [[[0, 0, 0], [5.5-1e-5, 0, 0]]],
+                    [[1, 1]]),
+                ('one_a_dist',
+                    [[[0, 0, 0], [5, 0, 0]]],
+                    [[[0, 0, 0], [6-1e-5, 0, 0]]],
+                    [[0.75, 0.75]]),
+                ('two_a_dist',
+                    [[[0, 0, 0], [5, 0, 0]]],
+                    [[[0, 0, 0], [7-1e-5, 0, 0]]],
+                    [[0.5, 0.5]]),
+                ('four_a_dist',
+                    [[[0, 0, 0], [5, 0, 0]]],
+                    [[[0, 0, 0], [9-1e-5, 0, 0]]],
+                    [[0.25, 0.25]]),
+                ('five_a_dist',
+                    [[[0, 0, 0], [16-1e-5, 0, 0]]],
+                    [[[0, 0, 0], [11, 0, 0]]],
+                    [[0, 0]]),
+                ('no_pairs',
+                    [[[0, 0, 0], [20, 0, 0]]],
+                    [[[0, 0, 0], [25-1e-5, 0, 0]]],
+                    [[1, 1]]),
+            ]
+        for name, pred_points, true_points, expect_lddt in params:
+            pred_points, true_points, expect_lddt = map(
+                    lambda x: torch.as_tensor(x, dtype=torch.float),
+                    (pred_points, true_points, expect_lddt))
+            b, l, _ = pred_points.shape
+            points_mask = torch.ones(b, l)
+            with self.subTest(name=name):
+                result_lddt = F.lddt(pred_points, true_points, points_mask)
+                self.assertTrue(torch.allclose(expect_lddt, result_lddt))
     
+    def test_plddt(self):
+        params = [
+                ('one',
+                    [[[0, 0, 0], [10, 0, 0], [0, 10, 0]]],
+                    [[0.5, 1.0/6, 0.5]]),
+            ]
+        for name, logits, expect_plddt in params:
+            logits, expect_plddt = map(
+                    lambda x: torch.as_tensor(x, dtype=torch.float),
+                    (logits, expect_plddt))
+            with self.subTest(name=name):
+                result_plddt = F.plddt(logits)
+                self.assertTrue(torch.allclose(result_plddt, expect_plddt, atol=1e-4))
+
     def test_fape(self):
         def get_rotation_matrix(indexes):
             """(B, 3, 3) <- (B, 3)"""
@@ -77,20 +132,20 @@ class TestUtils(unittest.TestCase):
         random_rotation = get_rotation_matrix(0.05 * torch.ones(1, 3))[0]  # (3, 3)
         a_unit_vector = torch.tensor([[1, 0, 0]]).type(torch.float)
         cos = a_unit_vector @ random_rotation @ a_unit_vector.T
-        print(np.pi / torch.acos(cos))
+        #print(np.pi / torch.acos(cos))
         true_rotations = predicted_rotations
         loss = []
         for i in range(100):
             true_rotations = true_rotations @ random_rotation  # (B, L, 3, 3)  <<- (3, 3)
             true_frames = true_rotations, true_transitions
             loss.append(F.fape(predicted_frame, true_frames, frames_mask, predicted_points, true_points, mask, epsilon=0).item())
-        print(loss)
+        #print(loss)
         loss_incress = torch.tensor(loss[1:]) > torch.tensor(loss[:-1])
-        print(loss_incress)
+        #print(loss_incress)
         # for i in range(len(loss) - 1):
         #     self.assertTrue(loss[i] < loss[i + 1])
         shift_positions = (loss_incress[1:] ^ loss_incress[:-1]).nonzero().flatten()
-        print((shift_positions[1:] - shift_positions[:-1]).float().mean())
+        #print((shift_positions[1:] - shift_positions[:-1]).float().mean())
 
     def test_rigids_from_3x3(self):
         points = torch.rand(1, 5, 3, 3)
@@ -129,7 +184,7 @@ class TestUtils(unittest.TestCase):
         backb_points = torch.rand(b, n, 14, 3, 3)
         backb_frames = F.rigids_from_3x3(backb_points)
         x = F.rigids_to_positions(backb_frames, aatypes)
-        print(x)
+        #print(x)
 
     def test_fape2(self):
         true_points = torch.rand(1, 5, 3, 3)
