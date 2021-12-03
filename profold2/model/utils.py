@@ -113,6 +113,9 @@ class Checkpoint:
                 logging.debug('loading %s ...', name)
                 if isinstance(obj, nn.Module):
                     obj.load_state_dict(state_dict, strict=False)
+                elif isinstance(obj, torch.optim.Optimizer):
+                    try: obj.load_state_dict(state_dict)
+                    except Exception as e: logging.warn(e)
                 else:
                     obj.load_state_dict(state_dict)
             return True
