@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import esm, scn
-from profold2.data.utils import embedding_get_labels, pdb_save
+from profold2.data.utils import embedding_get_labels, filter_from_file, pdb_save
 from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
 
@@ -142,12 +142,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     train_loader.worker_init_fn = functools.partial(
                                             worker_data_init_fn, args=args)
 
-  filter_blacklist = set()
-  if args.filter_by_blacklist:
-    with open(args.filter_by_blacklist, 'r', encoding='utf-8') as f:
-      for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
-        filter_blacklist.add(line)
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist))  # pylint: disable=line-too-long
+  filter_blacklist, filter_whitelist = (
+    set(filter_from_file(args.filter_by_blacklist)),
+    set(filter_from_file(args.filter_by_whitelist)))
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist)) and (not filter_whitelist or (set(x['pid'])&filter_whitelist))  # pylint: disable=line-too-long
   dl = cycling(train_loader, data_cond)
 
   # model
@@ -164,7 +162,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
               fape_z=args.alphafold2_fape_z,
               fape_weight=args.alphafold2_fape_w,
               fape_reduction=args.alphafold2_fape_reduction), dict(weight=0.1)),
-      ('lddt', dict(max_resolution=3.0), dict(weight=0.1)),
       ('tmscore', {}, {})]
   if args.alphafold2_headers:
     with open(args.alphafold2_headers, 'r', encoding='utf-8') as f:
@@ -364,8 +361,10 @@ if __name__ == '__main__':
       help='filter out proteins whose length>LEN, default=1024')
   parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
       help='filter by resolution<=RES')
-  parser.add_argument('-R', '--filter_by_blacklist', type=str, default=None,
+  parser.add_argument('--filter_by_blacklist', type=str, default=None,
       help='filter out proteins whose id in BLACKLIST, default=None')
+  parser.add_argument('--filter_by_whitelist', type=str, default=None,
+      help='filter proteins whose id in WHITELIST, default=None')
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
 
