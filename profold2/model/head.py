@@ -1,10 +1,17 @@
+import sys
+import functools
+import logging
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 
-from profold2.model import folding,sidechain
+from profold2.common import residue_constants
+from profold2.model import functional, folding, sidechain
 from profold2.utils import *
+
+logger = logging.getLogger(__name__)
 
 def softmax_cross_entropy(logits, labels):
   """Computes softmax cross entropy given logits and one-hot class labels."""
@@ -74,7 +81,7 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15, fape_weight=1., fape_reduction=None):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
         self.num_atoms = num_atoms
@@ -83,10 +90,14 @@ class FoldingHead(nn.Module):
         self.fape_min = fape_min
         self.fape_max = fape_max
         self.fape_z = fape_z
-        self.criterion = nn.MSELoss()
+        self.fape_weight = fape_weight
+
+        self.fape_reduction = fape_reduction
 
     def forward(self, headers, representations, batch):
-        backbones, act = self.struct_module(representations, batch)
+        #(rotations, translations), act = self.struct_module(representations, batch)
+        outputs = self.struct_module(representations, batch)
+        (rotations, translations), act, backbones = map(lambda key: outputs[-1][key], ('frames', 'act', 'backbones'))
 
         if self.num_atoms > 3:
             atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
@@ -100,7 +111,7 @@ class FoldingHead(nn.Module):
         else:
             coords = backbones
 
-        return dict(backbones=backbones, coords=coords, representations=dict(single=act))
+        return dict(frames=(rotations, translations), backbones=backbones, coords=coords, representations=dict(single=act), traj=outputs)
 
     def loss(self, value, batch):
         coords, labels = value['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
@@ -112,35 +123,92 @@ class FoldingHead(nn.Module):
                 rearrange(rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
                 rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
 
-        loss = torch.clamp(
-                torch.sqrt(self.criterion(
-                    rearrange(coords_aligned, 'd l -> l d'),
-                    rearrange(labels_aligned, 'd l -> l d'))), 
-                self.fape_min, self.fape_max) / self.fape_z
+        # loss
+        loss = .0
+        if 1.0 - self.fape_weight > 0:
+            loss += (1.0 - self.fape_weight) * torch.clamp(
+                    torch.sqrt(F.mse_loss(
+                        rearrange(coords_aligned, 'd l -> l d'),
+                        rearrange(labels_aligned, 'd l -> l d'))),
+                    self.fape_min, self.fape_max) / self.fape_z
+        if self.fape_weight > 0:
+            assert self.num_atoms >= 3 and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
+
+            true_frames, true_points = batch['backbone_affine'], labels
+            frames_mask, points_mask = batch['backbone_affine_mask'], coord_mask
+
+            def yield_fape_loss(outputs):
+                for i, traj in enumerate(outputs):
+                    pred_frames, pred_points = map(lambda key: traj[key], ('frames', 'backbones'))
+                    r = functional.fape(
+                            pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
+                    logger.debug('FoldingHead.loss(%d): %s', i, r.item())
+                    yield r
+
+            loss += self.fape_weight*sum(yield_fape_loss(value['traj'][self.fape_reduction:])) / len(value['traj'][self.fape_reduction:])
+
         return dict(loss=loss, coords_aligned=coords_aligned, labels_aligned=labels_aligned)
 
 class LDDTHead(nn.Module):
     """Head to predict the pLDDT to be used as a per-residue configence score.
     """
-    def __init__(self, dim, buckets_num=50):
+    def __init__(self, dim, buckets_num=50, min_resolution=.0, max_resolution=sys.float_info.max):
         super().__init__()
 
         self.net = nn.Sequential(
                 nn.LayerNorm(dim),
                 nn.Linear(dim, dim),
                 nn.ReLU(),
-                nn.Linear(dim, buckets_num),
-                nn.ReLU())
+                nn.Linear(dim, dim),
+                nn.ReLU(),
+                nn.Linear(dim, buckets_num))
+        self.buckets_num = buckets_num
+
+        self.min_resolution = min_resolution
+        self.max_resolution = max_resolution
 
     def forward(self, headers, representations, batch):
         if 'folding' in headers and 'act' in headers['folding']:
             x = headers['folding']['act']
         else:
             x = representations['single']
-        return dict(logits=self.net(x))
+        assert 'folding' in headers and 'coords' in headers['folding']
+        return dict(logits=self.net(x), coords=headers['folding']['coords'])
 
     def loss(self, value, batch):
-        pass
+        assert 'coords' in value and 'logits' in value
+
+        ca_idx = residue_constants.atom_order['CA']
+
+        # Shape (b, l, d)
+        pred_points = value['coords'][...,ca_idx,:]
+        # Shape (b, l, d)
+        true_points = batch['coord'][...,ca_idx,:]
+        # Shape (b, l)
+        points_mask = batch['coord_mask'][...,ca_idx]
+        with torch.no_grad():
+            # Shape (b, l)
+            lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+            # protect against out of range for lddt_ca == 1
+            bin_index = torch.clamp(
+                    torch.floor(lddt_ca * self.buckets_num).long(),
+                    max=self.buckets_num - 1)
+            labels = F.one_hot(bin_index, self.buckets_num)
+
+        errors = softmax_cross_entropy(labels=labels, logits=value['logits'])
+
+        # Filter by resolution
+        b = points_mask.shape[0]
+        mask = torch.zeros(b, device=points_mask.device)
+        if 'resolution' in batch and exists(batch['resolution']):
+            assert len(batch['resolution']) == b
+            for i in range(b):
+                if exists(batch['resolution'][i]) and (self.min_resolution <= batch['resolution'][i] and batch['resolution'][i] <= self.max_resolution):
+                    mask[i] = 1
+        points_mask = torch.einsum('b,b ... -> b ...', mask, points_mask)
+        loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
+        logger.debug('LDDTHead.loss: %s', loss.item())
+        return dict(loss=loss)
 
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
@@ -174,8 +242,21 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
+class ConfidenceHead(nn.Module):
+    """Head to predict confidence.
+    """
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, headers, representations, batch):
+        metrics = {}
+        if 'lddt' in headers and 'logits' in headers['lddt']:
+            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        return metrics
+
 class HeaderBuilder:
     _headers = dict(
+            confidence = ConfidenceHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,

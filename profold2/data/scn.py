@@ -1,16 +1,22 @@
 import functools
+import logging
+
 import numpy as np
 import torch
 from einops import rearrange
 
 import sidechainnet
-from sidechainnet.utils.sequence import VOCAB
+from sidechainnet.dataloaders.ProteinDataset import ProteinDataset
+from sidechainnet.dataloaders.SimilarLengthBatchSampler import SimilarLengthBatchSampler
 from sidechainnet.structure.build_info import NUM_COORDS_PER_RES,BB_BUILD_INFO,SC_BUILD_INFO
+from sidechainnet.utils.sequence import VOCAB
 
 from profold2.common import residue_constants
 from profold2.data import esm
 from profold2.model.features import FeatureBuilder
 from profold2.utils import *
+
+logger = logging.getLogger(__name__)
 
 def _make_cloud_mask(aa):
     """ relevent points will be 1. paddings will be 0. """
@@ -104,6 +110,7 @@ def _collate_fn(insts, max_seq_len=None, aggregate_input=True, seqs_as_onehot=No
                 str_seq=str_seqs,
                 coord=coords,
                 coord_mask=cloud_mask(int_seqs, coords=coords),
+                resolution=batch.resolutions,
                 clips=clips)
 
     # build new features
@@ -112,14 +119,91 @@ def _collate_fn(insts, max_seq_len=None, aggregate_input=True, seqs_as_onehot=No
 
     return batch
 
-def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, feats=None, **kwargs):
+class _BatchSampler(torch.utils.data.Sampler):
+    def __init__(self,
+                 data_source,
+                 batch_size,
+                 is_training=True):
+        if is_training:
+            self.obj = SimilarLengthBatchSampler(
+                    data_source,
+                    batch_size,
+                    dynamic_batch=None,
+                    optimize_batch_for_cpus=False)
+        else:
+            self.obj = torch.utils.data.BatchSampler(
+                    torch.utils.data.SequentialSampler(data_source),
+                    batch_size,
+                    drop_last=True)
+    def __len__(self):
+        return len(self.obj)
+    def __iter__(self):
+        return iter(self.obj)
+
+def prepare_dataloaders(data,
+                        collate_fn=None,
+                        batch_size=32,
+                        num_workers=1,
+                        is_training=True):
+    """Return dataloaders for model training according to user specifications.
+
+    Using the pre-processed data, stored in a nested Python dictionary, this
+    function returns train, validation, and test set dataloaders with 2 workers
+    each. Note that there are multiple validation sets in ProteinNet.
+
+    Args:
+        data: A dictionary storing the entirety of a SidechainNet version (i.e. CASP 12).
+            It must be organized in the manner described in this code's README, or in the
+            paper.
+        batch_size: Batch size to use when yielding batches from a DataLoader.
+    """
+    from sidechainnet.utils.download import VALID_SPLITS
+
+    train_dataset = ProteinDataset(data['train'], 'train', data['settings'], data['date'])
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        batch_sampler=_BatchSampler(
+            train_dataset,
+            batch_size,
+            is_training=is_training))
+
+    valid_loaders = {}
+    for vsplit in VALID_SPLITS:
+        valid_loader = torch.utils.data.DataLoader(ProteinDataset(
+            data[vsplit], vsplit, data['settings'], data['date']),
+                                                   num_workers=num_workers,
+                                                   batch_size=batch_size,
+                                                   collate_fn=collate_fn)
+        valid_loaders[vsplit] = valid_loader
+
+    test_loader = torch.utils.data.DataLoader(ProteinDataset(data['test'], 'test',
+                                                             data['settings'],
+                                                             data['date']),
+                                              num_workers=num_workers,
+                                              batch_size=batch_size,
+                                              collate_fn=collate_fn)
+
+    dataloaders = {
+        'train': train_loader,
+        'test': test_loader
+    }
+    dataloaders.update({vsplit: valid_loaders[vsplit] for vsplit in VALID_SPLITS})
+
+    return dataloaders
+
+
+def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, collate_fn=None, feats=None, is_training=True,
+        casp_version=12, thinning=30, scn_dir='./sidechainnet_data', filter_by_resolution=False, **kwargs):
     if collate_fn is None:
         collate_fn = functools.partial(_collate_fn, max_seq_len=max_seq_len,
                 aggregate_input=aggregate_model_input,
-                seqs_as_onehot=seq_as_onehot, feat_builder=FeatureBuilder(feats))
-    if 'with_pytorch' not in kwargs:
-        kwargs['with_pytorch'] = 'dataloaders'
-    return sidechainnet.load(
-            aggregate_model_input=aggregate_model_input, 
-            collate_fn = collate_fn, 
-            seq_as_onehot = seq_as_onehot, **kwargs)
+                seqs_as_onehot=seq_as_onehot, feat_builder=FeatureBuilder(feats, is_training=is_training))
+    scn_dict = sidechainnet.load(casp_version=casp_version, thinning=thinning, scn_dir=scn_dir, scn_dataset=False)
+    return prepare_dataloaders(
+            scn_dict,
+            collate_fn=collate_fn, 
+            is_training=is_training,
+            **kwargs)

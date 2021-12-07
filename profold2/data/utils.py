@@ -12,6 +12,12 @@ def embedding_get_labels(name, mat):
                 for i in range(mat.shape[0])]
     return None
 
+def filter_from_file(filename):
+    if filename:
+        with open(filename, 'r', encoding='utf-8') as f:
+            for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+                yield line
+
 def pdb_save(step, batch, headers, prefix='/tmp'):
     b, N = batch['seq'].shape
 

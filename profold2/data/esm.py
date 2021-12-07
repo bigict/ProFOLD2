@@ -6,11 +6,11 @@ from profold2.utils import default,exists
 
 MSA_EMBED_LAYER = 12
 MSA_EMBED_DIM = 768
-MSA_MODEL_PATH = ["facebookresearch/esm", "esm_msa1b_t12_100M_UR50S"]
+MSA_MODEL_PATH = ["facebookresearch/esm:main", "esm_msa1b_t12_100M_UR50S"]
 
 ESM_EMBED_LAYER = 33
 ESM_EMBED_DIM = 1280
-ESM_MODEL_PATH = ["facebookresearch/esm", "esm1b_t33_650M_UR50S"]
+ESM_MODEL_PATH = ["facebookresearch/esm:main", "esm1b_t33_650M_UR50S"]
 
 # adapted from https://github.com/facebookresearch/esm
 

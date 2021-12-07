@@ -6,6 +6,7 @@ from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
+from profold2.model.functional import rigids_from_3x3
 from profold2.utils import default,exists
 
 _feats_fn = {}
@@ -23,7 +24,7 @@ def take1st(fn):
     return fc
 
 @take1st
-def make_seq_mask(protein, padd_id=20):
+def make_seq_mask(protein, padd_id=20, is_training=True):
     mask = protein['seq'] != padd_id
     protein['mask'] = mask.bool()
     return protein
@@ -52,18 +53,27 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
     return pseudo_beta
 
 @take1st
-def make_pseudo_beta(protein, prefix=''):
+def make_pseudo_beta(protein, prefix='', is_training=True):
     if prefix + 'seq' in protein and prefix + 'coord' in protein and prefix + 'coord_mask' in protein:
         protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
                 pseudo_beta_fn(protein[prefix + 'seq'], protein[prefix + 'coord'], protein[prefix + 'coord_mask']))
     return protein
 
 @take1st
-def make_random_seed_to_crop(protein):
+def make_backbone_affine(protein, is_training=True):
+    assert (not is_training) or ('coord' in protein and 'coord_mask' in protein)
+    if is_training or ('coord' in protein and 'coord_mask' in protein):
+        assert protein['coord'].shape[-2] >= 3
+        protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
+        protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
     return protein
 
 @take1st
-def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds'):
+def make_random_seed_to_crop(protein, is_training=True):
+    return protein
+
+@take1st
+def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds', is_training=True):
     esm_extractor = ESMEmbeddingExtractor.get(*model, device=device)
     data = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
     protein[field] = rearrange(
@@ -72,7 +82,7 @@ def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, f
     return protein
 
 @take1st
-def make_to_device(protein, fields, device):
+def make_to_device(protein, fields, device, is_training=True):
     if isfunction(device):
         device = device()
     for k in fields:
@@ -81,16 +91,17 @@ def make_to_device(protein, fields, device):
     return protein
 
 @take1st
-def make_selection(protein, fields):
+def make_selection(protein, fields, is_training=True):
     return {k: protein[k] for k in fields}
 
 class FeatureBuilder:
-    def __init__(self, config):
+    def __init__(self, config, is_training=True):
         self.config = config
+        self.training = is_training
 
     def build(self, protein):
         for fn, kwargs in default(self.config, []):
-            f = _feats_fn[fn](**kwargs)
+            f = _feats_fn[fn](is_training=self.training, **kwargs)
             protein = f(protein)
         return protein
 
