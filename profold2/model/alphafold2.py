@@ -218,7 +218,9 @@ class Alphafold2(nn.Module):
             # get msa_mask to all ones if none was passed
             msa_mask = default(msa_mask, lambda: torch.ones_like(embedds[..., -1]).bool())
         else:
-            raise Error('either MSA or embeds must be given')
+            m = rearrange(x, 'b n d -> b () n d')
+            msa_mask = rearrange(mask, 'b n -> b () n')
+            #raise Error('either MSA or embeds must be given')
 
         # derive pairwise representation
         x, x_mask = self.to_pairwise_repr(x, mask, seq_index)
