@@ -59,7 +59,7 @@ class Alphafold2(nn.Module):
         dim_head = 64,
         max_rel_dist = 32,
         num_tokens = constants.NUM_AMINO_ACIDS,
-        num_embedds = constants.NUM_EMBEDDS_TR,
+        embedd_dim = constants.NUM_EMBEDDS_TR,
         max_num_msas = constants.MAX_NUM_MSA,
         max_num_templates = constants.MAX_NUM_TEMPLATES,
         extra_msa_evoformer_layers = 4,
@@ -120,7 +120,7 @@ class Alphafold2(nn.Module):
             self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(num_embedds, dim)
+        self.embedd_project = nn.Linear(embedd_dim, dim)
 
         # main trunk modules
         self.evoformer = Evoformer(
@@ -218,9 +218,7 @@ class Alphafold2(nn.Module):
             # get msa_mask to all ones if none was passed
             msa_mask = default(msa_mask, lambda: torch.ones_like(embedds[..., -1]).bool())
         else:
-            m = rearrange(x, 'b n d -> b () n d')
-            msa_mask = rearrange(mask, 'b n -> b () n')
-            #raise Error('either MSA or embeds must be given')
+            raise Error('either MSA or embeds must be given')
 
         # derive pairwise representation
         x, x_mask = self.to_pairwise_repr(x, mask, seq_index)
