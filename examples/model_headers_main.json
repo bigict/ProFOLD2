@@ -10,10 +10,6 @@
     "fape_max":%(fape_max)s,
     "fape_z":%(fape_z)s,
     "fape_weight":%(fape_weight)s,
-    "fape_reduction":%(fape_reduction)s}, {"weight":1.0}],
-  ["lddt", {
-    "buckets_num":50,
-    "min_resolution":0.0,
-    "max_resolution":3.0}, {"weight":0.0}],
+    "fape_reduction":%(fape_reduction)s}, {"weight":0.1}],
   ["tmscore", {}, {}]
 ]

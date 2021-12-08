@@ -182,6 +182,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                      depth=args.alphafold2_evoformer_depth,
                      heads=8,
                      dim_head=64,
+                     embedd_dim=args.alphafold2_embedd_dim,
                      predict_angles=False,
                      headers=headers), args)
 
@@ -397,6 +398,9 @@ if __name__ == '__main__':
       help='number of recycles in alphafold2, default=0')
   parser.add_argument('--alphafold2_dim', type=int, default=256,
       help='dimension of alphafold2, default=256')
+  parser.add_argument('--alphafold2_embedd_dim', type=int,
+      default=esm.ESM_EMBED_DIM,
+      help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
   parser.add_argument('--alphafold2_evoformer_depth', type=int, default=1,
       help='depth of evoformer in alphafold2, default=1')
   parser.add_argument('--alphafold2_structure_module_depth',

@@ -75,10 +75,14 @@ def make_random_seed_to_crop(protein, is_training=True):
 @take1st
 def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds', is_training=True):
     esm_extractor = ESMEmbeddingExtractor.get(*model, device=device)
-    data = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
-    protein[field] = rearrange(
-            esm_extractor.extract(data, repr_layer=repr_layer, device=device),
-            'b l c -> b () l c')
+    data_in = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
+    data_out = esm_extractor.extract(data_in, repr_layer=repr_layer, device=device)
+
+    if len(data_out.shape) == 3:
+        data_out = rearrange(data_out, 'b l c -> b () l c')
+    assert len(data_out.shape) == 4
+    protein[field] = data_out
+
     return protein
 
 @take1st

@@ -59,7 +59,7 @@ class Alphafold2(nn.Module):
         dim_head = 64,
         max_rel_dist = 32,
         num_tokens = constants.NUM_AMINO_ACIDS,
-        num_embedds = constants.NUM_EMBEDDS_TR,
+        embedd_dim = constants.NUM_EMBEDDS_TR,
         max_num_msas = constants.MAX_NUM_MSA,
         max_num_templates = constants.MAX_NUM_TEMPLATES,
         extra_msa_evoformer_layers = 4,
@@ -120,7 +120,7 @@ class Alphafold2(nn.Module):
             self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(num_embedds, dim)
+        self.embedd_project = nn.Linear(embedd_dim, dim)
 
         # main trunk modules
         self.evoformer = Evoformer(
