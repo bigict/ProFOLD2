@@ -91,7 +91,9 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.casp_version > 12:
     test_loader = custom.load(
                     data_dir=args.casp_data,
-                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB,
+                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB
+                            if args.casp_without_pdb
+                            else custom.ProteinStructureDataset.FEAT_ALL,
                     batch_size=args.batch_size,
                     shuffle=True,
                     feats=feats,
@@ -249,6 +251,8 @@ if __name__ == '__main__':
       help='CASP version, default=30')
   parser.add_argument('-k', '--casp_data', type=str, default='test',
       help='CASP dataset, default=\'test\'')
+  parser.add_argument('--casp_without_pdb', action='store_true',
+      help='DO NOT load pdb data')
   parser.add_argument('-m', '--min_protein_len', type=int, default=0,
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('-M', '--max_protein_len', type=int, default=1024,

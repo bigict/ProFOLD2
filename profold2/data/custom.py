@@ -1,5 +1,6 @@
 import os
 import functools
+import logging
 import math
 import pickle
 import random
@@ -9,39 +10,65 @@ import torch
 from torch.nn import functional as F
 
 from profold2.common import protein, residue_constants
+from profold2.data.parsers import parse_a3m, parse_fasta
+from profold2.data.utils import batch_data_crop
 from profold2.model.features import FeatureBuilder
-from profold2.data.parsers import parse_a3m,parse_fasta
 
-NUM_COORDS_PER_RES=14
+logger = logging.getLogger(__file__)
+
+NUM_COORDS_PER_RES = 14
 
 class ProteinStructureDataset(torch.utils.data.Dataset):
     FEAT_PDB = 0x01
     FEAT_MSA = 0x02
     FEAT_ALL = 0xff
 
-    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None, feat_flags=FEAT_ALL):
+    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None, coord_type=None, feat_flags=FEAT_ALL):
         super().__init__()
 
         self.data_dir = data_dir
         self.max_msa = msa_max_size
         self.max_seq_len = max_seq_len
         self.feat_flags = feat_flags
-        with open(os.path.join(self.data_dir, "pdb_names")) as f:
-            self.pids = list(map(str.rstrip, f))
+        with open(os.path.join(self.data_dir, 'pdb_names')) as f:
+            self.pids = list(map(lambda x: x.strip().split(), f))
+
+        self.mapping = {}
+        if os.path.exists(os.path.join(self.data_dir, 'pdb_mappings')):
+            with open(os.path.join(self.data_dir, 'pdb_mappings')) as f:
+                for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+                    v, k = line.split()
+                    self.mapping[k] = v
 
         self.FASTA = 'fasta'
-        self.PDB = 'pdb' if os.path.exists(os.path.join(data_dir, 'pdb')) else 'pkl'
+
+        self.PDB = coord_type
+        for t in ('pdb', 'pkl', 'npz', 'coord'):
+            if self.PDB is None and os.path.exists(os.path.join(data_dir, t)):
+                self.PDB = t
+                break
+        logger.info('load structure data from: %s', self.PDB)
+        assert self.PDB is not None
 
     def __getitem__(self, idx):
-        pid = self.pids[idx]
-        seq_feats = self.get_seq_features(pid)
+        pids = self.pids[idx]
+        pid = pids[np.random.randint(len(pids))]
+
+        pkey = self.mapping[pid] if pid in self.mapping else pid
+        seq_feats = self.get_seq_features(pkey)
 
         ret = dict(pid=pid, **seq_feats)
         if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
-            if self.PDB == 'pkl':
+            if self.PDB == 'npz':
+                ret.update(self.get_structure_label_npz(pid, seq_feats['str_seq']))
+            elif self.PDB == 'coord':
+                ret.update(self.get_structure_label_numpy(pid, seq_feats['str_seq']))
+            elif self.PDB == 'pkl':
                 ret.update(self.get_structure_label_pkl(pid, seq_feats['str_seq']))
             else:
                 ret.update(self.get_structure_label_pdb(pid, seq_feats['str_seq']))
+        if 'coord_mask' in ret:
+            ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
         return ret
 
     def __len__(self):
@@ -99,6 +126,48 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         result = torch.cat((msa_one_hot, deletion_features), dim=2)  # (N, L, 23 + 3) <- ...
         return result
 
+    def get_structure_label_npz(self, protein_id, str_seq):
+        input_structure_path = os.path.join(self.data_dir, f"{self.PDB}/{protein_id}.npz")
+        structure = np.load(input_structure_path)
+        return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
+        
+    def get_structure_label_numpy(self, protein_id, str_seq):
+        input_structure_path = os.path.join(self.data_dir, f"{self.PDB}/{protein_id}.npz")
+        structure = np.load(input_structure_path)
+
+        labels = np.zeros((len(str_seq), NUM_COORDS_PER_RES, 3), dtype=np.float32)
+        label_mask = np.zeros((len(str_seq), NUM_COORDS_PER_RES), dtype=np.bool)
+
+        for atom_name, coords in structure.items():
+            for i, res_letter in enumerate(str_seq):
+                res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
+                res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
+                try:
+                    atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
+                    if np.any(np.isnan(coords[i])):
+                        continue
+                    labels[i][atom14idx] = coords[i]
+                    if np.any(coords[i]):
+                        label_mask[i][atom14idx] = 1
+                except ValueError: pass
+
+        #all_atoms = set(structure.keys())
+        #
+        #for i, res_letter in enumerate(str_seq):
+        #    res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
+        #    res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
+        #    for atom14idx, atom14name in enumerate(res_atom14_list):
+        #        if not atom14name:
+        #            break
+        #        if atom14name in all_atoms:
+        #            coord = structure[atom14name][i] # POOR performance, WHY
+        #            if np.any(np.isnan(coord)) or np.all(coord==0):
+        #                continue
+        #            labels[i][atom14idx] = torch.from_numpy(coord)
+        #            label_mask[i][atom14idx] = 1
+
+        return dict(coord=torch.from_numpy(labels), coord_mask=torch.from_numpy(label_mask))
+
     def get_structure_label_pkl(self, protein_id, str_seq):
         input_structure_path = os.path.join(self.data_dir, f"{self.PDB}/{protein_id}.pkl")
         with open(input_structure_path, 'rb') as f:
@@ -119,7 +188,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     def get_structure_label_pdb(self, protein_id, str_seq):
         input_structure_path = os.path.join(self.data_dir, f"{self.PDB}/{protein_id}.pdb")
-        with open(input_structure_path, 'r') as f:
+        with open(input_structure_path, 'rb') as f:
             pdb_str = f.read()
 
         prot = protein.from_pdb_string(pdb_str)
@@ -132,7 +201,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""
         input_fasta_path = os.path.join(self.data_dir, f"{self.FASTA}/{protein_id}.fasta")
-        with open(input_fasta_path) as f:
+        with open(input_fasta_path, 'r', encoding='utf-8') as f:
             input_fasta_str = f.read()
         input_seqs, input_descs = parse_fasta(input_fasta_str)
         if len(input_seqs) != 1:
@@ -147,16 +216,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             sequence=input_sequence,
             mapping=residue_constants.restype_order_with_x,
             map_unknown_to_x=True), dtype=torch.int).argmax(-1)
-        residue_index = torch.arange(len(input_sequence), dtype=torch.int)
-        str_seq = input_sequence.replace('X', '_')
+        #residue_index = torch.arange(len(input_sequence), dtype=torch.int)
+        str_seq = ''.join(map(lambda a: a if a in residue_constants.restype_order_with_x else residue_constants.restypes_with_x[-1], input_sequence))
         mask = torch.ones(len(input_sequence), dtype=torch.bool)
 
         return dict(seq=seq,
-                seq_index=residue_index,
                 str_seq=str_seq,
                 mask=mask)
 
-    def collate_fn(self, batch, feat_builder=None):
+    def collate_fn(self, batch, max_seq_len=None, feat_builder=None):
         fields = ('pid', 'seq', 'mask', 'str_seq')
         pids, seqs, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
         lengths = tuple(len(s) for s in str_seqs)
@@ -174,13 +242,13 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             fields = ('coord', 'coord_mask')
             coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
 
-            print(pids)
             padded_coords = pad_for_batch(coords, max_batch_len, 'crd')
             padded_coord_masks = pad_for_batch(coord_masks, max_batch_len, 'crd_msk')
             ret.update(
                 coord=padded_coords,
                 coord_mask=padded_coord_masks)
 
+        ret = batch_data_crop(ret)
         if feat_builder:
             ret = feat_builder.build(ret)
 
@@ -214,7 +282,6 @@ def pad_for_batch(items, batch_length, dtype):
             batch.append(c)
     elif dtype == "crd":
         for item in items:
-            print(batch_length, item.shape)
             z = torch.zeros((batch_length - item.shape[0],  item.shape[-2], item.shape[-1]), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
             batch.append(c)
@@ -229,9 +296,10 @@ def pad_for_batch(items, batch_length, dtype):
     return batch
 
 def load(data_dir, msa_max_size=128, max_seq_len=None, feats=None, is_training=True, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
-    dataset = ProteinStructureDataset(data_dir, msa_max_size, max_seq_len, feat_flags=feat_flags)
+    dataset = ProteinStructureDataset(data_dir, msa_max_size, feat_flags=feat_flags)
     if not 'collate_fn' in kwargs:
-        kwargs['collate_fn'] = functools.partial(dataset.collate_fn, feat_builder=FeatureBuilder(feats, is_training=is_training))
+        kwargs['collate_fn'] = functools.partial(dataset.collate_fn, max_seq_len=max_seq_len,
+                feat_builder=FeatureBuilder(feats, is_training=is_training))
     return torch.utils.data.DataLoader(dataset, **kwargs)
 
 if __name__ == '__main__':

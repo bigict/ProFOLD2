@@ -20,7 +20,7 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
-from profold2.data import esm, scn
+from profold2.data import custom, esm, scn
 from profold2.data.utils import embedding_get_labels, filter_from_file, pdb_save
 from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
@@ -127,7 +127,16 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         if 'device' in feat_args and feat_args['device'] == '%(device)s':
           feat_args['device'] = device
           feats[i] = (feat_name, feat_args)
-  data = scn.load(casp_version=args.casp_version,
+  if args.casp_version > 12:
+    train_loader = custom.load(
+                    data_dir=args.casp_data,
+                    batch_size=args.batch_size,
+                    shuffle=True,
+                    max_seq_len=args.max_protein_len-1,
+                    feats=feats,
+                    num_workers=args.num_workers)
+  else:
+    data = scn.load(casp_version=args.casp_version,
                   thinning=args.casp_thinning,
                   batch_size=args.batch_size,
                   num_workers=args.num_workers,
@@ -136,7 +145,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                   feats=feats,
                   scn_dir=args.scn_dir)
 
-  train_loader = data['train']
+    train_loader = data['train']
   if not train_loader.worker_init_fn:
     logging.info('set worker_init_fn')
     train_loader.worker_init_fn = functools.partial(
@@ -356,6 +365,8 @@ if __name__ == '__main__':
       help='CASP version, default=12')
   parser.add_argument('-T', '--casp_thinning', type=int, default=30,
       help='CASP version, default=30')
+  parser.add_argument('-k', '--casp_data', type=str, default='train',
+      help='CASP dataset, default=\'train\'')
   parser.add_argument('-m', '--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
@@ -380,7 +391,7 @@ if __name__ == '__main__':
       help='the maximum number of checkpoints to keep, default=5')
   parser.add_argument('-K', '--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
-  parser.add_argument('-k',
+  parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
       help='accumulate grads every k times, default=16')
   parser.add_argument('-b', '--batch_size', type=int, default=1,

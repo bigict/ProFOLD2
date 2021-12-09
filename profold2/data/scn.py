@@ -13,6 +13,7 @@ from sidechainnet.utils.sequence import VOCAB
 
 from profold2.common import residue_constants
 from profold2.data import esm
+from profold2.data.utils import batch_data_crop
 from profold2.model.features import FeatureBuilder
 from profold2.utils import *
 
@@ -200,7 +201,8 @@ def load(max_seq_len=None, aggregate_model_input=True, seq_as_onehot=None, colla
     if collate_fn is None:
         collate_fn = functools.partial(_collate_fn, max_seq_len=max_seq_len,
                 aggregate_input=aggregate_model_input,
-                seqs_as_onehot=seq_as_onehot, feat_builder=FeatureBuilder(feats, is_training=is_training))
+                seqs_as_onehot=seq_as_onehot,
+                feat_builder=FeatureBuilder(feats, is_training=is_training))
     scn_dict = sidechainnet.load(casp_version=casp_version, thinning=thinning, scn_dir=scn_dir, scn_dataset=False)
     return prepare_dataloaders(
             scn_dict,
