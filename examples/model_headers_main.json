@@ -1,0 +1,15 @@
+[
+  ["distogram", {
+    "buckets_first_break": 2.3125,
+    "buckets_last_break": 21.6875,
+    "buckets_num":%(buckets_num)s}, {"weight":1.0}],
+  ["folding", {
+    "structure_module_depth":%(structure_module_depth)s,
+    "structure_module_heads":4,
+    "fape_min":%(fape_min)s,
+    "fape_max":%(fape_max)s,
+    "fape_z":%(fape_z)s,
+    "fape_weight":%(fape_weight)s,
+    "fape_reduction":%(fape_reduction)s}, {"weight":0.1}],
+  ["tmscore", {}, {}]
+]

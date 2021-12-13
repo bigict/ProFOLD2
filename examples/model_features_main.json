@@ -1,0 +1,9 @@
+[
+  ["make_pseudo_beta", {}],
+  ["make_backbone_affine", {}],
+  ["make_to_device", {
+    "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask"],
+    "device":"%(device)s"}],
+  ["make_esm_embedd", {
+    "model":["facebookresearch/esm:main", "esm1b_t33_650M_UR50S"], "repr_layer":33, "device":"%(device)s"}]
+]

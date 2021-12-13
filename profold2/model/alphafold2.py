@@ -59,7 +59,7 @@ class Alphafold2(nn.Module):
         dim_head = 64,
         max_rel_dist = 32,
         num_tokens = constants.NUM_AMINO_ACIDS,
-        num_embedds = constants.NUM_EMBEDDS_TR,
+        embedd_dim = constants.NUM_EMBEDDS_TR,
         max_num_msas = constants.MAX_NUM_MSA,
         max_num_templates = constants.MAX_NUM_TEMPLATES,
         extra_msa_evoformer_layers = 4,
@@ -120,7 +120,7 @@ class Alphafold2(nn.Module):
             self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(num_embedds, dim)
+        self.embedd_project = nn.Linear(embedd_dim, dim)
 
         # main trunk modules
         self.evoformer = Evoformer(
@@ -325,11 +325,11 @@ class Alphafold2WithRecycling(nn.Module):
             for i in range(num_recycle):
                 ret = ReturnValues(**cycling_function(batch))
                 if 'tmscore' in ret.headers:
-                    logging.debug('{}/{} tmscore: {}'.format(i, num_recycle, ret.headers['tmscore']['loss'].item()))
+                    logging.debug('{}/{} pid:{} tmscore: {}'.format(i, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
                 batch['recyclables'] = ret.recyclables
 
         ret = ReturnValues(**self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs))
         if 'tmscore' in ret.headers:
-            logging.debug('{}/{} tmscore: {}'.format(num_recycle, num_recycle, ret.headers['tmscore']['loss'].item()))
+            logging.debug('{}/{} pid:{} tmscore: {}'.format(num_recycle, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
 
         return ret.asdict()

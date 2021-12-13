@@ -15,7 +15,7 @@ from einops import rearrange
 
 # models & data
 from profold2.data import scn, custom
-from profold2.data.utils import pdb_save
+from profold2.data.utils import filter_from_file, pdb_save
 from profold2.model import ReturnValues
 from profold2.utils import Kabsch, TMscore
 
@@ -91,10 +91,13 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.casp_version > 12:
     test_loader = custom.load(
                     data_dir=args.casp_data,
-                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB,
+                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB
+                            if args.casp_without_pdb
+                            else custom.ProteinStructureDataset.FEAT_ALL,
                     batch_size=args.batch_size,
                     shuffle=True,
                     feats=feats,
+                    is_training=False,
                     num_workers=0)
   else:
     data = scn.load(casp_version=args.casp_version,
@@ -103,10 +106,13 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                     num_workers=0,
                     filter_by_resolution=args.filter_by_resolution,
                     feats=feats,
-                    dynamic_batching=False)
+                    is_training=False)
 
     test_loader = data[args.casp_data]
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=C0301
+  filter_blacklist, filter_whitelist = (
+    set(filter_from_file(args.filter_by_blacklist)),
+    set(filter_from_file(args.filter_by_whitelist)))
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist)) and (not filter_whitelist or (set(x['pid'])&filter_whitelist))  # pylint: disable=line-too-long
 
   tmscore, n = 0, 0
   # eval loop
@@ -245,12 +251,18 @@ if __name__ == '__main__':
       help='CASP version, default=30')
   parser.add_argument('-k', '--casp_data', type=str, default='test',
       help='CASP dataset, default=\'test\'')
+  parser.add_argument('--casp_without_pdb', action='store_true',
+      help='DO NOT load pdb data')
   parser.add_argument('-m', '--min_protein_len', type=int, default=0,
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
   parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
       help='filter by resolution<=RES')
+  parser.add_argument('--filter_by_blacklist', type=str, default=None,
+      help='filter out proteins whose id in BLACKLIST, default=None')
+  parser.add_argument('--filter_by_whitelist', type=str, default=None,
+      help='filter proteins whose id in WHITELIST, default=None')
 
   parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
   parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
