@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from profold2 import constants
 from profold2.data import custom, esm, scn
-from profold2.data.utils import embedding_get_labels, filter_from_file, pdb_save
+from profold2.data.utils import embedding_get_labels, filter_from_file, pdb_save, weights_from_file
 from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
 
@@ -131,6 +131,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     train_loader = custom.load(
                     data_dir=args.casp_data,
                     batch_size=args.batch_size,
+                    weights=weights_from_file(args.sampling_by_weights),
                     shuffle=True,
                     max_seq_len=args.max_protein_len-1,
                     feats=feats,
@@ -365,6 +366,8 @@ if __name__ == '__main__':
       help='CASP version, default=12')
   parser.add_argument('-T', '--casp_thinning', type=int, default=30,
       help='CASP version, default=30')
+  parser.add_argument('--sampling_by_weights', type=str, default=None,
+      help='CASP sample data by weights, default=None')
   parser.add_argument('-k', '--casp_data', type=str, default='train',
       help='CASP dataset, default=\'train\'')
   parser.add_argument('-m', '--min_protein_len', type=int, default=50,
