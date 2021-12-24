@@ -68,8 +68,6 @@ class Alphafold2(nn.Module):
         templates_dim = 32,
         templates_embed_layers = 4,
         templates_angles_feats_dim = 55,
-        predict_angles = False,
-        symmetrize_omega = False,
         disable_token_embed = False,
         mlm_mask_prob = 0.15,
         mlm_random_replace_token_prob = 0.1,
@@ -87,37 +85,28 @@ class Alphafold2(nn.Module):
         self.disable_token_embed = disable_token_embed
         self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
-        # extra msa embedding
-        self.extra_msa_evoformer = Evoformer(
-            dim = dim,
-            depth = depth,
-            seq_len = max_seq_len,
-            heads = heads,
-            dim_head = dim_head,
-            attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout,
-            global_column_attn = True
-        )
+        # # extra msa embedding
+        # self.extra_msa_evoformer = Evoformer(
+        #     dim = dim,
+        #     depth = depth,
+        #     seq_len = max_seq_len,
+        #     heads = heads,
+        #     dim_head = dim_head,
+        #     attn_dropout = attn_dropout,
+        #     ff_dropout = ff_dropout,
+        #     global_column_attn = True
+        # )
 
-        # template embedding
-        self.template_embedding = TemplateEmbedding(
-                dim = dim,
-                dim_head = dim_head,
-                heads = heads,
-                max_seq_len = max_seq_len,
-                attn_dropout = attn_dropout,
-                templates_dim = templates_dim,
-                templates_embed_layers = templates_embed_layers,
-                templates_angles_feats_dim = templates_angles_feats_dim)
-
-        # projection for angles, if needed
-        self.predict_angles = predict_angles
-        self.symmetrize_omega = symmetrize_omega
-
-        if predict_angles:
-            self.to_prob_theta = nn.Linear(dim, constants.THETA_BUCKETS)
-            self.to_prob_phi   = nn.Linear(dim, constants.PHI_BUCKETS)
-            self.to_prob_omega = nn.Linear(dim, constants.OMEGA_BUCKETS)
+        # # template embedding
+        # self.template_embedding = TemplateEmbedding(
+        #         dim = dim,
+        #         dim_head = dim_head,
+        #         heads = heads,
+        #         max_seq_len = max_seq_len,
+        #         attn_dropout = attn_dropout,
+        #         templates_dim = templates_dim,
+        #         templates_embed_layers = templates_embed_layers,
+        #         templates_angles_feats_dim = templates_angles_feats_dim)
 
         # custom embedding projection
         self.embedd_project = nn.Linear(embedd_dim, dim)
@@ -133,17 +122,17 @@ class Alphafold2(nn.Module):
             ff_dropout = ff_dropout
         )
 
-        # MSA SSL MLM
+        # # MSA SSL MLM
 
-        self.mlm = MLM(
-            dim = dim,
-            num_tokens = num_tokens,
-            mask_id = num_tokens, # last token of embedding is used for masking
-            mask_prob = mlm_mask_prob,
-            keep_token_same_prob = mlm_keep_token_same_prob,
-            random_replace_token_prob = mlm_random_replace_token_prob,
-            exclude_token_ids = mlm_exclude_token_ids
-        )
+        # self.mlm = MLM(
+        #     dim = dim,
+        #     num_tokens = num_tokens,
+        #     mask_id = num_tokens, # last token of embedding is used for masking
+        #     mask_prob = mlm_mask_prob,
+        #     keep_token_same_prob = mlm_keep_token_same_prob,
+        #     random_replace_token_prob = mlm_random_replace_token_prob,
+        #     exclude_token_ids = mlm_exclude_token_ids
+        # )
 
         # recycling params
         self.recycling_msa_norm = nn.LayerNorm(dim)
@@ -191,13 +180,13 @@ class Alphafold2(nn.Module):
         if exists(seq_embed):
             x += seq_embed
 
-        # mlm for MSAs
-        if self.training and exists(msa):
-            original_msa = msa
-            msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
+        # # mlm for MSAs
+        # if self.training and exists(msa):
+        #     original_msa = msa
+        #     msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
 
-            noised_msa, replaced_msa_mask = self.mlm.noise(msa, msa_mask)
-            msa = noised_msa
+        #     noised_msa, replaced_msa_mask = self.mlm.noise(msa, msa_mask)
+        #     msa = noised_msa
 
         # embed multiple sequence alignment (msa)
         if exists(msa):
@@ -228,24 +217,24 @@ class Alphafold2(nn.Module):
             m[:, 0] = m[:, 0] + self.recycling_msa_norm(recyclables.single_msa_repr_row)
             x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
 
-        # embed templates, if present
-        x, x_mask, m, msa_mask = self.template_embedding(
-                x, x_mask, m, msa_mask,
-                templates_feats=templates_feats,
-                templates_angles=templates_angles,
-                templates_mask=templates_mask)
+        # # embed templates, if present
+        # x, x_mask, m, msa_mask = self.template_embedding(
+        #         x, x_mask, m, msa_mask,
+        #         templates_feats=templates_feats,
+        #         templates_angles=templates_angles,
+        #         templates_mask=templates_mask)
 
-        # embed extra msa, if present
-        if exists(extra_msa):
-            extra_m = self.token_emb(msa)
-            extra_msa_mask = default(extra_msa_mask, torch.ones_like(extra_m).bool())
+        # # embed extra msa, if present
+        # if exists(extra_msa):
+        #     extra_m = self.token_emb(msa)
+        #     extra_msa_mask = default(extra_msa_mask, torch.ones_like(extra_m).bool())
 
-            x, extra_m = self.extra_msa_evoformer(
-                x,
-                extra_m,
-                mask = x_mask,
-                msa_mask = extra_msa_mask
-            )
+        #     x, extra_m = self.extra_msa_evoformer(
+        #         x,
+        #         extra_m,
+        #         mask = x_mask,
+        #         msa_mask = extra_msa_mask
+        #     )
 
         # trunk
         x, m = self.evoformer(
@@ -256,11 +245,6 @@ class Alphafold2(nn.Module):
 
         # ready output container
         ret = ReturnValues()
-
-        # calculate theta and phi before symmetrization
-        if self.predict_angles:
-            ret.theta_logits = self.to_prob_theta(x)
-            ret.phi_logits = self.to_prob_phi(x)
 
         representations = {'pair': x, 'single': m[:, 0]}
         ret.headers = {}
@@ -279,15 +263,10 @@ class Alphafold2(nn.Module):
                 else:
                     ret.loss = loss['loss'] * options.get('weight', 1.0)
 
-        # calculate mlm loss, if training
-        if self.training and exists(msa):
-            num_msa = original_msa.shape[1]
-            ret.msa_mlm_loss = self.mlm(m[:, :num_msa], original_msa, replaced_msa_mask)
-
-        # determine angles, if specified
-        if self.predict_angles:
-            omega_input = trunk_embeds if self.symmetrize_omega else x
-            ret.omega_logits = self.to_prob_omega(omega_input)
+        # # calculate mlm loss, if training
+        # if self.training and exists(msa):
+        #     num_msa = original_msa.shape[1]
+        #     ret.msa_mlm_loss = self.mlm(m[:, :num_msa], original_msa, replaced_msa_mask)
 
         if return_recyclables:
             single_msa_repr_row, pairwise_repr = map(torch.detach, (representations['single'], representations['pair']))

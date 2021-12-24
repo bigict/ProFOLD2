@@ -248,7 +248,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 coord=padded_coords,
                 coord_mask=padded_coord_masks)
 
-        ret = batch_data_crop(ret)
+        ret = batch_data_crop(ret, max_seq_len=max_seq_len)
         if feat_builder:
             ret = feat_builder.build(ret)
 

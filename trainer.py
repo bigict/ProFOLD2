@@ -78,7 +78,7 @@ def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
         model,
         device_ids=[args.gpu_list[rank]], output_device=args.gpu_list[rank],
         find_unused_parameters=False)
-    model._set_static_graph()  # pylint: disable=protected-access
+    # model._set_static_graph()  # pylint: disable=protected-access
   return model
 
 def worker_data_init_fn(rank, args=None):  # pylint: disable=redefined-outer-name
@@ -192,7 +192,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                      heads=8,
                      dim_head=64,
                      embedd_dim=args.alphafold2_embedd_dim,
-                     predict_angles=False,
                      headers=headers), args)
 
   # optimizer
