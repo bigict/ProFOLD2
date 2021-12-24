@@ -1,0 +1,244 @@
+"""Tools for make dataset, run
+     ```bash
+     $python data_maker.py -h
+     ```
+     for further help.
+"""
+import os
+import argparse
+import functools
+import gzip
+import multiprocessing as mp
+from itertools import groupby
+import logging
+
+import numpy as np
+
+from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+from Bio.PDB.PDBExceptions import PDBConstructionException
+from Bio.SeqIO.FastaIO import SimpleFastaParser as FastaParser
+
+from profold2.common import residue_constants
+
+logger = logging.getLogger(__file__)
+
+def lines(f):
+  for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+    yield line
+
+def parse_fasta(filename, datasource=None):
+  def iter_fasta(it):
+    for name, seq in it:
+      if datasource == 'swissprot':
+        name = name.split('|')[1]
+      elif datasource == 'rcsb':
+        name = name.split()[0]
+      yield name, seq
+  if filename.endswith('.gz'):
+    with gzip.open(filename, 'rt', encoding='utf-8') as f:
+      for name, seq in iter_fasta(FastaParser(f)):
+        yield name, seq
+  with open(filename, 'r', encoding='utf-8') as f:
+    for name, seq in iter_fasta(FastaParser(f)):
+      yield name, seq
+
+def decompose_pid(pid):
+  k = pid.find('_')
+  if k != -1:
+    return pid[:k], pid[k+1:]
+  return pid, None
+
+def compose_pid(pid, chain):
+  return f'{pid}_{chain}' if chain else f'{pid}'
+
+def parse_cluster(filename):
+  with open(filename, 'r', encoding='utf-8') as f:
+    for cid, values in groupby(map(lambda x: x.split(), lines(f)),
+                               key=lambda x: x[0]):
+      items = set()
+      for value in values:
+        items |= set(value)
+      yield cid, items
+
+def mmcif_get_filename(pid, chain, datasource=None):
+  if datasource == 'swissprot':
+    return f'AF-{pid}-F1-model_v2.cif.gz'
+  elif datasource == 'rcsb':
+    return f'{pid.lower()}.cif.gz'
+  del chain
+
+def mmcif_parse(filename):
+  if filename.endswith('.gz'):
+    with gzip.open(filename, 'rt', encoding='utf-8') as f:
+      return MMCIF2Dict(f)
+  return MMCIF2Dict(filename)
+
+def mmcif_get_chain(structure, chain_id):
+  for model in structure.get_models():
+    if chain_id is None or model.has_id(chain_id):
+      for chain in model.get_chains():
+        if chain_id is None or chain.id == chain_id:
+          return chain
+  return None
+
+def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
+  n = len(str_seqs)
+  assert n > 0
+
+  labels = np.zeros((n, 14, 3), dtype=np.float32)
+  label_mask = np.zeros((n, 14), dtype=np.bool)
+
+  # two special chars as placeholders in the mmCIF format
+  # for item values that cannot be explicitly assigned
+  # see: pdbx/mmcif syntax web page
+  _unassigned = {'.', '?'}  # pylint: disable=invalid-name
+
+  atom_id_list = mmcif_dict['_atom_site.label_atom_id']
+  residue_id_list = mmcif_dict['_atom_site.label_comp_id']
+  chain_id_list = mmcif_dict['_atom_site.auth_asym_id']
+  x_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_x']]
+  y_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_y']]
+  z_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_z']]
+  icode_list = mmcif_dict['_atom_site.pdbx_PDB_ins_code']
+  b_factor_list = mmcif_dict['_atom_site.B_iso_or_equiv']
+  fieldname_list = mmcif_dict['_atom_site.group_PDB']
+
+  def seq_id_key_swith(atom_id_list):
+    if not '_atom_site.auth_seq_id' in mmcif_dict:
+      return '_atom_site.label_seq_id'
+    for i, _ in atom_id_list:
+      auth_seq_id = int(mmcif_dict['_atom_site.auth_seq_id'][i])
+      label_seq_id = int(mmcif_dict['_atom_site.label_seq_id'][i])
+      if auth_seq_id == label_seq_id:
+        continue
+      resname = residue_constants.restype_3to1.get(
+          residue_id_list[i], residue_constants.restypes_with_x[-1])
+      if auth_seq_id > len(str_seqs) or str_seqs[auth_seq_id - 1] != resname:
+        assert str_seqs[label_seq_id - 1] == resname
+        return '_atom_site.label_seq_id'
+      if label_seq_id > len(str_seqs) or str_seqs[label_seq_id - 1] != resname:
+        assert str_seqs[auth_seq_id - 1] == resname
+        return '_atom_site.auth_seq_id'
+    return '_atom_site.auth_seq_id'
+
+  atom_id_list = list(filter(
+      lambda x: (chain_id_list[x[0]] == chain
+          and fieldname_list[x[0]] != 'HETATM'),
+      enumerate(atom_id_list)))
+  seq_id_key = seq_id_key_swith(atom_id_list)
+  current_resseq = None
+  residue_plddt, residue_n, atom_plddt, atom_n = 0.0, 0, 0.0, 0
+  for i, atom_id in atom_id_list:
+    icode = icode_list[i]
+    if icode in _unassigned:
+      icode = ' '
+    int_resseq = int(mmcif_dict[seq_id_key][i])
+
+    resname = residue_constants.restype_3to1.get(
+        residue_id_list[i], residue_constants.restypes_with_x[-1])
+    assert str_seqs[int_resseq - 1] == resname, f'{int_resseq} str_seqs={str_seqs[int_resseq - 1] } resname={resname}, icode={icode}'  # pylint: disable=line-too-long
+
+    res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
+    try:
+      atom14idx = res_atom14_list.index(atom_id)
+      coord = np.asarray((x_list[i], y_list[i], z_list[i]))
+      if np.any(np.isnan(coord)):
+        continue
+      labels[int_resseq-1][atom14idx] = coord
+      if np.any(coord):
+        # occupancy & B factor
+        tempfactor = 0.0
+        try:
+          tempfactor = float(b_factor_list[i])
+          if current_resseq == int_resseq:
+            atom_plddt, atom_n = atom_plddt + tempfactor, atom_n + 1
+        except ValueError as e:
+          raise PDBConstructionException('Invalid or missing B factor') from e
+        if datasource != 'swissprot' or tempfactor >= 85.0:
+          label_mask[int_resseq-1][atom14idx] = True
+    except ValueError as e:
+      logger.debug(e)
+    if current_resseq != int_resseq:
+      if atom_n > 0:
+        residue_plddt = residue_plddt + atom_plddt/atom_n
+        residue_n = residue_n + 1
+      atom_plddt, atom_n = 0.0, 0
+      current_resseq = int_resseq
+
+  if datasource != 'swissprot' or (
+      residue_n > 0 and residue_plddt/residue_n > 85.0):
+    return dict(coord=labels, coord_mask=label_mask)
+  return None
+
+def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer-name
+  cid, pid_list = item
+  clu_list = []
+  for i, (pid, chain_id) in enumerate(map(decompose_pid, pid_list)):
+    mmcif_filename = os.path.join(
+        args.mmcif_dir,
+        mmcif_get_filename(pid, chain_id, datasource=args.datasource))
+    if os.path.exists(mmcif_filename):
+      fid = compose_pid(
+          pid.lower() if args.datasource=='rcsb' else pid, chain_id)
+
+      logger.info('(%s) (%d/%d) %s - %s',
+          cid, i, len(pid_list), fid, mmcif_filename)
+      coords = mmcif_get_coords(
+          mmcif_parse(mmcif_filename),
+          chain_id,
+          sequences[fid],
+          datasource=args.datasource)
+      if coords:
+        clu_list.append(fid)
+
+        with open(
+            os.path.join(args.output, 'fasta', f'{fid}.fasta'),
+            'w', encoding='utf-8') as fasta:
+          print(f'>{fid}', file=fasta)
+          print(f'{sequences[fid]}', file=fasta)
+        np.savez(os.path.join(args.output, 'npz', fid), **coords)
+  return cid, pid_list, clu_list
+
+def main(args):  # pylint: disable=redefined-outer-name
+  logger.info('output - %s', args.output)
+  os.makedirs(args.output, exist_ok=True)
+  for d in ('fasta', 'npz'):
+    os.makedirs(os.path.join(args.output, d), exist_ok=True)
+
+  sequences = dict(parse_fasta(args.fasta_file, datasource=args.datasource))
+
+  logger.info('sequences - %s', len(sequences))
+
+  with open(os.path.join(args.output, 'pdb_names'), 'w', encoding='utf-8') as f:
+    with mp.Pool(args.processes) as p:
+      for cid, pid_list, clu_list in p.imap(
+          functools.partial(process, sequences=sequences, args=args),
+          parse_cluster(args.clustering_file)):
+        del cid
+        del pid_list
+        if clu_list:
+          print('\t'.join(clu_list), file=f)
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+
+  parser.add_argument('-p', '--processes', type=int, default=None,
+      help='number of worker processes to use, default=None')
+  parser.add_argument('-c', '--clustering_file', type=str, default='bc-30.out',
+      help='sequnce clusters data, default=\'bc-30.out\'')
+  parser.add_argument('-s', '--fasta_file',
+      type=str, default='derived_data/pdb_seqres.txt',
+      help='fasta file, default=\'./derived_data/pdb_seqres.txt\'')
+  parser.add_argument('-m', '--mmcif_dir', type=str, default='mmCIF',
+      help='fasta file, default=\'mmCIF\'')
+  parser.add_argument('-o', '--output', type=str, default='.',
+      help='output dir, default=\'.\'')
+  parser.add_argument('-t', '--datasource',
+      choices=['swissprot', 'rcsb'], default='swissprot',
+      help='data source type: [swissprot, rcsb], default=\'swissprot\'')
+  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+  args = parser.parse_args()
+
+  logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+
+  main(args)

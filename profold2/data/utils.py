@@ -51,6 +51,13 @@ def batch_data_crop(batch, max_seq_len=None):
                 clips=clips)
     return batch
 
+def weights_from_file(filename):
+    if filename:
+        with open(filename, 'r', encoding='utf-8') as f:
+            for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+                items = line.split()
+                yield float(items[0])
+
 def embedding_get_labels(name, mat):
     if name == 'token':
         return [residue_constants.restypes_with_x[i if i < len(residue_constants.restypes_with_x) else -1]
