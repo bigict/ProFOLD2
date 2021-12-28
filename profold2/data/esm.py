@@ -66,6 +66,8 @@ class ESMEmbeddingExtractor:
                         break
             else:
                 batch_tokens, batch_strs, batch_tokens = self.batch_converter(seqs)
+                if exists(device):
+                    batch_tokens = batch_tokens.to(device)
                 results = self.model.embed_tokens(batch_tokens)
                 representations.append(results[...,1:max_seq_len+1,:])
 

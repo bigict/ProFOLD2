@@ -304,5 +304,7 @@ def load(data_dir, msa_max_size=128, max_seq_len=None, feats=None, is_training=T
     if 'weights' in kwargs:
         weights = kwargs.pop('weights')
         if weights:
-            kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=kwargs.get('batch_size'))
+            kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=len(weights))
+            if 'shuffle' in kwargs:
+                kwargs.pop('shuffle')
     return torch.utils.data.DataLoader(dataset, **kwargs)
