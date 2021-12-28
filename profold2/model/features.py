@@ -73,7 +73,7 @@ def make_random_seed_to_crop(protein, is_training=True):
     return protein
 
 @take1st
-def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds', is_training=True):
+def make_esm_embedd(protein, model, repr_layer=None, max_seq_len=None, device=None, field='embedds', is_training=True):
     esm_extractor = ESMEmbeddingExtractor.get(*model, device=device)
     data_in = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
     data_out = esm_extractor.extract(data_in, repr_layer=repr_layer, device=device)

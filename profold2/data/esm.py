@@ -34,34 +34,40 @@ class ESMEmbeddingExtractor:
         # use ESM transformer
         device = default(device, getattr(seqs, 'device', None))
         max_seq_len = max(map(lambda x: len(x[1]), seqs))
-        repr_layer = default(repr_layer, ESM_EMBED_LAYER)
+        # repr_layer = default(repr_layer, ESM_EMBED_LAYER)
 
         assert not return_contacts or max_seq_len <= self.max_input_len
+        assert not return_contacts or exists(repr_layer)
 
         representations, contacts = [], []
         # Extract per-residue representations
         with torch.no_grad():
-            for i in range(0, max_seq_len, self.max_step_len):
-                j = min(i + self.max_input_len, max_seq_len)
-                delta = 0 if i == 0 else self.max_input_len - self.max_step_len
-                if i > 0 and j < i + self.max_input_len:
-                    delta += i + self.max_input_len - max_seq_len
-                    i = max_seq_len - self.max_input_len
+            if exists(repr_layer):
+                for i in range(0, max_seq_len, self.max_step_len):
+                    j = min(i + self.max_input_len, max_seq_len)
+                    delta = 0 if i == 0 else self.max_input_len - self.max_step_len
+                    if i > 0 and j < i + self.max_input_len:
+                        delta += i + self.max_input_len - max_seq_len
+                        i = max_seq_len - self.max_input_len
 
-                batch_seqs = [(label, seq[i:j]) for label, seq in seqs]
-                batch_labels, batch_strs, batch_tokens = self.batch_converter(batch_seqs)
+                    batch_seqs = [(label, seq[i:j]) for label, seq in seqs]
+                    batch_labels, batch_strs, batch_tokens = self.batch_converter(batch_seqs)
 
-                if exists(device):
-                    batch_tokens = batch_tokens.to(device)
+                    if exists(device):
+                        batch_tokens = batch_tokens.to(device)
 
-                results = self.model(batch_tokens, repr_layers=[repr_layer], return_contacts=return_contacts)
-                # index 0 is for start token. so take from 1 one
-                representations.append(results['representations'][repr_layer][...,delta+1:j-i+1,:])
-                if return_contacts:
-                    contacts.append(results['contacts'])
-                
-                if j >= max_seq_len:
-                    break
+                    results = self.model(batch_tokens, repr_layers=[repr_layer], return_contacts=return_contacts)
+                    # index 0 is for start token. so take from 1 one
+                    representations.append(results['representations'][repr_layer][...,delta+1:j-i+1,:])
+                    if return_contacts:
+                        contacts.append(results['contacts'])
+                    
+                    if j >= max_seq_len:
+                        break
+            else:
+                batch_tokens, batch_strs, batch_tokens = self.batch_converter(seqs)
+                results = self.model.embed_tokens(batch_tokens)
+                representations.append(results[...,1:max_seq_len+1,:])
 
         if return_contacts:
             return torch.cat(representations, dim=1), torch.cat(contacts, dim=1)

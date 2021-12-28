@@ -8,6 +8,7 @@ import random
 import numpy as np
 import torch
 from torch.nn import functional as F
+from torch.utils.data import WeightedRandomSampler
 
 from profold2.common import protein, residue_constants
 from profold2.data.parsers import parse_a3m, parse_fasta
@@ -300,10 +301,8 @@ def load(data_dir, msa_max_size=128, max_seq_len=None, feats=None, is_training=T
     if not 'collate_fn' in kwargs:
         kwargs['collate_fn'] = functools.partial(dataset.collate_fn, max_seq_len=max_seq_len,
                 feat_builder=FeatureBuilder(feats, is_training=is_training))
+    if 'weights' in kwargs:
+        weights = kwargs.pop('weights')
+        if weights:
+            kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=kwargs.get('batch_size'))
     return torch.utils.data.DataLoader(dataset, **kwargs)
-
-if __name__ == '__main__':
-    from torch.utils.data import DataLoader
-    PATH_DIR = sys.argv[1]
-    db = ProteinStructureDataset(PATH_DIR)
-    dataloader = DataLoader(db, batch_size=4, shuffle=True, num_workers=0, collate_fn=collate_fn)
