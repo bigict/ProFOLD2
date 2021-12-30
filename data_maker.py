@@ -31,7 +31,7 @@ def parse_fasta(filename, datasource=None):
     for name, seq in it:
       if datasource == 'swissprot':
         name = name.split('|')[1]
-      elif datasource == 'rcsb':
+      elif datasource in ['rcsb', 'norm']:
         name = name.split()[0]
       yield name, seq
   if filename.endswith('.gz'):
@@ -65,6 +65,8 @@ def mmcif_get_filename(pid, chain, datasource=None):
     return f'AF-{pid}-F1-model_v2.cif.gz'
   elif datasource == 'rcsb':
     return f'{pid.lower()}.cif.gz'
+  elif datasource == 'norm':
+    return f'{pid}.cif.gz'
   del chain
 
 def mmcif_parse(filename):
@@ -113,11 +115,11 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
         continue
       resname = residue_constants.restype_3to1.get(
           residue_id_list[i], residue_constants.restypes_with_x[-1])
-      if auth_seq_id > len(str_seqs) or str_seqs[auth_seq_id - 1] != resname:
-        assert str_seqs[label_seq_id - 1] == resname
+      if (auth_seq_id < 1 or auth_seq_id > len(str_seqs) or
+          str_seqs[auth_seq_id - 1] != resname):
         return '_atom_site.label_seq_id'
-      if label_seq_id > len(str_seqs) or str_seqs[label_seq_id - 1] != resname:
-        assert str_seqs[auth_seq_id - 1] == resname
+      if (label_seq_id < 1 or label_seq_id > len(str_seqs) or
+          str_seqs[label_seq_id - 1] != resname):
         return '_atom_site.auth_seq_id'
     return '_atom_site.auth_seq_id'
 
@@ -136,7 +138,12 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
 
     resname = residue_constants.restype_3to1.get(
         residue_id_list[i], residue_constants.restypes_with_x[-1])
-    assert str_seqs[int_resseq - 1] == resname, f'{int_resseq} str_seqs={str_seqs[int_resseq - 1] } resname={resname}, icode={icode}'  # pylint: disable=line-too-long
+    if (int_resseq < 1 or int_resseq > len(str_seqs) or
+        str_seqs[int_resseq - 1] != resname):
+      aa = '-'
+      if 1 <= int_resseq <= len(str_seqs):
+        aa = str_seqs[int_resseq - 1]
+      raise PDBConstructionException(f'{int_resseq} str_seqs={aa} resname={resname}, icode={icode}')  # pylint: disable=line-too-long
 
     res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
     try:
@@ -144,7 +151,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
       coord = np.asarray((x_list[i], y_list[i], z_list[i]))
       if np.any(np.isnan(coord)):
         continue
-      labels[int_resseq-1][atom14idx] = coord
+      labels[int_resseq - 1][atom14idx] = coord
       if np.any(coord):
         # occupancy & B factor
         tempfactor = 0.0
@@ -173,7 +180,9 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
 def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer-name
   cid, pid_list = item
   clu_list = []
-  for i, (pid, chain_id) in enumerate(map(decompose_pid, pid_list)):
+
+  mmcif_fn, mmcif_dict = None, None
+  for i, (pid, chain_id) in enumerate(map(decompose_pid, sorted(pid_list))):
     mmcif_filename = os.path.join(
         args.mmcif_dir,
         mmcif_get_filename(pid, chain_id, datasource=args.datasource))
@@ -183,20 +192,30 @@ def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer
 
       logger.info('(%s) (%d/%d) %s - %s',
           cid, i, len(pid_list), fid, mmcif_filename)
-      coords = mmcif_get_coords(
-          mmcif_parse(mmcif_filename),
-          chain_id,
-          sequences[fid],
-          datasource=args.datasource)
-      if coords:
-        clu_list.append(fid)
+      try:
+        if mmcif_fn != mmcif_filename:
+          mmcif_fn, mmcif_dict = mmcif_filename, mmcif_parse(mmcif_filename)
+        assert mmcif_dict is not None
+        coords = mmcif_get_coords(
+            mmcif_dict,
+            chain_id,
+            sequences[fid],
+            datasource=args.datasource)
+        if coords:
+          clu_list.append(fid)
 
-        with open(
-            os.path.join(args.output, 'fasta', f'{fid}.fasta'),
-            'w', encoding='utf-8') as fasta:
-          print(f'>{fid}', file=fasta)
-          print(f'{sequences[fid]}', file=fasta)
-        np.savez(os.path.join(args.output, 'npz', fid), **coords)
+          with open(
+              os.path.join(args.output, 'fasta', f'{fid}.fasta'),
+              'w', encoding='utf-8') as fasta:
+            print(f'>{fid}', file=fasta)
+            print(f'{sequences[fid]}', file=fasta)
+          np.savez(os.path.join(args.output, 'npz', fid), **coords)
+      except PDBConstructionException as e:
+        logger.warning('mmcif_parse: %s {%s}', mmcif_filename, str(e))
+      except Exception as e:
+        logger.warning('mmcif_parse: %s {%s}', mmcif_filename, str(e))
+        raise Exception('...') from e
+  logger.info('result (%s) %d - %d', cid, len(pid_list), len(clu_list))
   return cid, pid_list, clu_list
 
 def main(args):  # pylint: disable=redefined-outer-name
@@ -217,7 +236,7 @@ def main(args):  # pylint: disable=redefined-outer-name
         del cid
         del pid_list
         if clu_list:
-          print('\t'.join(clu_list), file=f)
+          print('\t'.join(clu_list), file=f, flush=True)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -234,8 +253,8 @@ if __name__ == '__main__':
   parser.add_argument('-o', '--output', type=str, default='.',
       help='output dir, default=\'.\'')
   parser.add_argument('-t', '--datasource',
-      choices=['swissprot', 'rcsb'], default='swissprot',
-      help='data source type: [swissprot, rcsb], default=\'swissprot\'')
+      choices=['swissprot', 'rcsb', 'norm'], default='norm',
+      help='data source type: [swissprot, rcsb, norm], default=\'norm\'')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 
