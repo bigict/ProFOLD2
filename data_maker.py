@@ -228,7 +228,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   logger.info('sequences - %s', len(sequences))
 
-  with open(os.path.join(args.output, 'pdb_names'), 'w', encoding='utf-8') as f:
+  with open(os.path.join(args.output, 'name.idx'), 'w', encoding='utf-8') as f:
     with mp.Pool(args.processes) as p:
       for cid, pid_list, clu_list in p.imap(
           functools.partial(process, sequences=sequences, args=args),
