@@ -51,6 +51,18 @@ def batch_data_crop(batch, max_seq_len=None):
                 clips=clips)
     return batch
 
+def cycling(loader, cond=lambda x: True):
+    epoch = 0
+    while True:
+      logging.info('epoch: %d', epoch)
+
+      data_iter = iter(loader)
+      for data in data_iter:
+          if cond(data):
+              yield epoch, data
+
+      epoch += 1
+
 def weights_from_file(filename):
     if filename:
         with open(filename, 'r', encoding='utf-8') as f:

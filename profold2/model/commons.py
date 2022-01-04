@@ -50,21 +50,17 @@ class FeedForward(nn.Module):
         x = self.norm(x)
         return self.net(x)
 
-# attention
-
+# multi-head attention
 class Attention(nn.Module):
     def __init__(
         self,
         dim,
-        seq_len = None,
         heads = 8,
         dim_head = 64,
-        dropout = 0.,
-        gating = True
+        dropout = 0.
     ):
         super().__init__()
         inner_dim = dim_head * heads
-        self.seq_len = seq_len
         self.heads= heads
         self.scale = dim_head ** -0.5
 
@@ -310,7 +306,6 @@ class PairwiseAttentionBlock(nn.Module):
     def __init__(
         self,
         dim,
-        seq_len,
         heads,
         dim_head,
         dropout = 0.,
@@ -344,7 +339,6 @@ class MsaAttentionBlock(nn.Module):
     def __init__(
         self,
         dim,
-        seq_len,
         heads,
         dim_head,
         dropout = 0.
