@@ -19,7 +19,6 @@ setup(
   install_requires=[
     'einops>=0.3',
     'numpy',
-    'sidechainnet',
     'torch>=1.6',
     'mp-nerf>=0.1.5'
   ],

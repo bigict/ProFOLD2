@@ -9,6 +9,7 @@ import argparse
 import functools
 import json
 import logging
+from logging.handlers import QueueHandler, QueueListener
 import random
 import resource
 
@@ -19,9 +20,12 @@ import torch.multiprocessing as mp
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
-from profold2 import constants
-from profold2.data import custom, esm, scn
-from profold2.data.utils import embedding_get_labels, filter_from_file, pdb_save, weights_from_file
+from profold2.data import dataset, esm
+from profold2.data.utils import (
+    cycling,
+    embedding_get_labels,
+    pdb_save,
+    weights_from_file)
 from profold2.model import Alphafold2, ReturnValues
 from profold2.model.utils import CheckpointManager
 
@@ -38,7 +42,7 @@ class WorkerLogFilter(logging.Filter):
 def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # logging
   logger = logging.getLogger()
-  ctx_handler = logging.handlers.QueueHandler(log_queue)
+  ctx_handler = QueueHandler(log_queue)
   if args.gpu_list:
     ctx_filter = WorkerLogFilter(args.gpu_list[rank])
     ctx_handler.addFilter(ctx_filter)
@@ -93,107 +97,50 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   worker_setup(rank, log_queue, args)
 
-  # helpers
-  def cycling(loader, cond=lambda x: True):
-    epoch = 0
-    while True:
-      logging.info('epoch: %d', epoch)
-
-      data_iter = iter(loader)
-      for data in data_iter:
-        if cond(data):
-          yield data
-
-      epoch += 1
-
   # get data
   device = worker_device(rank, args)
-  feats = [('make_pseudo_beta', {}),
-           ('make_backbone_affine', {}),
-           ('make_to_device',
-            dict(fields=[
-                'seq', 'mask', 'coord', 'coord_mask', 'pseudo_beta',
-                'pseudo_beta_mask'
-            ], device=device)),
-           ('make_esm_embedd',
-            dict(model=esm.ESM_MODEL_PATH, repr_layer=esm.ESM_EMBED_LAYER,
-                device=device))]
-  if args.alphafold2_features:
-    with open(args.alphafold2_features, 'r', encoding='utf-8') as f:
-      data = f.read()
-      feats = json.loads(data)
-      for i in range(len(feats)):
-        feat_name, feat_args = feats[i]
-        if 'device' in feat_args and feat_args['device'] == '%(device)s':
-          feat_args['device'] = device
-          feats[i] = (feat_name, feat_args)
-  if args.casp_version > 12:
-    train_loader = custom.load(
-                    data_dir=args.casp_data,
-                    batch_size=args.batch_size,
-                    weights=weights_from_file(args.sampling_by_weights),
-                    shuffle=True,
-                    max_seq_len=args.max_protein_len-1,
-                    feats=feats,
-                    num_workers=args.num_workers)
-  else:
-    data = scn.load(casp_version=args.casp_version,
-                  thinning=args.casp_thinning,
-                  batch_size=args.batch_size,
-                  num_workers=args.num_workers,
-                  filter_by_resolution=args.filter_by_resolution,
-                  max_seq_len=args.max_protein_len-1,
-                  feats=feats,
-                  scn_dir=args.scn_dir)
+  with open(args.model_features, 'r', encoding='utf-8') as f:
+    feats = json.loads(f.read())
+    for i in range(len(feats)):
+      feat_name, feat_args = feats[i]
+      if 'device' in feat_args and feat_args['device'] == '%(device)s':
+        feat_args['device'] = device
+        feats[i] = (feat_name, feat_args)
 
-    train_loader = data['train']
-  if not train_loader.worker_init_fn:
-    logging.info('set worker_init_fn')
-    train_loader.worker_init_fn = functools.partial(
-                                            worker_data_init_fn, args=args)
+  train_loader = dataset.load(
+      data_dir=args.train_data,
+      max_seq_len=args.max_protein_len-1,
+      feats=feats,
+      worker_init_fn=functools.partial(
+          worker_data_init_fn, args=args),
+      batch_size=args.batch_size,
+      weights=list(weights_from_file(args.sampling_by_weights)),
+      shuffle=True,
+      num_workers=args.num_workers)
+  if args.eval_data:
+    eval_loader = dataset.load(
+        data_dir=args.eval_data,
+        max_seq_len=args.max_protein_len-1,
+        feats=feats,
+        batch_size=args.batch_size,
+        is_training=False,
+        num_workers=0)
 
-  filter_blacklist, filter_whitelist = (
-    set(filter_from_file(args.filter_by_blacklist)),
-    set(filter_from_file(args.filter_by_whitelist)))
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist)) and (not filter_whitelist or (set(x['pid'])&filter_whitelist))  # pylint: disable=line-too-long
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
   dl = cycling(train_loader, data_cond)
 
   # model
-  headers = [
-      ('distogram',
-          dict(buckets_first_break=2.3125,
-              buckets_last_break=21.6875,
-              buckets_num=constants.DISTOGRAM_BUCKETS), dict(weight=1.0)),
-      ('folding',
-          dict(structure_module_depth=args.alphafold2_structure_module_depth,
-              structure_module_heads=4,
-              fape_min=args.alphafold2_fape_min,
-              fape_max=args.alphafold2_fape_max,
-              fape_z=args.alphafold2_fape_z,
-              fape_weight=args.alphafold2_fape_w,
-              fape_reduction=args.alphafold2_fape_reduction), dict(weight=0.1)),
-      ('tmscore', {}, {})]
-  if args.alphafold2_headers:
-    with open(args.alphafold2_headers, 'r', encoding='utf-8') as f:
-      data = f.read()
-      headers = json.loads(data % dict(
-          buckets_num=constants.DISTOGRAM_BUCKETS,
-          structure_module_depth=args.alphafold2_structure_module_depth,
-          fape_min=args.alphafold2_fape_min,
-          fape_max=args.alphafold2_fape_max,
-          fape_z=args.alphafold2_fape_z,
-          fape_weight=args.alphafold2_fape_w,
-          fape_reduction=args.alphafold2_fape_reduction))
+  with open(args.model_headers, 'r', encoding='utf-8') as f:
+    headers = json.loads(f.read())
 
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = worker_model(rank, Alphafold2(dim=args.alphafold2_dim,
-                     depth=args.alphafold2_evoformer_depth,
+  model = worker_model(rank, Alphafold2(dim=args.model_dim,
+                     depth=args.model_evoformer_depth,
                      heads=8,
                      dim_head=64,
-                     embedd_dim=args.alphafold2_embedd_dim,
-                     predict_angles=False,
+                     embedd_dim=args.model_embedd_dim,
                      headers=headers), args)
 
   # optimizer
@@ -233,14 +180,14 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     running_loss = {}
     for jt in range(args.gradient_accumulate_every):
-      batch = next(dl)
+      epoch, batch = next(dl)
 
       seq = batch['seq']
-      logging.debug('%d %d seq.shape: %s', it, jt, seq.shape)
+      logging.debug('%d %d %d seq.shape: %s', epoch, it, jt, seq.shape)
 
       # sequence embedding (msa / esm / attn / or nothing)
       r = ReturnValues(**model(batch=batch,
-          num_recycle=args.alphafold2_recycles))
+          num_recycle=args.model_recycles))
 
       if it == 0 and jt == 0 and args.tensorboard_add_graph:
         with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
@@ -273,6 +220,26 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       # Add embeddings
       model_add_embeddings(writer, model, it)
 
+    if (args.eval_data and (not args.gpu_list or rank == 0) and
+        args.eval_every > 0 and (it + 1) % args.eval_every == 0):
+      model.eval()
+
+      with torch.no_grad():
+        # eval loss
+        n, eval_loss = 0, {}
+        for data in iter(eval_loader):
+          r = ReturnValues(**model(batch=data))
+          for h, v in r.headers.items():
+            if 'loss' in v:
+              eval_loss[h] = eval_loss.get(h, 0) + v['loss'].item()
+          n += 1
+        for k, v in eval_loss.items():
+          v /= (args.batch_size * n)
+          logging.info('%d eval@%s: %s', it, k, v)
+          writer.add_scalar(f'Loss/eval@{k}', v, it)
+
+      model.train()
+
   writer.close()
 
   # latest checkpoint
@@ -295,10 +262,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   worker_cleanup(args)
 
 def main(args):  # pylint: disable=redefined-outer-name
-  # set torch local cache home
-  if args.torch_home:
-    os.environ['TORCH_HOME'] = args.torch_home
-
   mp.set_start_method('spawn', force=True)
 
   # logging
@@ -331,7 +294,7 @@ def main(args):  # pylint: disable=redefined-outer-name
       handlers=handlers)
 
   log_queue = mp.Queue(-1)
-  listener = logging.handlers.QueueListener(log_queue, *handlers,
+  listener = QueueListener(log_queue, *handlers,
       respect_handler_level=True)
   listener.start()
 
@@ -358,23 +321,21 @@ if __name__ == '__main__':
       help='list of GPU IDs')
   parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
       help='ipc file to initialize the process group')
-  parser.add_argument('-X', '--model', type=str, default='model.pth',
-      help='model of alphafold2, default=\'model.pth\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
-  parser.add_argument('-C', '--casp_version', type=int, default=12,
-      help='CASP version, default=12')
-  parser.add_argument('-T', '--casp_thinning', type=int, default=30,
-      help='CASP version, default=30')
+  parser.add_argument('-t', '--train_data', type=str, default='train',
+      help='train dataset, default=\'train\'')
+  parser.add_argument('-n', '--num_batches', type=int, default=100000,
+      help='number of batches, default=10^5')
+  parser.add_argument('-e', '--eval_data', type=str, default=None,
+      help='eval dataset, default=None')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
-      help='CASP sample data by weights, default=None')
-  parser.add_argument('-k', '--casp_data', type=str, default='train',
-      help='CASP dataset, default=\'train\'')
-  parser.add_argument('-m', '--min_protein_len', type=int, default=50,
+      help='sample train data by weights, default=None')
+  parser.add_argument('--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
-  parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
+  parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
+  parser.add_argument('--filter_by_resolution', type=float, default=0,
       help='filter by resolution<=RES')
   parser.add_argument('--filter_by_blacklist', type=str, default=None,
       help='filter out proteins whose id in BLACKLIST, default=None')
@@ -383,17 +344,12 @@ if __name__ == '__main__':
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
 
-  parser.add_argument('--torch_home', type=str,
-      help='set env `TORCH_HOME`, default=${HOME}/.catch/torch')
-  parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
-      help='specify scn_dir')
-
-  parser.add_argument('-n', '--num_batches', type=int, default=100000,
-      help='number of batches, default=10^5')
-  parser.add_argument('-N', '--checkpoint_max_to_keep', type=int, default=5,
+  parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
       help='the maximum number of checkpoints to keep, default=5')
-  parser.add_argument('-K', '--checkpoint_every', type=int, default=100,
+  parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
+  parser.add_argument('--eval_every', type=int, default=1000,
+      help='eval model every K times, default=1000')
   parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
       help='accumulate grads every k times, default=16')
@@ -404,32 +360,21 @@ if __name__ == '__main__':
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 
-  parser.add_argument('--alphafold2_features', type=str, default=None,
-      help='json format features of alphafold2, default=None')
-  parser.add_argument('--alphafold2_headers', type=str, default=None,
-      help='json format headers of alphafold2, default=None')
-  parser.add_argument('--alphafold2_recycles', type=int, default=0,
-      help='number of recycles in alphafold2, default=0')
-  parser.add_argument('--alphafold2_dim', type=int, default=256,
-      help='dimension of alphafold2, default=256')
-  parser.add_argument('--alphafold2_embedd_dim', type=int,
+  parser.add_argument('--model_features', type=str,
+      default='model_features_main.json',
+      help='json format features of model, default=model_features_main.json')
+  parser.add_argument('--model_headers', type=str,
+      default='model_headers_main.json',
+      help='json format headers of model, default=model_headers_main.json')
+  parser.add_argument('--model_recycles', type=int, default=0,
+      help='number of recycles in model, default=0')
+  parser.add_argument('--model_dim', type=int, default=256,
+      help='dimension of model, default=256')
+  parser.add_argument('--model_embedd_dim', type=int,
       default=esm.ESM_EMBED_DIM,
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
-  parser.add_argument('--alphafold2_evoformer_depth', type=int, default=1,
-      help='depth of evoformer in alphafold2, default=1')
-  parser.add_argument('--alphafold2_structure_module_depth',
-      type=int, default=1,
-      help='depth of structure module in alphafold2, default=1')
-  parser.add_argument('--alphafold2_fape_min', type=float, default=1e-4,
-      help='minimum of dij in alphafold2, default=1e-4')
-  parser.add_argument('--alphafold2_fape_max', type=float, default=10.0,
-      help='maximum of dij in alphafold2, default=10.0')
-  parser.add_argument('--alphafold2_fape_z', type=float, default=10.0,
-      help='Z of dij in alphafold2, default=10.0')
-  parser.add_argument('--alphafold2_fape_w', type=float, default=1.0,
-      help='weight of fape loss in alphafold2, default=1.0')
-  parser.add_argument('--alphafold2_fape_reduction', type=int, default=-1,
-      help='reduction of fape loss in alphafold2, default=None')
+  parser.add_argument('--model_evoformer_depth', type=int, default=1,
+      help='depth of evoformer in model, default=1')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')

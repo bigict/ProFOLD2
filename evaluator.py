@@ -14,7 +14,7 @@ import torch.multiprocessing as mp
 from einops import rearrange
 
 # models & data
-from profold2.data import scn, custom
+from profold2.data import dataset
 from profold2.data.utils import filter_from_file, pdb_save
 from profold2.model import ReturnValues
 from profold2.utils import Kabsch, TMscore
@@ -88,27 +88,17 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logging.info('feats: %s', feats)
   logging.info('model: %s', model)
 
-  if args.casp_version > 12:
-    test_loader = custom.load(
-                    data_dir=args.casp_data,
-                    feat_flags=~custom.ProteinStructureDataset.FEAT_PDB
-                            if args.casp_without_pdb
-                            else custom.ProteinStructureDataset.FEAT_ALL,
-                    batch_size=args.batch_size,
-                    shuffle=True,
-                    feats=feats,
-                    is_training=False,
-                    num_workers=0)
-  else:
-    data = scn.load(casp_version=args.casp_version,
-                    thinning=args.casp_thinning,
-                    batch_size=args.batch_size,
-                    num_workers=0,
-                    filter_by_resolution=args.filter_by_resolution,
-                    feats=feats,
-                    is_training=False)
+  test_loader = dataset.load(
+                  data_dir=args.casp_data,
+                  feat_flags=~dataset.ProteinStructureDataset.FEAT_PDB
+                          if args.casp_without_pdb
+                          else dataset.ProteinStructureDataset.FEAT_ALL,
+                  batch_size=args.batch_size,
+                  shuffle=True,
+                  feats=feats,
+                  is_training=False,
+                  num_workers=0)
 
-    test_loader = data[args.casp_data]
   filter_blacklist, filter_whitelist = (
     set(filter_from_file(args.filter_by_blacklist)),
     set(filter_from_file(args.filter_by_whitelist)))
@@ -173,10 +163,6 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   worker_cleanup(args)
 
 def main(args):  # pylint: disable=W0621
-  # set torch local cache home
-  if args.torch_home:
-    os.environ['TORCH_HOME'] = args.torch_home
-
   mp.set_start_method('spawn', force=True)
 
   # logging
@@ -245,10 +231,6 @@ if __name__ == '__main__':
       help='pids to eval, default=\'\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
-  parser.add_argument('-C', '--casp_version', type=int, default=12,
-      help='CASP version, default=12')
-  parser.add_argument('-T', '--casp_thinning', type=int, default=30,
-      help='CASP version, default=30')
   parser.add_argument('-k', '--casp_data', type=str, default='test',
       help='CASP dataset, default=\'test\'')
   parser.add_argument('--casp_without_pdb', action='store_true',
@@ -263,10 +245,6 @@ if __name__ == '__main__':
       help='filter out proteins whose id in BLACKLIST, default=None')
   parser.add_argument('--filter_by_whitelist', type=str, default=None,
       help='filter proteins whose id in WHITELIST, default=None')
-
-  parser.add_argument('--torch_home', type=str, help='set env `TORCH_HOME`')
-  parser.add_argument('--scn_dir', type=str, default='./sidechainnet_data',
-      help='specify scn_dir')
 
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')

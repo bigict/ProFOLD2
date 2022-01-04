@@ -51,7 +51,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         self.FASTA = 'fasta'
 
         self.PDB = coord_type
-        for t in ('pdb', 'pkl', 'npz', 'coord'):
+        for t in ('npz', 'pdb', 'pkl', 'coord'):
             if self.PDB is None and (self.data_dir / t).exists():
                 self.PDB = t
                 break

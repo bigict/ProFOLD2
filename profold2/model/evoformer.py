@@ -9,7 +9,6 @@ class TemplateEmbedding(nn.Module):
                  dim, 
                  heads = 8,
                  dim_head = 64,
-                 max_seq_len = 2048,
                  attn_dropout = 0.,
                  templates_dim = 32,
                  templates_embed_layers = 4,
@@ -21,8 +20,7 @@ class TemplateEmbedding(nn.Module):
         self.template_pairwise_embedder = PairwiseAttentionBlock(
             dim = dim,
             dim_head = dim_head,
-            heads = heads,
-            seq_len = max_seq_len
+            heads = heads
         )
 
         self.template_pointwise_attn = Attention(
@@ -92,7 +90,6 @@ class EvoformerBlock(nn.Module):
         self,
         *,
         dim,
-        seq_len,
         heads,
         dim_head,
         attn_dropout,
@@ -101,9 +98,9 @@ class EvoformerBlock(nn.Module):
     ):
         super().__init__()
         self.layer = nn.ModuleList([
-            PairwiseAttentionBlock(dim = dim, seq_len = seq_len, heads = heads, dim_head = dim_head, dropout = attn_dropout, global_column_attn = global_column_attn),
+            PairwiseAttentionBlock(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout, global_column_attn = global_column_attn),
             FeedForward(dim = dim, dropout = ff_dropout),
-            MsaAttentionBlock(dim = dim, seq_len = seq_len, heads = heads, dim_head = dim_head, dropout = attn_dropout),
+            MsaAttentionBlock(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout),
             FeedForward(dim = dim, dropout = ff_dropout),
         ])
 
