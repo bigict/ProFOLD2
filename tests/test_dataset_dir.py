@@ -2,8 +2,7 @@ import unittest
 import os
 from datetime import datetime
 
-from profold2.data.custom import *
-#from profold2.data.custom_new import *
+from profold2.data.dataset import *
 
 class TestDataSet(unittest.TestCase):
     def setUp(self):

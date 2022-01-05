@@ -1,9 +1,11 @@
+import contextlib
 import functools
+from io import BytesIO
 import logging
 import math
 import pathlib
-import pickle
 import random
+import zipfile
 
 import numpy as np
 import torch
@@ -28,31 +30,33 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         super().__init__()
 
         self.data_dir = pathlib.Path(data_dir)
+        if zipfile.is_zipfile(self.data_dir):
+            self.data_dir = zipfile.ZipFile(self.data_dir)
         self.max_msa = msa_max_size
         self.max_seq_len = max_seq_len
         self.feat_flags = feat_flags
-        with open(self.data_dir / 'name.idx', 'r', encoding='utf-8') as f:
-            self.pids = list(map(lambda x: x.strip().split(), f))
+        with self._fileobj('name.idx') as f:
+            self.pids = list(map(lambda x: self._ftext(x).strip().split(), f))
 
         self.mapping = {}
-        if (self.data_dir / 'mapping.idx').exists():
-            with open(self.data_dir / 'mapping.idx', 'r', encoding='utf-8') as f:
-                for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+        if self._fstat('mapping.idx'):
+            with self._fileobj('mapping.idx') as f:
+                for line in filter(lambda x: len(x)>0, map(lambda x: self._ftext(x).strip(), f)):
                     v, k = line.split()
                     self.mapping[k] = v
 
         self.resolu = {}
-        if (self.data_dir / 'resolu.idx').exists():
-            with open(self.data_dir / 'resolu.idx', 'r', encoding='utf-8') as f:
-                for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+        if self._fstat('resolu.idx'):
+            with self._fileobj('resolu.idx') as f:
+                for line in filter(lambda x: len(x)>0, map(lambda x: self._ftext(x).strip(), f)):
                     k, v = line.split()
                     self.resolu[k] = float(v)
 
         self.FASTA = 'fasta'
 
         self.PDB = coord_type
-        for t in ('npz', 'pdb', 'pkl', 'coord'):
-            if self.PDB is None and (self.data_dir / t).exists():
+        for t in ('npz', 'coord'):
+            if self.PDB is None and self._fstat(f'{t}/'):
                 self.PDB = t
                 break
         logger.info('load structure data from: %s', self.PDB)
@@ -67,20 +71,40 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
         ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
         if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+            assert self.PDB in ('npz', 'coord')
             if self.PDB == 'npz':
                 ret.update(self.get_structure_label_npz(pid, seq_feats['str_seq']))
-            elif self.PDB == 'coord':
-                ret.update(self.get_structure_label_numpy(pid, seq_feats['str_seq']))
-            elif self.PDB == 'pkl':
-                ret.update(self.get_structure_label_pkl(pid, seq_feats['str_seq']))
             else:
-                ret.update(self.get_structure_label_pdb(pid, seq_feats['str_seq']))
+                ret.update(self.get_structure_label_numpy(pid, seq_feats['str_seq']))
         if 'coord_mask' in ret:
             ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
         return ret
 
     def __len__(self):
         return len(self.pids)
+
+    @contextlib.contextmanager
+    def _fileobj(self, filename):
+        if isinstance(self.data_dir, zipfile.ZipFile):
+            with self.data_dir.open(filename, mode='r') as f:
+                yield f
+        else:
+            with open(self.data_dir / filename, mode='rb') as f:
+                yield f
+
+    def _fstat(self, filename):
+        if isinstance(self.data_dir, zipfile.ZipFile):
+            try:
+                self.data_dir.getinfo(filename)
+                return True
+            except KeyError as e:
+                return False
+        return (self.data_dir / filename).exists()
+
+    def _ftext(self, line, encoding='utf-8'):
+        if isinstance(line, bytes):
+            return line.decode(encoding)
+        return line
 
     def get_resolution(self, protein_id):
         pid = protein_id.split('_')
@@ -139,82 +163,37 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         return result
 
     def get_structure_label_npz(self, protein_id, str_seq):
-        input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.npz"
-        structure = np.load(input_structure_path)
-        return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
+        with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
+            structure = np.load(BytesIO(f.read()))
+            return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
         
     def get_structure_label_numpy(self, protein_id, str_seq):
-        input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.npz"
-        structure = np.load(input_structure_path)
-
         labels = np.zeros((len(str_seq), NUM_COORDS_PER_RES, 3), dtype=np.float32)
         label_mask = np.zeros((len(str_seq), NUM_COORDS_PER_RES), dtype=np.bool)
 
-        for atom_name, coords in structure.items():
-            for i, res_letter in enumerate(str_seq):
-                res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
-                res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
-                try:
-                    atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
-                    if np.any(np.isnan(coords[i])):
-                        continue
-                    labels[i][atom14idx] = coords[i]
-                    if np.any(coords[i]):
-                        label_mask[i][atom14idx] = 1
-                except ValueError: pass
+        #input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.npz"
+        with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
+            structure = np.load(BytesIO(f.read()))
 
-        #all_atoms = set(structure.keys())
-        #
-        #for i, res_letter in enumerate(str_seq):
-        #    res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
-        #    res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
-        #    for atom14idx, atom14name in enumerate(res_atom14_list):
-        #        if not atom14name:
-        #            break
-        #        if atom14name in all_atoms:
-        #            coord = structure[atom14name][i] # POOR performance, WHY
-        #            if np.any(np.isnan(coord)) or np.all(coord==0):
-        #                continue
-        #            labels[i][atom14idx] = torch.from_numpy(coord)
-        #            label_mask[i][atom14idx] = 1
+            for atom_name, coords in structure.items():
+                for i, res_letter in enumerate(str_seq):
+                    res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
+                    res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
+                    try:
+                        atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
+                        if np.any(np.isnan(coords[i])):
+                            continue
+                        labels[i][atom14idx] = coords[i]
+                        if np.any(coords[i]):
+                            label_mask[i][atom14idx] = 1
+                    except ValueError: pass
 
         return dict(coord=torch.from_numpy(labels), coord_mask=torch.from_numpy(label_mask))
 
-    def get_structure_label_pkl(self, protein_id, str_seq):
-        input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.pkl"
-        with open(input_structure_path, 'rb') as f:
-            structure = pickle.load(f)
-
-        labels = torch.zeros(len(str_seq), NUM_COORDS_PER_RES, 3)
-        label_mask = torch.zeros(len(str_seq), NUM_COORDS_PER_RES, dtype=torch.int8)
-        for i, (res_coords, res_letter) in enumerate(zip(structure[:self.max_seq_len], str_seq)):
-            res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
-            for atom_name, coords in res_coords.items():
-                try:
-                    atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
-                    labels[i][atom14idx] = torch.from_numpy(coords)
-                    label_mask[i][atom14idx] = 1
-                except ValueError: pass
-
-        return dict(coord=labels, coord_mask=label_mask.bool())
-
-    def get_structure_label_pdb(self, protein_id, str_seq):
-        input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.pdb"
-        with open(input_structure_path, 'rb') as f:
-            pdb_str = f.read()
-
-        prot = protein.from_pdb_string(pdb_str)
-
-        labels = torch.tensor(prot.atom_positions) #torch.zeros(len(str_seq), NUM_COORDS_PER_RES, 3)
-        label_mask = torch.tensor(prot.atom_mask, dtype=torch.bool) #torch.zeros(len(str_seq), NUM_COORDS_PER_RES, dtype=torch.int8)
-
-        return dict(coord=labels, coord_mask=label_mask)
-
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""
-        input_fasta_path = self.data_dir / f"{self.FASTA}/{protein_id}.fasta"
-        with open(input_fasta_path, 'r', encoding='utf-8') as f:
-            input_fasta_str = f.read()
+        with self._fileobj(f'{self.FASTA}/{protein_id}.fasta') as f:
+            input_fasta_str = self._ftext(f.read())
         input_seqs, input_descs = parse_fasta(input_fasta_str)
         if len(input_seqs) != 1:
             raise ValueError(
