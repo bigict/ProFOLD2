@@ -8,7 +8,7 @@ from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
 from profold2.model.commons import init_zero_
-from profold2.model.functional import quaternion_multiply, quaternion_to_matrix
+from profold2.model.functional import l2_norm, quaternion_multiply, quaternion_to_matrix
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,40 @@ class IPABlock(nn.Module):
         x = self.ff_norm(x)
         return x
 
+class AngleNetBlock(nn.Module):
+    def __init__(self, dim, channel=128):
+        super().__init__()
+
+        self.net = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(dim, channel),
+                nn.ReLU(),
+                nn.Linear(channel, dim))
+
+    def forward(self, x):
+        return x + self.net(x)
+
+class AngleNet(nn.Module):
+    def __init__(self, dim, channel=128, num_blocks=2):
+        super().__init__()
+
+        self.blocks = nn.Sequential(
+                *[AngleNetBlock(dim, channel) for _ in range(num_blocks)])
+
+        self.projection = nn.Linear(dim, 14)
+
+    def forward(self, representation):
+        act = representation['single']
+
+        # Mapping with some angle residual blocks
+        act = self.blocks(act)
+
+        # Map activations to torsion angles. (b l n 7 2)
+        angles = rearrange(self.projection(F.relu(act)), '... (n d)->... n d', d=2)
+        angles = l2_norm(angles)
+
+        return angles
+
 # StructureModule - iteratively updating rotations and translations
 
 # this portion is not accurate to AF2, as AF2 applies a FAPE auxiliary loss on each layer, as well as a stop gradient on the rotations
@@ -254,16 +288,11 @@ class StructureModule(nn.Module):
             quaternions = torch.tensor([1., 0., 0., 0.], device = device) # initial rotations
             quaternions = repeat(quaternions, 'd -> b n d', b = b, n = n)
             translations = torch.zeros((b, n, 3), device = device)
+            rotations = quaternion_to_matrix(quaternions)
 
             # go through the layers and apply invariant point attention and feedforward
             for i in range(self.structure_module_depth):
                 is_last = i == (self.structure_module_depth - 1)
-
-                rotations = quaternion_to_matrix(quaternions)
-                # the detach comes from
-                # https://github.com/deepmind/alphafold/blob/0bab1bf84d9d887aba5cfb6d09af1e8c3ecbc408/alphafold/model/folding.py#L383
-                if not is_last:
-                    rotations = rotations.detach()
 
                 single_repr = self.ipa_block(
                     single_repr,
@@ -277,10 +306,11 @@ class StructureModule(nn.Module):
                 quaternion_update, translation_update = self.to_affine_update(single_repr).chunk(2, dim = -1)
                 quaternion_update = F.pad(quaternion_update, (1, 0), value = 1.)
                 # FIX: make sure quaternion_update is standardized
-                quaternion_update = quaternion_update / torch.linalg.norm(quaternion_update, dim=-1, keepdim=True)
+                quaternion_update = l2_norm(quaternion_update)
 
                 quaternions = quaternion_multiply(quaternions, quaternion_update)
                 translations = torch.einsum('b n c, b n r c -> b n r', translation_update, rotations) + translations
+                rotations = quaternion_to_matrix(quaternions)
 
                 if self.training or is_last:
                     n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n c r -> b n r', point_local, rotations) + translations,
@@ -288,5 +318,9 @@ class StructureModule(nn.Module):
                     backbones = torch.stack((n_point_global, translations, c_point_global), dim=-2)
                     backbones.type(original_dtype)
                     outputs.append(dict(frames=(rotations, translations), act=single_repr, backbones=backbones))
+
+                # No rotation gradients between iterations to stabilize training.
+                if not is_last:
+                    rotations = rotations.detach()
 
         return outputs

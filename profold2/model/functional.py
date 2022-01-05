@@ -6,6 +6,9 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 
+def l2_norm(v, dim=-1, epsilon=1e-12):
+    return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
+
 """
 The transformation matrices returned from the functions in this file assume
 the points on which the transformation will be applied are column vectors.
@@ -225,10 +228,10 @@ def rigids_from_3x3(points, epsilon=1e-6):
     v1 = points[...,0,:] - points[...,1,:]
     v2 = points[...,2,:] - points[...,1,:]
 
-    e1 = v1 / torch.clamp(torch.linalg.norm(v1, dim=-1, keepdim=True), min=epsilon)
+    e1 = l2_norm(v1, epsilon=epsilon)
     c = torch.sum(e1 * v2, dim=-1, keepdim=True)
     u2 = v2 - e1*c
-    e2 = u2 / torch.clamp(torch.linalg.norm(u2, dim=-1, keepdim=True), min=epsilon)
+    e2 = l2_norm(u2, epsilon=epsilon)
     e3 = torch.cross(e1, e2, dim=-1)
     R = torch.stack((e1, e2, e3), dim=-1)
     t = points[...,1,:]
@@ -254,20 +257,30 @@ def rigids_batched_gather(params, indices):
     return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
 
 def rigids_to_positions(frames, aatypes):
+    # Shape ((b, l, 8, 3, 3), (b, l, 8, 3))
+    rotations, translations = frames
+
+    # Shape (b, l, 14)
     group_idx = rigids_batched_gather(
         residue_constants.restype_atom14_to_rigid_group, aatypes)
+    # Shape (b, l, 14, 8)
+    group_mask = F.one_hot(group_idx, num_classes=8).float()
+
+    rotations = torch.einsum('b l m n,b l n h w->b l m h w', group_mask, rotations)
+    translations = torch.einsum('b l m n,b l n h->b l m h', group_mask, translations)
 
     # Gather the literature atom positions for each residue.
     # Shape (b, l, 14, 3)
     group_pos = rigids_batched_gather(
         residue_constants.restype_atom14_rigid_group_positions, aatypes)
 
-    rotations, translations = frames
-
     # Transform each atom from it's local frame to the global frame.
-    atom_pos = torch.einsum('... w,b ... h w -> ... h', group_pos, rotations) + translations
+    positions = torch.einsum('... w,... h w -> ... h', group_pos, rotations) + translations
 
-    return atom_pos
+    # Mask out non-existing atoms.
+    mask = rigids_batched_gather(
+        residue_constants.restype_atom14_mask, aatypes)
+    return positions*rearrange(mask, '... d->... d ()')
 
 def rigids_slice(frames, start=0, end=None):
     rotations, translations = frames
@@ -281,7 +294,7 @@ def rigids_multiply(a, b):
     rots_a, trans_a = a
     rots_b, trans_b = b
     rotations = torch.einsum('... h d,... d w -> ... h w', rots_a, rots_b)
-    translations = torch.einsum('... w,... w h -> ... h', trans_b, rots_a) + trans_a
+    translations = torch.einsum('... w,... h w -> ... h', trans_b, rots_a) + trans_a
     return rotations, translations
 
 def rigids_rotate(frames, mat3x3):
@@ -292,7 +305,7 @@ def rigids_rotate(frames, mat3x3):
 def rigids_from_angles(aatypes, backb_frames, angles):
     """Create rigids from torsion angles
     """
-    # Shape (b, l, 3 3), (b, l, 3)
+    # Shape (b, l, 3, 3), (b, l, 3)
     backb_rotations, backb_trans = backb_frames
     assert backb_rotations.shape[-2:] == (3, 3) and backb_trans.shape[-1] == 3
     # Shape (b, l)
@@ -314,7 +327,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
     # Insert zero rotation for backbone group.
     # Shape (b, l, n+1, 2)
     angles = torch.cat((
-            rearrange(torch.stack((torch.ones_like(aatypes), torch.zeros_like(aatypes)), dim=-1), 'b l r -> b l () r'),
+            rearrange(torch.stack((torch.zeros_like(aatypes), torch.ones_like(aatypes)), dim=-1), 'b l r -> b l () r'),
             angles), dim=-2)
     sin_angles, cos_angles = torch.unbind(angles, dim=-1)
     zeros, ones = torch.zeros_like(sin_angles), torch.ones_like(cos_angles)
@@ -335,11 +348,11 @@ def rigids_from_angles(aatypes, backb_frames, angles):
         rotations[...,idx,:,:], translations[...,idx,:] = rigids_multiply(
                 (rotations[...,idx-1,:,:], translations[...,idx-1,:]), (rotations[...,idx,:,:], translations[...,idx,:]))
         return rotations, translations
-        
+
     for i in range(5, n+1):
         atom_frames = to_prev_frames(atom_frames, i)
-    
-    return rigids_multiply(atom_frames, rigids_rearrange(backb_frames, 'b l ... -> b l () ...'))
+
+    return rigids_multiply(rigids_rearrange(backb_frames, 'b l ... -> b l () ...'), atom_frames)
 
 def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, clamp_distance=None, epsilon=1e-8):
     """ FAPE(Frame Aligined Point Error) - Measure point error under different alignments

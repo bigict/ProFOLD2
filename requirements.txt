@@ -1,6 +1,6 @@
 # python 3.7
+biopython
 einops>=0.3
 numpy
 torch>=1.6
-mp-nerf>=0.1.5
 tensorboard

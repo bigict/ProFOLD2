@@ -1,8 +1,9 @@
 import unittest
+import os
+import sys
 
 import numpy as np
 import torch
-from pytorch3d.transforms import quaternion_apply, quaternion_to_matrix, matrix_to_quaternion, random_quaternions, quaternion_multiply
 from einops import repeat, rearrange
 
 from profold2.model import functional as F
@@ -168,30 +169,131 @@ class TestUtils(unittest.TestCase):
         ##print(torch.sum(xij*xij, -1))
         #print(torch.sum(m_diff*m_diff, dim=-1).shape)
 
+    def torsion_random(self, b, n):
+        alpha_f = torch.rand(b, n, 7, 2)
+        alpha_f = alpha_f / torch.linalg.norm(alpha_f, dim=-1, keepdim=True)
+        return alpha_f
+
+    def rigids_random(self, b, n):
+        quaternions = torch.rand(b, n, 4)
+        quaternions = quaternions / torch.linalg.norm(quaternions, dim=-1, keepdim=True)
+        rotations = F.quaternion_to_matrix(quaternions)
+        translations = torch.rand(b, n, 3)
+        return rotations, translations
+
+    def rigids_to_af2(self, frames):
+        assert 'AF2_HOME' in os.environ
+        if not os.environ['AF2_HOME'] in sys.path:
+            sys.path.append(os.environ['AF2_HOME'])
+        from alphafold.model import r3
+
+        rotations, trans = frames
+        # 1. Select Rots "xx,xy,xz,yx,yy,yz,xz,yz,zz" from rotations_np
+        def rotations_to_array(rotations, i, j):
+            t = rearrange(rotations[...,i,j], 'b n ...->(b n) ...')
+            return np.asarray(t)
+        rots = [rotations_to_array(rotations, i//3, i%3) for i in range(3*3)]
+        rots = r3.Rots(*rots)
+        
+        # 2. Select Trans "x,y,z" from rotations_np
+        def trans_to_array(trans, i):
+            t = rearrange(trans[...,i], 'b n ...->(b n) ...')
+            return np.asarray(t)
+        trans = [trans_to_array(trans, i) for i in range(3)]
+        trans = r3.Vecs(*trans)
+
+        return r3.Rigids(rots, trans)
+
+    def rigids_to_pf2(self, frames):
+        assert 'AF2_HOME' in os.environ
+        if not os.environ['AF2_HOME'] in sys.path:
+            sys.path.append(os.environ['AF2_HOME'])
+        from alphafold.model import r3
+
+        assert isinstance(frames, r3.Rigids)
+
+        rots = [np.stack(frames.rot[i*3:(i+1)*3], axis=-1) for i in range(3)]
+        rots = np.stack(rots, axis=-2)
+        trans = np.stack(frames.trans[:], axis=-1)
+
+        return torch.from_numpy(rots), torch.from_numpy(trans)
+
     def test_rigids_from_angles(self):
         b, n = 1, 10
-        aatypes = torch.randint(0, 20, size=(b, n))
-        backb_points = torch.rand(b, n, 3, 3)
-        backb_frames = F.rigids_from_3x3(backb_points)
-        angles = torch.rand(b, n, 3, 2)
-        angles = angles / torch.linalg.norm(angles, dim=-1, keepdim=True) + 1e-12
-        x = F.rigids_from_angles(aatypes, backb_frames, angles)
-        print('test_rigids_from_angles: ', x[0].shape, x[1].shape)
+
+        if 'AF2_HOME' in os.environ:
+            if not os.environ['AF2_HOME'] in sys.path:
+                sys.path.append(os.environ['AF2_HOME'])
+            from alphafold.model import all_atom
+
+            alpha_f = self.torsion_random(b, n)
+            aatype = torch.randint(0, 20, (b, n))
+            backb_frames = self.rigids_random(b, n)
+
+            # Test for ProFOLD_Function: rigids_from_angles 
+            rotations_pf2, translations_pf2 = F.rigids_from_angles(aatype, backb_frames, alpha_f)
+            #print("rotations.shape:{} \nrotations.xx:{}".format(rotations.shape, rotations[0, :, :, 0, 0]))
+            #print("translations.shape:{} \ntrans.x:{}".format(translations.shape, translations[0, :, :, 0]))
+            #print(rotations.shape)
+
+            #print('-'*70)
+
+            # Test for AlphaFold_Function: all_atoms.rigids_from_torsion_angles
+            print("Validate by AlphaFold2 ")
+            # 1. Change data type for alphafold input 
+            alpha_f_np = alpha_f.view(-1,7,2).numpy() 
+            aatype_np = aatype.view(-1).numpy()
+            rigids = self.rigids_to_af2(backb_frames)
+
+            # 2. Output: some change for logs in alphafold.model.all_atoms in lines 522
+            out = all_atom.torsion_angles_to_frames(aatype_np, rigids, alpha_f_np)
+
+            rotations_af2, translations_af2 = self.rigids_to_pf2(out)
+            rotations_af2 = rearrange(rotations_af2, '(b n) ...->b n ...', b=b)
+            translations_af2 = rearrange(translations_af2, '(b n) ...->b n ...', b=b)
+
+            self.assertTrue(torch.allclose(rotations_pf2, rotations_af2))
+            self.assertTrue(torch.allclose(translations_pf2, translations_af2))
+        else:
+            aatypes = torch.randint(0, 20, size=(b, n))
+            backb_points = torch.rand(b, n, 3, 3)
+            backb_frames = F.rigids_from_3x3(backb_points)
+            angles = torch.rand(b, n, 3, 2)
+            angles = angles / torch.linalg.norm(angles, dim=-1, keepdim=True) + 1e-12
+            x = F.rigids_from_angles(aatypes, backb_frames, angles)
+            print('test_rigids_from_angles: ', x[0].shape, x[1].shape)
 
     def test_rigids_to_positions(self):
         b, n = 1, 10
-        aatypes = torch.randint(0, 20, size=(b, n))
-        backb_points = torch.rand(b, n, 14, 3, 3)
-        backb_frames = F.rigids_from_3x3(backb_points)
-        x = F.rigids_to_positions(backb_frames, aatypes)
-        #print(x)
+
+        alpha_f = self.torsion_random(b, n)
+        aatype = torch.randint(0, 20, (b, n))
+        backb_frames = self.rigids_random(b, n)
+        all_atom_frames_pf2 = F.rigids_from_angles(aatype, backb_frames, alpha_f)
+
+        if 'AF2_HOME' in os.environ:
+            if not os.environ['AF2_HOME'] in sys.path:
+                sys.path.append(os.environ['AF2_HOME'])
+            from alphafold.model import all_atom
+
+            all_atom_frames_af2 = self.rigids_to_af2(all_atom_frames_pf2)
+
+            aatype_np = aatype.view(-1).numpy()
+            coords_af2 = all_atom.frames_and_literature_positions_to_atom14_pos(aatype_np, all_atom_frames_af2)
+            coords_af2 = torch.from_numpy(np.stack(coords_af2[:], axis=-1))
+
+            coords_pf2 = F.rigids_to_positions(all_atom_frames_pf2, aatype)
+            self.assertTrue(torch.allclose(coords_af2, coords_pf2))
+        else:
+            print(all_atom_frames_pf2)
 
     def test_fape2(self):
         true_points = torch.rand(1, 5, 3, 3)
         true_frames = F.rigids_from_3x3(true_points)
-        quaternions = rearrange(random_quaternions(1), 'l d -> () l d')
+        quaternions = torch.rand(1, 1, 4)
+        quaternions = quaternions / torch.linalg.norm(quaternions, dim=-1, keepdim=True)
         transitions = torch.rand(1, 1, 3)
-        rotations = quaternion_to_matrix(quaternions)
+        rotations = F.quaternion_to_matrix(quaternions)
         pred_points = torch.einsum('b l n w, b l h w -> b l n h', true_points, repeat(rotations, 'b l h w-> b (l c) h w', c=5)) + repeat(transitions, 'b l h -> b (l c) n h', c=5, n=3)
         pred_frames = F.rigids_from_3x3(pred_points)
         frames_mask = torch.ones(1, 5)
@@ -201,13 +303,16 @@ class TestUtils(unittest.TestCase):
         self.assertAlmostEqual(loss, .0)
 
     def test_pytorch3d(self):
-        quaternions = rearrange(random_quaternions(1), 'l d -> () l d')
-        quaternion_update = rearrange(random_quaternions(1), 'l d -> () l d')
-        rotations = quaternion_to_matrix(quaternions)
-        rotation_update = quaternion_to_matrix(quaternion_update)
-        quaternions = quaternion_multiply(quaternions, quaternion_update)
+        quaternions = torch.rand(1, 1, 4)
+        quaternions = quaternions / torch.linalg.norm(quaternions, dim=-1, keepdim=True)
+        quaternion_update = torch.rand(1, 1, 4)
+        quaternion_update = quaternion_update / torch.linalg.norm(quaternion_update, dim=-1, keepdim=True)
+        #quaternion_update = rearrange(random_quaternions(1), 'l d -> () l d')
+        rotations = F.quaternion_to_matrix(quaternions)
+        rotation_update = F.quaternion_to_matrix(quaternion_update)
+        quaternions = F.quaternion_multiply(quaternions, quaternion_update)
         rotations = torch.einsum('b l h w,b l w d -> b l h d', rotations, rotation_update)
-        self.assertTrue(torch.allclose(rotations, quaternion_to_matrix(quaternions)))
+        self.assertTrue(torch.allclose(rotations, F.quaternion_to_matrix(quaternions)))
 
 if __name__ == '__main__':
     unittest.main()
