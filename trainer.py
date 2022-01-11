@@ -257,7 +257,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             model=model.module
                 if isinstance(model, nn.parallel.DistributedDataParallel)
                 else model),
-        os.path.join(args.prefix, args.model))
+        os.path.join(args.prefix, 'model.pth'))
 
   worker_cleanup(args)
 

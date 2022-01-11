@@ -62,6 +62,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         logger.info('load structure data from: %s', self.PDB)
         assert self.PDB is not None
 
+    def __getstate__(self):
+        logger.debug('being pickled ...')
+        d = self.__dict__
+        if isinstance(self.data_dir, zipfile.ZipFile):
+            d['data_dir'] = self.data_dir.filename
+        return d
+
+    def __setstate__(self, d):
+        logger.debug('being unpickled ...')
+        if zipfile.is_zipfile(d['data_dir']):
+            d['data_dir'] = zipfile.ZipFile(d['data_dir'])
+        self.__dict__ = d
+
     def __getitem__(self, idx):
         pids = self.pids[idx]
         pid = pids[np.random.randint(len(pids))]
