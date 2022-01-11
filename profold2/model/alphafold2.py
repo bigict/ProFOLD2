@@ -242,7 +242,7 @@ class Alphafold2(nn.Module):
         # ready output container
         ret = ReturnValues()
 
-        representations = {'pair': x, 'single': m[:, 0]}
+        representations = {'pair': x, 'single': m[:, 0], 'single_init': m[:, 0]}
         ret.headers = {}
         for name, module, options in self.headers:
             value = module(ret.headers, representations, batch)

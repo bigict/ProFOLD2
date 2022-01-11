@@ -17,10 +17,10 @@ setup(
     'protein folding'
   ],
   install_requires=[
+    'biopython',
     'einops>=0.3',
     'numpy',
-    'torch>=1.6',
-    'mp-nerf>=0.1.5'
+    'torch>=1.6'
   ],
   test_suite = 'tests',
   classifiers=[

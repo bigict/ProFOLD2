@@ -105,7 +105,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
   b_factor_list = mmcif_dict['_atom_site.B_iso_or_equiv']
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
 
-  def seq_id_key_swith(atom_id_list):
+  def seq_id_key_switch(atom_id_list):
     if not '_atom_site.auth_seq_id' in mmcif_dict:
       return '_atom_site.label_seq_id'
     for i, _ in atom_id_list:
@@ -127,7 +127,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
       lambda x: (chain_id_list[x[0]] == chain
           and fieldname_list[x[0]] != 'HETATM'),
       enumerate(atom_id_list)))
-  seq_id_key = seq_id_key_swith(atom_id_list)
+  seq_id_key = seq_id_key_switch(atom_id_list)
   current_resseq = None
   residue_plddt, residue_n, atom_plddt, atom_n = 0.0, 0, 0.0, 0
   for i, atom_id in atom_id_list:
