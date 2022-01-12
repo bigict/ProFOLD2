@@ -2,9 +2,9 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
-
-from profold2 import constants
 from einops import rearrange
+
+from profold2.common import residue_constants
 
 # MSA MLM
 
@@ -70,7 +70,7 @@ class MLM(nn.Module):
 
         random_replace_token_prob_mask = get_mask_subset_with_prob(mlm_mask, (1 - self.keep_token_same_prob) * self.random_replace_token_prob)
 
-        random_tokens = torch.randint(1, constants.NUM_AMINO_ACIDS, seq.shape).to(seq.device)
+        random_tokens = torch.randint(1, len(residue_constants.restypes_with_x), seq.shape).to(seq.device)
 
         for token_id in self.exclude_token_ids:
             random_replace_token_prob_mask = random_replace_token_prob_mask & (random_tokens != token_id)  # make sure you never substitute a token with an excluded token type (pad, start, end)

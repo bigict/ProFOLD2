@@ -5,15 +5,14 @@ import random
 
 import torch
 from torch import nn
-from einops import rearrange,repeat
+from einops import rearrange, repeat
 
-from profold2 import constants
+from profold2.common import residue_constants
+from profold2.data import esm
 from profold2.model.evoformer import *
 from profold2.model.head import HeaderBuilder
 from profold2.model.mlm import MLM
 from profold2.utils import *
-
-# constants
 
 @dataclass
 class Recyclables:
@@ -57,10 +56,8 @@ class Alphafold2(nn.Module):
         heads = 8,
         dim_head = 64,
         max_rel_dist = 32,
-        num_tokens = constants.NUM_AMINO_ACIDS,
-        embedd_dim = constants.NUM_EMBEDDS_TR,
-        max_num_msas = constants.MAX_NUM_MSA,
-        max_num_templates = constants.MAX_NUM_TEMPLATES,
+        num_tokens = len(residue_constants.restypes_with_x),
+        embedd_dim = esm.ESM_EMBED_DIM,
         extra_msa_evoformer_layers = 4,
         attn_dropout = 0.,
         ff_dropout = 0.,

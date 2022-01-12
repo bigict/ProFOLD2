@@ -7,9 +7,6 @@ import uuid
 import numpy as np
 import torch
 
-# constants
-import profold2.constants as constants
-
 # helpers
 def exists(val):
     return val is not None
@@ -23,10 +20,6 @@ def unique_id():
     """Generate a unique ID as specified in RFC 4122."""
     # See https://docs.python.org/3/library/uuid.html
     return str(uuid.uuid4())
-
-# constants: same as in alphafold2.py
-
-DISTANCE_THRESHOLDS = torch.linspace(2, 20, steps = constants.DISTOGRAM_BUCKETS)
 
 # decorators
 
@@ -91,7 +84,7 @@ def torch_disable_tf32():
 
 # distance utils (distogram to dist mat + masking)
 
-def center_distogram_torch(distogram, bins=DISTANCE_THRESHOLDS, min_t=1., center="mean", wide="std"):
+def center_distogram_torch(distogram, bins, min_t=1., center="mean", wide="std"):
     """ Returns the central estimate of a distogram. Median for now.
         Inputs:
         * distogram: (batch, N, N, B) where B is the number of buckets.
