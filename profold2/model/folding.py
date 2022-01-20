@@ -313,7 +313,7 @@ class StructureModule(nn.Module):
                 rotations = quaternion_to_matrix(quaternions)
 
                 if self.training or is_last:
-                    n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n c r -> b n r', point_local, rotations) + translations,
+                    n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n r c -> b n r', point_local, rotations) + translations,
                             self.to_points(single_repr).chunk(2, dim=-1))
                     backbones = torch.stack((n_point_global, translations, c_point_global), dim=-2)
                     backbones.type(original_dtype)
