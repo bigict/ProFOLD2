@@ -3,9 +3,31 @@ import os
 
 import numpy as np
 import torch
+from einops import rearrange
 
 from profold2.common import protein, residue_constants
 from profold2.utils import exists
+
+def domain_parser(ca_coord, ca_mask, max_len=255, alpha=0.43, cutoff=8.0, epsilon=1e-8):
+  n = ca_mask.shape[0]
+  ca_dist = torch.cdist(ca_coord, ca_coord) < cutoff
+  ca_dist_mask = rearrange(ca_mask, 'n -> () n') * rearrange(ca_mask, 'n -> n ()')
+
+  positions, weights = [], []
+  for i in range(1, n):
+    p, q = max(0, i-max_len), min(n, i+max_len)
+    ll, lr = torch.sum(ca_mask[p:i,...]), torch.sum(ca_mask[i:q,...])
+    if ll > 0 and lr > 0:
+      positions.append(i)
+      weights.append(torch.sum(ca_dist[i:q,p:i,...]*ca_dist_mask[i:q,p:i,...])/((ll)*(lr)**alpha))
+  assert len(positions) == len(weights)
+
+  p = torch.full((n,), (min(weights) + epsilon) if weights else 1.0)
+  for i, j in enumerate(positions):
+    p[j] = weights[i] + epsilon
+
+  p = 1.0/(p*torch.sum(1.0/p))
+  return p
 
 def batch_data_crop(batch, max_seq_len=None):
     # preprocess
@@ -82,8 +104,31 @@ def filter_from_file(filename):
             for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
                 yield line
 
-def pdb_save(step, batch, headers, prefix='/tmp'):
+def pdb_save(step, batch, headers, prefix='/tmp', return_pdb = False):
     b, N = batch['seq'].shape
+    if return_pdb:
+        pdbs_result = []
+        for x, pid in enumerate(batch['pid']):
+            str_seq = batch['str_seq'][x]
+            #aatype = batch['seq'][x,...].numpy()
+            aatype = np.array([residue_constants.restype_order_with_x.get(aa, residue_constants.unk_restype_index) for aa in str_seq])
+            features = dict(aatype=aatype, 
+                    residue_index=np.arange(N))
+
+            if 'mask' in batch:
+                masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
+            else:
+                masked_seq_len = len(str_seq)
+            coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
+            _, _, num_atoms, _ = coords.shape
+            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
+
+            result = dict(structure_module=dict(
+                final_atom_mask = coord_mask,
+                final_atom_positions = coords[x,...].numpy()))
+            prot = protein.from_prediction(features=features, result=result)
+            pdbs_result.append(protein.to_pdb(prot))
+        return pdbs_result
 
     for x, pid in enumerate(batch['pid']):
         str_seq = batch['str_seq'][x]
