@@ -252,6 +252,8 @@ class ConfidenceHead(nn.Module):
         metrics = {}
         if 'lddt' in headers and 'logits' in headers['lddt']:
             metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        if 'plddt' in metrics:
+            metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
         return metrics
 
 class HeaderBuilder:
