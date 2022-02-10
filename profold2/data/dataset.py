@@ -230,7 +230,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 mask=mask)
 
     def batch_clips_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random'):
-        def _random_sampler(k, n, batch):
+        def _random_sampler(b, n, batch):
             def _crop_length(n, crop):
                 assert exists(min_crop_len) or exists(max_crop_len)
 
@@ -245,26 +245,28 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
             l = _crop_length(n, np.random.random() < crop_probability)
             i, j = 0, l
-            if not 'coord_mask' in batch or torch.any(batch['coord_mask'][k]):
+            if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask']):
                 while True:
                     i = np.random.randint(n - l + 1)
                     j = i + l
-                    if not 'coord_mask' in batch or torch.any(batch['coord_mask'][k]):
+                    if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask'][i:j]):
                         break
             return dict(i=i, j=j, l=n)
 
-        def _domain_sampler(k, n, batch):
+        def _domain_sampler(b, n, batch):
             def _cascade_sampler(weights, width=4):
                 if len(weights) <= width:
                     i = torch.multinomial(weights, 1)
                     return i.item()
 
-                p = []
-                bucket = (len(weights) // width) + (1 if len(weights) % width > 0 else 0)
-                for i in range(0, len(weights), bucket):
-                    p.append(torch.amax(weights[i:i+bucket]))
-                i = _cascade_sampler(torch.as_tensor(p), width)
-                return i*bucket + _cascade_sampler(weights[i*bucket:(i+1)*bucket], width)
+                p = torch.zeros((width,))
+                l, k = len(weights) // width, len(weights) % width
+                for i in range(width):
+                    v, w = l*i + min(i, k), l*(i+1) + min(i+1, k)
+                    p[i] = torch.amax(weights[v:w])
+                i = _cascade_sampler(p, width=width)
+                v, w = l*i + min(i, k), l*(i+1) + min(i+1, k)
+                return v + _cascade_sampler(weights[v:w], width=width)
 
             def _domain_next(weights, i, ca_coord, ca_mask, min_len=None, max_len=None):
                 min_len, max_len = default(min_len, 80), default(max_len, 255)
@@ -283,20 +285,20 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 return None
 
             assert exists(min_crop_len) or exists(max_crop_len)
-            assert 'coord' in batch[k] and 'coord_mask' in batch[k]
+            assert 'coord' in batch[b] and 'coord_mask' in batch[b]
 
             if exists(max_crop_len) and n <= max_crop_len and crop_probability < np.random.random():
                 assert not exists(min_crop_len) or min_crop_len < n
                 return None
 
             ca_idx = residue_constants.atom_order['CA']
-            ca_coord, ca_coord_mask = batch[k]['coord'][...,ca_idx,:], batch[k]['coord_mask'][...,ca_idx]
-            logger.debug('domain_sampler: batch=%d, seq_len=%d', k, n)
+            ca_coord, ca_coord_mask = batch[b]['coord'][...,ca_idx,:], batch[b]['coord_mask'][...,ca_idx]
+            logger.debug('domain_sampler: batch=%d, seq_len=%d', b, n)
             weights = domain_parser(ca_coord, ca_coord_mask, max_len=max_crop_len)
             while True:
                 i = _cascade_sampler(weights)
                 j = _domain_next(weights, i, ca_coord, ca_coord_mask, min_len=min_crop_len, max_len=max_crop_len)
-                logger.debug('domain_next: batch=%d, seq_len=%d, i=%d, j=%s', k, n, i, str(j))
+                logger.debug('domain_next: batch=%d, seq_len=%d, i=%d, j=%s', b, n, i, str(j))
                 if j is not None and torch.any(ca_coord_mask[min(i, j): max(i, j)]):
                     break
             return dict(i=min(i, j), j=max(i, j), l=n)

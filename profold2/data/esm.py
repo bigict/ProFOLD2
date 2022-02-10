@@ -19,6 +19,7 @@ _extractor_dict = {}
 class ESMEmbeddingExtractor:
     def __init__(self, repo_or_dir, model):
         self.model, alphabet = torch.hub.load(repo_or_dir, model)
+        self.model.eval()
         self.batch_converter = alphabet.get_batch_converter()
         self.max_input_len = 1022
         self.max_step_len = 511

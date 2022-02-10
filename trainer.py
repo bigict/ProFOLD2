@@ -342,7 +342,7 @@ if __name__ == '__main__':
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
   parser.add_argument('--min_crop_len', type=int, default=80,
-      help='filter out proteins whose length<LEN, default=50')
+      help='filter out proteins whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
       help='filter out proteins whose length>LEN, default=255')
   parser.add_argument('--crop_algorithm', type=str, default='random',
