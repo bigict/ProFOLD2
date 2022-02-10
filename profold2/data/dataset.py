@@ -245,11 +245,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
             l = _crop_length(n, np.random.random() < crop_probability)
             i, j = 0, l
-            if not 'coord_mask' in batch or torch.any(batch['coord_mask'][k]):
+            if not 'coord_mask' in batch[k] or torch.any(batch[k]['coord_mask']):
                 while True:
                     i = np.random.randint(n - l + 1)
                     j = i + l
-                    if not 'coord_mask' in batch or torch.any(batch['coord_mask'][k]):
+                    if not 'coord_mask' in batch[k] or torch.any(batch[k]['coord_mask'][i:j]):
                         break
             return dict(i=i, j=j, l=n)
 
