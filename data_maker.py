@@ -124,7 +124,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
     return '_atom_site.auth_seq_id'
 
   atom_id_list = list(filter(
-      lambda x: (chain_id_list[x[0]] == chain
+      lambda x: (chain is None or chain_id_list[x[0]] == chain
           and fieldname_list[x[0]] != 'HETATM'),
       enumerate(atom_id_list)))
   seq_id_key = seq_id_key_switch(atom_id_list)
