@@ -15,7 +15,7 @@ from einops import rearrange
 
 # models & data
 from profold2.data import dataset
-from profold2.data.utils import filter_from_file, pdb_save
+from profold2.data.utils import pdb_save
 from profold2.model import ReturnValues
 from profold2.utils import Kabsch, TMscore
 
@@ -94,23 +94,17 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                           if args.casp_without_pdb
                           else dataset.ProteinStructureDataset.FEAT_ALL,
                   batch_size=args.batch_size,
-                  shuffle=True,
                   feats=feats,
                   is_training=False,
-                  num_workers=0)
+                  num_workers=args.num_workers)
 
-  filter_blacklist, filter_whitelist = (
-    set(filter_from_file(args.filter_by_blacklist)),
-    set(filter_from_file(args.filter_by_whitelist)))
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len and not (filter_blacklist and (set(x['pid'])&filter_blacklist)) and (not filter_whitelist or (set(x['pid'])&filter_whitelist))  # pylint: disable=line-too-long
+  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
 
   tmscore, n = 0, 0
   # eval loop
   for i, batch in enumerate(filter(data_cond, iter(test_loader))):
     if args.num_batches <= 0:
       break
-    if args.pid and (not set(args.pid) & set(batch['pid'])):
-      continue
     args.num_batches -= 1
 
     logging.debug('seq.pids: %s', ','.join(batch['pid']))
@@ -119,7 +113,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with torch.no_grad():
       r = ReturnValues(**model(batch=batch,
-                               num_recycle=args.alphafold2_recycles))
+                               num_recycle=args.model_recycles))
 
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']
@@ -226,64 +220,30 @@ if __name__ == '__main__':
   parser.add_argument('--map_location', type=str, default=None,
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-X', '--model', type=str, default='model.pth',
-      help='model of alphafold2, default=\'model.pth\'')
-  parser.add_argument('--pid', type=str, action='append',
-      help='pids to eval, default=\'\'')
+      help='model of profold2, default=\'model.pth\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-k', '--casp_data', type=str, default='test',
       help='CASP dataset, default=\'test\'')
   parser.add_argument('--casp_without_pdb', action='store_true',
       help='DO NOT load pdb data')
-  parser.add_argument('-m', '--min_protein_len', type=int, default=0,
+  parser.add_argument('--min_protein_len', type=int, default=0,
       help='filter out proteins whose length<LEN, default=0')
-  parser.add_argument('-M', '--max_protein_len', type=int, default=1024,
+  parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('-r', '--filter_by_resolution', type=float, default=0,
-      help='filter by resolution<=RES')
-  parser.add_argument('--filter_by_blacklist', type=str, default=None,
-      help='filter out proteins whose id in BLACKLIST, default=None')
-  parser.add_argument('--filter_by_whitelist', type=str, default=None,
-      help='filter proteins whose id in WHITELIST, default=None')
 
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')
   parser.add_argument('-b', '--batch_size', type=int, default=1,
       help='batch size, default=1')
+  parser.add_argument('--num_workers', type=int, default=1,
+      help='number of workers, default=1')
 
-  parser.add_argument('--alphafold2_recycles', type=int, default=0,
-      help='number of recycles in alphafold2, default=0')
+  parser.add_argument('--model_recycles', type=int, default=0,
+      help='number of recycles in profold2, default=0')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 
-  # logging
-  os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
-  if args.save_pdb:
-    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')),
-                exist_ok=True)
-  logging.basicConfig(
-      format=
-      '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s',
-      level=logging.DEBUG if args.verbose else logging.INFO,
-      handlers=[
-          logging.StreamHandler(),
-          logging.FileHandler(
-              os.path.join(
-                  args.prefix,
-                  f'{os.path.splitext(os.path.basename(__file__))[0]}.log'))
-      ])
-
-  logging.info('-----------------')
-  logging.info('Arguments: %s', args)
-  logging.info('-----------------')
-
   main(args)
-
-  logging.info('-----------------')
-  logging.info('Resources(myself): %s',
-      resource.getrusage(resource.RUSAGE_SELF))
-  logging.info('Resources(children): %s',
-      resource.getrusage(resource.RUSAGE_CHILDREN))
-  logging.info('-----------------')
