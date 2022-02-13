@@ -7,6 +7,7 @@
 import os
 import argparse
 import logging
+from logging.handlers import QueueHandler, QueueListener
 import resource
 
 import torch
@@ -32,7 +33,7 @@ class WorkerLogFilter(logging.Filter):
 def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   # logging
   logger = logging.getLogger()
-  ctx_handler = logging.handlers.QueueHandler(log_queue)
+  ctx_handler = QueueHandler(log_queue)
   if args.gpu_list:
     ctx_filter = WorkerLogFilter(args.gpu_list[rank])
     ctx_handler.addFilter(ctx_filter)
@@ -186,7 +187,7 @@ def main(args):  # pylint: disable=W0621
       handlers=handlers)
 
   log_queue = mp.Queue(-1)
-  listener = logging.handlers.QueueListener(log_queue, *handlers,
+  listener = QueueListener(log_queue, *handlers,
       respect_handler_level=True)
   listener.start()
 

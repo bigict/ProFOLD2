@@ -60,7 +60,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 self.PDB = t
                 break
         logger.info('load structure data from: %s', self.PDB)
-        assert self.PDB is not None
+        assert not (feat_flags & ProteinStructureDataset.FEAT_PDB) or (self.PDB is not None)
 
     def __getstate__(self):
         logger.debug('being pickled ...')
