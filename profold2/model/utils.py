@@ -114,7 +114,10 @@ class Checkpoint:
                 if isinstance(obj, nn.Module):
                     obj.load_state_dict(state_dict, strict=False)
                 else:
-                    obj.load_state_dict(state_dict)
+                    try:
+                        obj.load_state_dict(state_dict)
+                    except Exception as e:
+                        logging.error('loading %s error: %s', name, str(e))
             return True
         except Exception as e:
             logging.error(e)

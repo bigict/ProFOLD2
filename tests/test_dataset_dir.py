@@ -13,11 +13,34 @@ class TestDataSet(unittest.TestCase):
         data = ProteinStructureDataset(self.data_dir)
         self.assertTrue(True)
 
+    def test_custom_dataset_msa(self):
+        data = ProteinStructureDataset(self.data_dir, feat_flags=ProteinStructureDataset.FEAT_ALL)
+        for item in data:
+            print(item)
+            self.assertTrue('seq' in item)
+            self.assertTrue('msa' in item)
+            self.assertTrue(item['seq'].shape == item['msa'].shape[1:])
+        self.assertTrue(True)
+
     def test_custom_loader(self):
-        data = load(self.data_dir, batch_size=1, max_seq_len=255, feat_flags=ProteinStructureDataset.FEAT_ALL)
+        data = load(self.data_dir, batch_size=1, max_crop_len=255)
         s = datetime.now()
         for i, batch in enumerate(iter(data)):
             if i >= 500:
+                break
+            self.assertTrue('seq' in batch)
+            self.assertTrue(batch['seq'].shape[0], 2)
+            self.assertTrue('coord' in batch)
+            print(batch)
+        e = datetime.now()
+        print(e - s)
+        self.assertTrue(True)
+
+    def test_custom_loader_msa(self):
+        data = load(self.data_dir, batch_size=1, max_crop_len=255, feat_flags=ProteinStructureDataset.FEAT_ALL)
+        s = datetime.now()
+        for i, batch in enumerate(iter(data)):
+            if i >= 1:
                 break
             self.assertTrue('seq' in batch)
             self.assertTrue(batch['seq'].shape[0], 2)

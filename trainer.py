@@ -26,7 +26,7 @@ from profold2.data.utils import (
     embedding_get_labels,
     pdb_save,
     weights_from_file)
-from profold2.model import Alphafold2, ReturnValues
+from profold2.model import Alphafold2, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 
 class WorkerLogFilter(logging.Filter):
@@ -60,6 +60,7 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             init_method=f'file://{args.ipc_file}',
             rank=rank,
             world_size=len(args.gpu_list))
+    torch.cuda.set_device(args.gpu_list[rank])
 
 def worker_cleanup(args):  # pylint: disable=redefined-outer-name
   if args.gpu_list:
@@ -109,6 +110,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   train_loader = dataset.load(
       data_dir=args.train_data,
+      data_idx=args.train_idx,
+      max_msa_size=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -127,6 +130,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         feats=feats,
+        feat_flags=(~dataset.ProteinStructureDataset.FEAT_MSA),
         batch_size=args.batch_size,
         is_training=False,
         num_workers=0)
@@ -153,7 +157,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # tensorboard
   writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval'))
-  def model_add_embeddings(writer, model, it):
+  def writer_add_embeddings(writer, model, it):
     def add_embeddings(embedds, prefix=''):
       for k, v in embedds.items():
         if isinstance(v, dict):
@@ -167,6 +171,18 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     else:
       embeddings = model.embeddings()
     add_embeddings(embeddings)
+
+  def writer_add_scalars(writer, loss, it, prefix=''):
+    if isinstance(loss, MetricDict):
+      if prefix:
+        prefix = f'{prefix}.'
+      for k, v in loss.items():
+        writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
+    else:
+      if isinstance(loss, torch.Tensor):
+        loss = loss.item()
+      logging.info('%d loss@%s: %s', it, prefix, loss)
+      writer.add_scalar(prefix, loss, it)
 
   global_step = 0
   # CheckpointManager
@@ -183,27 +199,26 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   for it in range(global_step, args.num_batches):
     optim.zero_grad()
 
-    running_loss = {}
+    running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
       epoch, batch = next(dl)
 
       seq = batch['seq']
-      logging.debug('%d %d %d seq.shape: %s %s',
-          epoch, it, jt, seq.shape, batch.get('clips'))
+      logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
+          epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # sequence embedding (msa / esm / attn / or nothing)
-      r = ReturnValues(**model(batch=batch,
-          num_recycle=args.model_recycles))
+      r = ReturnValues(**model(batch=batch, num_recycle=args.model_recycles))
 
       if it == 0 and jt == 0 and args.tensorboard_add_graph:
         with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
           w.add_graph(model, (batch, ), verbose=True)
 
       # running loss
-      running_loss['all'] = running_loss.get('all', 0) + r.loss.item()
+      running_loss += MetricDict({'all':r.loss})
       for h, v in r.headers.items():
         if 'loss' in v:
-          running_loss[h] = running_loss.get(h, 0) + v['loss'].item()
+          running_loss += MetricDict({h:v['loss']})
 
       r.loss.backward()
 
@@ -213,8 +228,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
-      logging.info('%d loss@%s: %s', it, k, v)
-      writer.add_scalar(f'Loss/train@{k}', v, it)
+      writer_add_scalars(writer, v, it, prefix=f'Loss/train@{k}')
+      #writer.add_scalar(f'Loss/train@{k}', v, it)
 
     optim.step()
 
@@ -224,7 +239,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       checkpoint_manager.save(it)
 
       # Add embeddings
-      model_add_embeddings(writer, model, it)
+      writer_add_embeddings(writer, model, it)
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -232,17 +247,17 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
       with torch.no_grad():
         # eval loss
-        n, eval_loss = 0, {}
+        n, eval_loss = 0, MetricDict()
         for data in iter(eval_loader):
-          r = ReturnValues(**model(batch=data))
+          r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
           for h, v in r.headers.items():
             if 'loss' in v:
-              eval_loss[h] = eval_loss.get(h, 0) + v['loss'].item()
+              eval_loss += MetricDict({h:v['loss']})
           n += 1
         for k, v in eval_loss.items():
           v /= (args.batch_size * n)
-          logging.info('%d eval@%s: %s', it, k, v)
-          writer.add_scalar(f'Loss/eval@{k}', v, it)
+          writer_add_scalars(writer, v, it, prefix=f'Loss/eval@{k}')
+          #writer.add_scalar(f'Loss/eval@{k}', v, it)
 
       model.train()
 
@@ -255,7 +270,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     checkpoint_manager.save(it)
 
     # Add embeddings
-    model_add_embeddings(writer, model, it)
+    writer_add_embeddings(writer, model, it)
 
   # save model
   if not args.gpu_list or rank == 0:
@@ -330,19 +345,23 @@ if __name__ == '__main__':
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-t', '--train_data', type=str, default='train',
-      help='train dataset, default=\'train\'')
+      help='train dataset dir, default=\'train\'')
+  parser.add_argument('--train_idx', type=str, default='name.idx',
+      help='train dataset idx, default=\'name.idx\'')
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
-      help='eval dataset, default=None')
+      help='eval dataset dir, default=None')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
       help='sample train data by weights, default=None')
   parser.add_argument('--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('--max_msa_size', type=int, default=128,
+      help='filter out msas whose size>SIZE, default=128')
   parser.add_argument('--min_crop_len', type=int, default=80,
-      help='filter out proteins whose length<LEN, default=50')
+      help='filter out proteins whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
       help='filter out proteins whose length>LEN, default=255')
   parser.add_argument('--crop_algorithm', type=str, default='random',

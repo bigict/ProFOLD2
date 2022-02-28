@@ -3,7 +3,6 @@ import unittest
 import torch
 import numpy as np
 
-from profold2.constants import *
 from profold2.utils import *
 
 def test_mat_to_masked():
@@ -136,6 +135,13 @@ class TestUtils(unittest.TestCase):
         a = torch.randn(2, 3, 8)
         b = torch.randn(2, 3, 8)
         out = TMscore(a, b, L=8)
+
+    def test_contact_precision(self):
+        a = torch.randn(4, 800, 800)
+        b = torch.randn(4, 800, 800)
+        for k, ((i, j), ratio, precision) in enumerate(contact_precision(a, b)):
+            i, j = default(i, 0), default(j, 'inf')
+            print(k, f'[{i},{j})_{ratio}', precision)
         self.assertTrue(True)
 
 if __name__ == '__main__':

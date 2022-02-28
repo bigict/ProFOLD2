@@ -13,10 +13,63 @@ from profold2.utils import *
 
 logger = logging.getLogger(__name__)
 
-def softmax_cross_entropy(logits, labels):
-  """Computes softmax cross entropy given logits and one-hot class labels."""
-  loss = -torch.sum(labels * F.log_softmax(logits, dim=-1), dim=-1)
-  return loss
+def softmax_cross_entropy(logits, labels, mask=None):
+    """Computes softmax cross entropy given logits and one-hot class labels."""
+    if not exists(mask):
+        mask = 1.0
+    loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
+    return loss
+
+class ConfidenceHead(nn.Module):
+    """Head to predict confidence.
+    """
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, headers, representations, batch):
+        metrics = {}
+        if 'lddt' in headers and 'logits' in headers['lddt']:
+            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        if 'plddt' in metrics:
+            metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
+        return metrics
+
+class ContactHead(nn.Module):
+    """Head to predict a contact.
+    """
+    def __init__(self, dim, diagonal=1, cutoff=8.):
+        super().__init__()
+ 
+        self.diagonal = diagonal
+        self.cutoff = cutoff
+
+    def forward(self, headers, representations, batch):
+        assert 'mlm' in representations and 'contacts' in representations['mlm']
+        return dict(logits=representations['mlm']['contacts'])
+
+    def loss(self, value, batch):
+        assert 'logits' in value
+        logits = value['logits']
+        assert len(logits.shape) == 3
+        positions = batch['pseudo_beta']
+        mask = batch['pseudo_beta_mask']
+
+        assert positions.shape[-1] == 3
+
+        dist2 = torch.cdist(positions, positions, p=2)
+
+        targets = (dist2 <= self.cutoff).float()
+        errors = F.binary_cross_entropy(logits, targets,
+                reduction='none')
+
+        square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
+        square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
+
+        avg_error = (
+            torch.sum(errors * square_mask) /
+            (1e-6 + torch.sum(square_mask)))
+        logger.debug('ContactHead.loss: %s', avg_error.item())
+        return dict(loss=avg_error)
 
 class DistogramHead(nn.Module):
     """Head to predict a distogram.
@@ -45,18 +98,19 @@ class DistogramHead(nn.Module):
         """
         x = representations['pair']
         trunk_embeds = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
-        return dict(logits=self.net(trunk_embeds))
+        breaks = self.buckets.to(trunk_embeds.device)
+        return dict(logits=self.net(trunk_embeds), breaks=breaks)
 
     def loss(self, value, batch):
         """Log loss of a distogram."""
-        logits = value['logits']
+        logits, breaks = value['logits'], value['breaks']
         assert len(logits.shape) == 4
         positions = batch['pseudo_beta']
         mask = batch['pseudo_beta_mask']
 
         assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(self.buckets).to(positions.device)
+        sq_breaks = torch.square(breaks)
 
         dist2 = torch.sum(
             torch.square(
@@ -76,6 +130,7 @@ class DistogramHead(nn.Module):
         avg_error = (
             torch.sum(errors * square_mask) /
             (1e-6 + torch.sum(square_mask)))
+        logger.debug('DistogramHead.loss: %s', avg_error.item())
         return dict(loss=avg_error, true_dist=torch.sqrt(dist2+1e-6))
 
 class FoldingHead(nn.Module):
@@ -210,6 +265,143 @@ class LDDTHead(nn.Module):
         logger.debug('LDDTHead.loss: %s', loss.item())
         return dict(loss=loss)
 
+class MaskedLMHead(nn.Module):
+    """Head to predict Masked Language Model
+    """
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, headers, representations, batch):
+        assert 'mlm' in representations
+        assert 'logits' in representations['mlm'] and 'labels' in representations['mlm']
+        return dict(logits=representations['mlm']['logits'],
+                labels=representations['mlm']['labels'])
+
+    def loss(self, value, batch):
+        assert 'bert_mask' in batch
+        assert 'logits' in value and 'labels' in value
+
+        logits, labels = value['logits'], value['labels']
+        #mask = rearrange(batch['bert_mask'], 'b l -> b l ()')
+        mask = batch['bert_mask']
+
+        errors = softmax_cross_entropy(
+                labels=F.one_hot(labels, logits.shape[-1]), logits=logits)
+
+        avg_error = (
+            torch.sum(errors * mask) /
+            (1e-6 + torch.sum(mask)))
+
+        logger.debug('MaskedLMHead.loss: %s', avg_error.item())
+        return dict(loss=avg_error)
+
+class MetricDict(dict):
+    def __add__(self, o):
+        n = MetricDict(**self)
+        for k in o:
+            if k in n:
+                n[k] = n[k] + o[k]
+            else:
+                n[k] = o[k]
+        return n
+
+    def __mul__(self, o):
+        n = MetricDict(**self)
+        for k in n:
+            n[k] = n[k] * o
+        return n
+
+    def __truediv__(self, o):
+        n = MetricDict(**self)
+        for k in n:
+            n[k] = n[k] / o
+        return n
+
+class MetricDictHead(nn.Module):
+    """Head to calculate metrics
+    """
+    def __init__(self, dim, **kwargs):
+        super().__init__()
+
+        self.params = kwargs
+
+    def forward(self, headers, representations, batch):
+        metrics = MetricDict()
+        if 'distogram' in headers and 'pseudo_beta' in batch:
+            assert 'logits' in headers['distogram'] and 'breaks' in headers['distogram']
+            logits, breaks = headers['distogram']['logits'], headers['distogram']['breaks']
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
+
+            cutoff = self.params.get('contact_cutoff', 8.0)
+            t =  torch.sum(breaks <= cutoff)
+            pred = F.softmax(logits, dim=-1)
+            pred = torch.sum(pred[...,:t+1], dim=-1)
+            truth = torch.cdist(positions, positions, p=2)
+            precision_list = contact_precision(
+                    pred, truth, mask=mask,
+                    ratios=self.params.get('contact_ratios'),
+                    ranges=self.params.get('contact_ranges'),
+                    cutoff=cutoff)
+            metrics['contact'] = MetricDict()
+            for (i, j), ratio, precision in precision_list:
+                i, j = default(i, 0), default(j, 'inf')
+                metrics['contact'][f'[{i},{j})_{ratio}'] = precision
+
+        return dict(loss=metrics) if metrics else None
+
+class SequenceProfileHead(nn.Module):
+    """Head to predict sequence profile.
+    """
+    def __init__(self, dim, input_dim=None, single_repr=None):
+        super().__init__()
+
+        if not exists(input_dim):
+            input_dim = dim
+        if not exists(single_repr):
+            single_repr = 'struct_module'
+        assert single_repr in ('struct_module', 'mlm')
+        self.single_repr = single_repr
+        
+        self.project = nn.Sequential(
+                nn.Linear(input_dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Linear(dim, len(residue_constants.restypes_with_x_and_gap)))
+
+    def forward(self, headers, representations, batch):
+        assert 'sequence_profile' in batch
+
+        if self.single_repr == 'mlm':
+            assert 'mlm' in representations and 'representations' in representations['mlm']
+            x = representations['mlm']['representations']
+        else:
+            x = representations['single']
+
+        logits = self.project(x)
+        return dict(logits=logits)
+
+    def loss(self, value, batch):
+        assert 'mask' in batch
+        assert 'sequence_profile' in batch
+        assert 'logits' in value
+
+        logits, labels = value['logits'], batch['sequence_profile']
+        mask = batch['mask']
+        label_mask = None
+        if 'sequence_profile_mask' in batch:
+            label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+
+        errors = softmax_cross_entropy(
+                labels=labels, logits=logits, mask=label_mask)
+
+        avg_error = (
+            torch.sum(errors * mask) /
+            (1e-6 + torch.sum(mask)))
+
+        logger.debug('SequenceProfileHead.loss: %s', avg_error.item())
+        return dict(loss=avg_error)
+
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
     """
@@ -242,26 +434,16 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
-class ConfidenceHead(nn.Module):
-    """Head to predict confidence.
-    """
-    def __init__(self, dim):
-        super().__init__()
-
-    def forward(self, headers, representations, batch):
-        metrics = {}
-        if 'lddt' in headers and 'logits' in headers['lddt']:
-            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
-        if 'plddt' in metrics:
-            metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
-        return metrics
-
 class HeaderBuilder:
     _headers = dict(
             confidence = ConfidenceHead,
+            contact = ContactHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,
+            metric = MetricDictHead,
+            mlm = MaskedLMHead,
+            profile = SequenceProfileHead,
             tmscore = TMscoreHead)
     @staticmethod
     def build(dim, config, parent=None):

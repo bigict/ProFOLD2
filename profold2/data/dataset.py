@@ -1,10 +1,11 @@
 import contextlib
 import functools
-from io import BytesIO
 import logging
 import math
+from io import BytesIO
 import pathlib
 import random
+import string
 import zipfile
 
 import numpy as np
@@ -27,16 +28,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     FEAT_MSA = 0x02
     FEAT_ALL = 0xff
 
-    def __init__(self, data_dir, msa_max_size=128, max_seq_len=None, coord_type=None, feat_flags=FEAT_ALL):
+    def __init__(self, data_dir, data_idx='name.idx', max_msa_size=128, max_seq_len=None, coord_type=None, feat_flags=FEAT_ALL&(~FEAT_MSA)):
         super().__init__()
 
         self.data_dir = pathlib.Path(data_dir)
         if zipfile.is_zipfile(self.data_dir):
             self.data_dir = zipfile.ZipFile(self.data_dir)
-        self.max_msa = msa_max_size
+        self.max_msa_size = max_msa_size
         self.max_seq_len = max_seq_len
         self.feat_flags = feat_flags
-        with self._fileobj('name.idx') as f:
+        logger.info('load idx data from: %s', data_idx)
+        with self._fileobj(data_idx) as f:
             self.pids = list(map(lambda x: self._ftext(x).strip().split(), f))
 
         self.mapping = {}
@@ -63,6 +65,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         logger.info('load structure data from: %s', self.PDB)
         assert not (feat_flags & ProteinStructureDataset.FEAT_PDB) or (self.PDB is not None)
 
+        self.MSA_LIST = ['BFD30_E-3']
+
     def __getstate__(self):
         logger.debug('being pickled ...')
         d = self.__dict__
@@ -84,6 +88,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         seq_feats = self.get_seq_features(pkey)
 
         ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
+        if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
+            ret.update(self.get_msa_features_new(pkey))
         if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
             assert self.PDB in ('npz', 'coord')
             if self.PDB == 'npz':
@@ -126,10 +132,37 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     def get_msa_features_new(self, protein_id):
         """Constructs a feature dict of MSA features."""
-        msa_path = self.data_dir / f'a3ms/{protein_id}.a3m'
-        with open(msa_path) as f:
-            text = f.read()
-        msa, del_matirx = parse_a3m(text)
+        def parse_a4m(sequences):
+            deletion_matrix = []
+            for msa_sequence in sequences:
+                deletion_vec = []
+                deletion_count = 0
+                for j in msa_sequence:
+                    if j.islower():
+                        deletion_count += 1
+                    else:
+                        deletion_vec.append(deletion_count)
+                        deletion_count = 0
+                deletion_matrix.append(deletion_vec)
+            # Make the MSA matrix out of aligned (deletion-free) sequences
+            deletion_table = str.maketrans('', '', string.ascii_lowercase)
+            aligned_sequences = [s.translate(deletion_table) for s in sequences]
+            return aligned_sequences, deletion_matrix
+
+        k = np.random.randint(len(self.MSA_LIST))
+        source = self.MSA_LIST[k]
+        with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
+            sequences = list(map(lambda x: self._ftext(x).strip(), f))
+        if exists(self.max_msa_size) and len(sequences) > self.max_msa_size:
+            sequences = sequences[:1] + list(np.random.choice(
+                    sequences, size=self.max_msa_size - 1, replace=False) if self.max_msa_size > 1 else [])
+        msa, del_matirx = parse_a4m(sequences)
+
+        int_msa = []
+        for sequence in msa:
+            int_msa.append([residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence])
+
+        return dict(msa=torch.as_tensor(int_msa), str_msa=msa, del_msa=del_matirx)
 
     def get_msa_features(self, protein_id):
         """Constructs a feature dict of MSA features."""
@@ -230,7 +263,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 mask=mask)
 
     def batch_clips_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random'):
-        def _random_sampler(k, n, batch):
+        def _random_sampler(b, n, batch):
             def _crop_length(n, crop):
                 assert exists(min_crop_len) or exists(max_crop_len)
 
@@ -245,26 +278,28 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
             l = _crop_length(n, np.random.random() < crop_probability)
             i, j = 0, l
-            if not 'coord_mask' in batch[k] or torch.any(batch[k]['coord_mask']):
+            if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask']):
                 while True:
                     i = np.random.randint(n - l + 1)
                     j = i + l
-                    if not 'coord_mask' in batch[k] or torch.any(batch[k]['coord_mask'][i:j]):
+                    if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask'][i:j]):
                         break
             return dict(i=i, j=j, l=n)
 
-        def _domain_sampler(k, n, batch):
+        def _domain_sampler(b, n, batch):
             def _cascade_sampler(weights, width=4):
                 if len(weights) <= width:
                     i = torch.multinomial(weights, 1)
                     return i.item()
 
-                p = []
-                bucket = (len(weights) // width) + (1 if len(weights) % width > 0 else 0)
-                for i in range(0, len(weights), bucket):
-                    p.append(torch.amax(weights[i:i+bucket]))
-                i = _cascade_sampler(torch.as_tensor(p), width)
-                return i*bucket + _cascade_sampler(weights[i*bucket:(i+1)*bucket], width)
+                p = torch.zeros((width,))
+                l, k = len(weights) // width, len(weights) % width
+                for i in range(width):
+                    v, w = l*i + min(i, k), l*(i+1) + min(i+1, k)
+                    p[i] = torch.amax(weights[v:w])
+                i = _cascade_sampler(p, width=width)
+                v, w = l*i + min(i, k), l*(i+1) + min(i+1, k)
+                return v + _cascade_sampler(weights[v:w], width=width)
 
             def _domain_next(weights, i, ca_coord, ca_mask, min_len=None, max_len=None):
                 min_len, max_len = default(min_len, 80), default(max_len, 255)
@@ -283,20 +318,20 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 return None
 
             assert exists(min_crop_len) or exists(max_crop_len)
-            assert 'coord' in batch[k] and 'coord_mask' in batch[k]
+            assert 'coord' in batch[b] and 'coord_mask' in batch[b]
 
             if exists(max_crop_len) and n <= max_crop_len and crop_probability < np.random.random():
                 assert not exists(min_crop_len) or min_crop_len < n
                 return None
 
             ca_idx = residue_constants.atom_order['CA']
-            ca_coord, ca_coord_mask = batch[k]['coord'][...,ca_idx,:], batch[k]['coord_mask'][...,ca_idx]
-            logger.debug('domain_sampler: batch=%d, seq_len=%d', k, n)
+            ca_coord, ca_coord_mask = batch[b]['coord'][...,ca_idx,:], batch[b]['coord_mask'][...,ca_idx]
+            logger.debug('domain_sampler: batch=%d, seq_len=%d', b, n)
             weights = domain_parser(ca_coord, ca_coord_mask, max_len=max_crop_len)
             while True:
                 i = _cascade_sampler(weights)
                 j = _domain_next(weights, i, ca_coord, ca_coord_mask, min_len=min_crop_len, max_len=max_crop_len)
-                logger.debug('domain_next: batch=%d, seq_len=%d, i=%d, j=%s', k, n, i, str(j))
+                logger.debug('domain_next: batch=%d, seq_len=%d, i=%d, j=%s', b, n, i, str(j))
                 if j is not None and torch.any(ca_coord_mask[min(i, j): max(i, j)]):
                     break
             return dict(i=min(i, j), j=max(i, j), l=n)
@@ -330,6 +365,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             for field in ('seq', 'mask', 'coord', 'coord_mask'):
                 if field in batch[k]:
                     batch[k][field] = batch[k][field][i:j,...]
+            for field in ('str_msa', 'del_msa'):
+                if field in batch[k]:
+                    batch[k][field] = [v[i:j] for v in batch[k][field]]
+            for field in ('msa',):
+                if field in batch[k]:
+                    batch[k][field] = batch[k][field][:,i:j,...]
 
         fields = ('pid', 'resolu', 'seq', 'mask', 'str_seq')
         pids, resolutions, seqs, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
@@ -354,6 +395,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             ret.update(
                 coord=padded_coords,
                 coord_mask=padded_coord_masks)
+        if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
+            fields = ('msa', 'str_msa', 'del_msa')
+            msas, str_msas, del_msas = list(zip(*[[b[k] for k in fields] for b in batch]))
+
+            padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
+            ret.update(
+                msa=padded_msas,
+                str_msa=str_msas,
+                del_msa=del_msas)
 
         if clips:
             ret['clips'] = clips
@@ -399,13 +449,21 @@ def pad_for_batch(items, batch_length, dtype):
             z = torch.zeros((batch_length - item.shape[0],  item.shape[-1]), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
             batch.append(c)
+    elif dtype == 'msa':
+        for msa in items:
+            z = torch.ones((msa.shape[0], batch_length - msa.shape[1]), dtype=msa.dtype) * residue_constants.HHBLITS_AA_TO_ID['X']
+            c = torch.cat((msa, z), dim=1)
+            batch.append(c)
     else:
         raise ValueError('Not implement yet!')
     batch = torch.stack(batch, dim=0)
     return batch
 
-def load(data_dir, min_crop_len=None, max_crop_len=None, crop_probability=0, crop_algorithm='random', feats=None, is_training=True, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
-    dataset = ProteinStructureDataset(data_dir, feat_flags=feat_flags)
+def load(data_dir, data_idx='name.idx', min_crop_len=None, max_crop_len=None, crop_probability=0, crop_algorithm='random', feats=None, is_training=True, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
+    max_msa_size = 128
+    if 'max_msa_size' in kwargs:
+        max_msa_size = kwargs.pop('max_msa_size')
+    dataset = ProteinStructureDataset(data_dir, data_idx=data_idx, max_msa_size=max_msa_size, feat_flags=feat_flags)
     if not 'collate_fn' in kwargs:
         kwargs['collate_fn'] = functools.partial(dataset.collate_fn,
                 min_crop_len=min_crop_len, max_crop_len=max_crop_len, crop_probability=crop_probability, crop_algorithm=crop_algorithm,
