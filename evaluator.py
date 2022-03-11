@@ -90,14 +90,18 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logging.info('model: %s', model)
 
   test_loader = dataset.load(
-                  data_dir=args.casp_data,
-                  feat_flags=~dataset.ProteinStructureDataset.FEAT_PDB
-                          if args.casp_without_pdb
-                          else dataset.ProteinStructureDataset.FEAT_ALL,
-                  batch_size=args.batch_size,
-                  feats=feats,
-                  is_training=False,
-                  num_workers=args.num_workers)
+      data_dir=args.casp_data,
+      min_crop_len=args.min_crop_len,
+      max_crop_len=args.max_crop_len,
+      crop_algorithm=args.crop_algorithm,
+      crop_probability=args.crop_probability,
+      feat_flags=~dataset.ProteinStructureDataset.FEAT_PDB
+              if args.casp_without_pdb
+              else dataset.ProteinStructureDataset.FEAT_ALL,
+      batch_size=args.batch_size,
+      feats=feats,
+      is_training=False,
+      num_workers=args.num_workers)
 
   data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
 
@@ -235,6 +239,16 @@ if __name__ == '__main__':
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('--min_crop_len', type=int, default=None,
+      help='filter out proteins whose length<LEN, default=None')
+  parser.add_argument('--max_crop_len', type=int, default=None,
+      help='filter out proteins whose length>LEN, default=None')
+  parser.add_argument('--crop_algorithm', type=str, default='random',
+      choices=['random', 'domain'],
+      help='type of crop algorithm')
+  parser.add_argument('--crop_probability', type=float, default=0.0,
+      help='crop protein with probability CROP_PROBABILITY when it\'s '
+          'length>MIN_CROP_LEN, default=0.0')
 
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')

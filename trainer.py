@@ -109,7 +109,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   train_loader = dataset.load(
       data_dir=args.train_data,
-      max_seq_len=args.max_protein_len-1,
+      min_crop_len=args.min_crop_len,
+      max_crop_len=args.max_crop_len,
+      crop_algorithm=args.crop_algorithm,
+      crop_probability=args.crop_probability,
       feats=feats,
       worker_init_fn=functools.partial(
           worker_data_init_fn, args=args),
@@ -120,7 +123,9 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
-        max_seq_len=args.max_protein_len-1,
+        min_crop_len=args.min_crop_len,
+        max_crop_len=args.max_crop_len,
+        crop_algorithm=args.crop_algorithm,
         feats=feats,
         batch_size=args.batch_size,
         is_training=False,
@@ -183,7 +188,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       epoch, batch = next(dl)
 
       seq = batch['seq']
-      logging.debug('%d %d %d seq.shape: %s', epoch, it, jt, seq.shape)
+      logging.debug('%d %d %d seq.shape: %s %s',
+          epoch, it, jt, seq.shape, batch.get('clips'))
 
       # sequence embedding (msa / esm / attn / or nothing)
       r = ReturnValues(**model(batch=batch,
@@ -335,12 +341,16 @@ if __name__ == '__main__':
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('--filter_by_resolution', type=float, default=0,
-      help='filter by resolution<=RES')
-  parser.add_argument('--filter_by_blacklist', type=str, default=None,
-      help='filter out proteins whose id in BLACKLIST, default=None')
-  parser.add_argument('--filter_by_whitelist', type=str, default=None,
-      help='filter proteins whose id in WHITELIST, default=None')
+  parser.add_argument('--min_crop_len', type=int, default=80,
+      help='filter out proteins whose length<LEN, default=80')
+  parser.add_argument('--max_crop_len', type=int, default=255,
+      help='filter out proteins whose length>LEN, default=255')
+  parser.add_argument('--crop_algorithm', type=str, default='random',
+      choices=['random', 'domain'],
+      help='type of crop algorithm')
+  parser.add_argument('--crop_probability', type=float, default=0.0,
+      help='crop protein with probability CROP_PROBABILITY when it\'s '
+          'length>MIN_CROP_LEN, default=0.0')
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed')
 

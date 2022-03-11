@@ -288,11 +288,15 @@ class StructureModule(nn.Module):
             quaternions = torch.tensor([1., 0., 0., 0.], device = device) # initial rotations
             quaternions = repeat(quaternions, 'd -> b n d', b = b, n = n)
             translations = torch.zeros((b, n, 3), device = device)
-            rotations = quaternion_to_matrix(quaternions)
 
             # go through the layers and apply invariant point attention and feedforward
             for i in range(self.structure_module_depth):
                 is_last = i == (self.structure_module_depth - 1)
+
+                rotations = quaternion_to_matrix(quaternions)
+                # No rotation gradients between iterations to stabilize training.
+                if not is_last:
+                    rotations = rotations.detach()
 
                 single_repr = self.ipa_block(
                     single_repr,
@@ -310,7 +314,6 @@ class StructureModule(nn.Module):
 
                 quaternions = quaternion_multiply(quaternions, quaternion_update)
                 translations = torch.einsum('b n c, b n r c -> b n r', translation_update, rotations) + translations
-                rotations = quaternion_to_matrix(quaternions)
 
                 if self.training or is_last:
                     n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n r c -> b n r', point_local, rotations) + translations,
@@ -318,9 +321,5 @@ class StructureModule(nn.Module):
                     backbones = torch.stack((n_point_global, translations, c_point_global), dim=-2)
                     backbones.type(original_dtype)
                     outputs.append(dict(frames=(rotations, translations), act=single_repr, backbones=backbones))
-
-                # No rotation gradients between iterations to stabilize training.
-                if not is_last:
-                    rotations = rotations.detach()
 
         return outputs
