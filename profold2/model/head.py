@@ -13,10 +13,26 @@ from profold2.utils import *
 
 logger = logging.getLogger(__name__)
 
-def softmax_cross_entropy(logits, labels):
-  """Computes softmax cross entropy given logits and one-hot class labels."""
-  loss = -torch.sum(labels * F.log_softmax(logits, dim=-1), dim=-1)
-  return loss
+def softmax_cross_entropy(logits, labels, mask=None):
+    """Computes softmax cross entropy given logits and one-hot class labels."""
+    if not exists(mask):
+        mask = 1.0
+    loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
+    return loss
+
+class ConfidenceHead(nn.Module):
+    """Head to predict confidence.
+    """
+    def __init__(self, dim):
+        super().__init__()
+
+    def forward(self, headers, representations, batch):
+        metrics = {}
+        if 'lddt' in headers and 'logits' in headers['lddt']:
+            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        if 'plddt' in metrics:
+            metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
+        return metrics
 
 class DistogramHead(nn.Module):
     """Head to predict a distogram.
@@ -45,18 +61,19 @@ class DistogramHead(nn.Module):
         """
         x = representations['pair']
         trunk_embeds = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
-        return dict(logits=self.net(trunk_embeds))
+        breaks = self.buckets.to(trunk_embeds.device)
+        return dict(logits=self.net(trunk_embeds), breaks=breaks)
 
     def loss(self, value, batch):
         """Log loss of a distogram."""
-        logits = value['logits']
+        logits, breaks = value['logits'], value['breaks']
         assert len(logits.shape) == 4
         positions = batch['pseudo_beta']
         mask = batch['pseudo_beta_mask']
 
         assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(self.buckets).to(positions.device)
+        sq_breaks = torch.square(breaks)
 
         dist2 = torch.sum(
             torch.square(
@@ -210,6 +227,61 @@ class LDDTHead(nn.Module):
         logger.debug('LDDTHead.loss: %s', loss.item())
         return dict(loss=loss)
 
+class MetricDict(dict):
+    def __add__(self, o):
+        n = MetricDict(**self)
+        for k in o:
+            if k in n:
+                n[k] = n[k] + o[k]
+            else:
+                n[k] = o[k]
+        return n
+
+    def __mul__(self, o):
+        n = MetricDict(**self)
+        for k in n:
+            n[k] = n[k] * o
+        return n
+
+    def __truediv__(self, o):
+        n = MetricDict(**self)
+        for k in n:
+            n[k] = n[k] / o
+        return n
+
+class MetricDictHead(nn.Module):
+    """Head to calculate metrics
+    """
+    def __init__(self, dim, **kwargs):
+        super().__init__()
+
+        self.params = kwargs
+
+    def forward(self, headers, representations, batch):
+        metrics = MetricDict()
+        if 'distogram' in headers:
+            assert 'logits' in headers['distogram'] and 'breaks' in headers['distogram']
+            logits, breaks = headers['distogram']['logits'], headers['distogram']['breaks']
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
+
+            cutoff = self.params.get('contact_cutoff', 8.0)
+            t =  torch.sum(breaks <= cutoff)
+            pred = F.softmax(logits, dim=-1)
+            pred = torch.sum(pred[...,:t+1], dim=-1)
+            truth = torch.cdist(positions, positions, p=2)
+            precision_list = contact_precision(
+                    pred, truth, mask=mask,
+                    ratios=self.params.get('contact_ratios'),
+                    ranges=self.params.get('contact_ranges'),
+                    cutoff=cutoff)
+            metrics['contact'] = MetricDict()
+            for (i, j), ratio, precision in precision_list:
+                i, j = default(i, 0), default(j, 'inf')
+                metrics['contact'][f'[{i},{j})_{ratio}'] = precision
+
+        return dict(loss=metrics) if metrics else None
+
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
     """
@@ -242,26 +314,13 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
-class ConfidenceHead(nn.Module):
-    """Head to predict confidence.
-    """
-    def __init__(self, dim):
-        super().__init__()
-
-    def forward(self, headers, representations, batch):
-        metrics = {}
-        if 'lddt' in headers and 'logits' in headers['lddt']:
-            metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
-        if 'plddt' in metrics:
-            metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
-        return metrics
-
 class HeaderBuilder:
     _headers = dict(
             confidence = ConfidenceHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,
+            metric = MetricDictHead,
             tmscore = TMscoreHead)
     @staticmethod
     def build(dim, config, parent=None):

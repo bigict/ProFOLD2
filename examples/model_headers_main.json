@@ -11,5 +11,6 @@
     "fape_z":15.0,
     "fape_weight":1.0,
     "fape_reduction":0}, {"weight":0.1}],
+  ["metric", {}, {}],
   ["tmscore", {}, {}]
 ]
