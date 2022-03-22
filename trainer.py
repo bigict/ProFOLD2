@@ -26,7 +26,7 @@ from profold2.data.utils import (
     embedding_get_labels,
     pdb_save,
     weights_from_file)
-from profold2.model import Alphafold2, ReturnValues
+from profold2.model import Alphafold2, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 
 class WorkerLogFilter(logging.Filter):
@@ -153,7 +153,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # tensorboard
   writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval'))
-  def model_add_embeddings(writer, model, it):
+  def writer_add_embeddings(writer, model, it):
     def add_embeddings(embedds, prefix=''):
       for k, v in embedds.items():
         if isinstance(v, dict):
@@ -167,6 +167,18 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     else:
       embeddings = model.embeddings()
     add_embeddings(embeddings)
+
+  def writer_add_scalars(writer, loss, it, prefix=''):
+    if isinstance(loss, MetricDict):
+      if prefix:
+        prefix = f'{prefix}.'
+      for k, v in loss.items():
+        writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
+    else:
+      if isinstance(loss, torch.Tensor):
+        loss = loss.item()
+      logging.info('%d loss@%s: %s', it, prefix, loss)
+      writer.add_scalar(prefix, loss, it)
 
   global_step = 0
   # CheckpointManager
@@ -183,27 +195,26 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   for it in range(global_step, args.num_batches):
     optim.zero_grad()
 
-    running_loss = {}
+    running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
       epoch, batch = next(dl)
 
       seq = batch['seq']
-      logging.debug('%d %d %d seq.shape: %s %s',
-          epoch, it, jt, seq.shape, batch.get('clips'))
+      logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
+          epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # sequence embedding (msa / esm / attn / or nothing)
-      r = ReturnValues(**model(batch=batch,
-          num_recycle=args.model_recycles))
+      r = ReturnValues(**model(batch=batch, num_recycle=args.model_recycles))
 
       if it == 0 and jt == 0 and args.tensorboard_add_graph:
         with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
           w.add_graph(model, (batch, ), verbose=True)
 
       # running loss
-      running_loss['all'] = running_loss.get('all', 0) + r.loss.item()
+      running_loss += MetricDict({'all':r.loss})
       for h, v in r.headers.items():
         if 'loss' in v:
-          running_loss[h] = running_loss.get(h, 0) + v['loss'].item()
+          running_loss += MetricDict({h:v['loss']})
 
       r.loss.backward()
 
@@ -213,8 +224,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
-      logging.info('%d loss@%s: %s', it, k, v)
-      writer.add_scalar(f'Loss/train@{k}', v, it)
+      writer_add_scalars(writer, v, it, prefix=f'Loss/train@{k}')
+      #writer.add_scalar(f'Loss/train@{k}', v, it)
 
     optim.step()
 
@@ -224,7 +235,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       checkpoint_manager.save(it)
 
       # Add embeddings
-      model_add_embeddings(writer, model, it)
+      writer_add_embeddings(writer, model, it)
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -232,17 +243,17 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
       with torch.no_grad():
         # eval loss
-        n, eval_loss = 0, {}
+        n, eval_loss = 0, MetricDict()
         for data in iter(eval_loader):
-          r = ReturnValues(**model(batch=data))
+          r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
           for h, v in r.headers.items():
             if 'loss' in v:
-              eval_loss[h] = eval_loss.get(h, 0) + v['loss'].item()
+              eval_loss += MetricDict({h:v['loss']})
           n += 1
         for k, v in eval_loss.items():
           v /= (args.batch_size * n)
-          logging.info('%d eval@%s: %s', it, k, v)
-          writer.add_scalar(f'Loss/eval@{k}', v, it)
+          writer_add_scalars(writer, v, it, prefix=f'Loss/eval@{k}')
+          #writer.add_scalar(f'Loss/eval@{k}', v, it)
 
       model.train()
 
@@ -255,7 +266,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     checkpoint_manager.save(it)
 
     # Add embeddings
-    model_add_embeddings(writer, model, it)
+    writer_add_embeddings(writer, model, it)
 
   # save model
   if not args.gpu_list or rank == 0:

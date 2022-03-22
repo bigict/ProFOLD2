@@ -718,32 +718,64 @@ def TMscore(A, B, *, L):
     """
     return A, B, dict(L=L)
 
-def contacts_auc_torch(pred, truth, ratios=[1,2,5], gap=24, cutoff=8):
-    pass
-def contacts_auc_numpy(pred, truth, ratios=[1,2,5], gap=24, cutoff=8):
-    assert pred.shape == truth.shape and gap > 0
-    seq_len = (np.diagonal(truth) >= 0).sum()
+def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
+    # (..., l, l)
+    assert truth.shape[-1] == truth.shape[-2]
+    assert pred.shape == truth.shape
 
-    pred_truth = np.dstack((pred, truth))
-    mask = np.triu(np.ones_like(truth, dtype=np.int8), gap)
+    seq_len = truth.shape[-1]
+    mask1s = torch.ones_like(truth, dtype=torch.int8)
+    if exists(mask):
+        mask1s = mask1s * (mask[...,:,None] * mask[...,None,:])
+    mask_ranges = map(
+            lambda r: torch.triu(mask1s, default(r[0], 0)) - torch.triu(mask1s, default(r[1], seq_len)),
+            ranges)
 
-    masked_pred_truth = pred_truth[mask.nonzero()]
-    sorter_idx = (-masked_pred_truth[:, 0]).argsort()
-    sorted_pred_truth = masked_pred_truth[sorter_idx]
-    masked_labels = sorted_pred_truth[:, 1]
-    sorted_pred_truth = sorted_pred_truth[masked_labels > 0]
-    num_positives = ((0 < masked_labels) & (masked_labels < cutoff)).sum()
+    pred_truth = torch.stack((pred, truth), dim=-1)
+    for (i, j), mask in zip(ranges, mask_ranges):
+        masked_pred_truth = pred_truth[mask.bool()]
+        sorter_idx = (-masked_pred_truth[:, 0]).argsort()
+        sorted_pred_truth = masked_pred_truth[sorter_idx]
 
-    ret = []
-    for ratio in ratios:
-        num_tops = int(round(seq_len / ratio))
-        top_labels = sorted_pred_truth[:num_tops, 1]
-        num_corrects = ((0 < top_labels) & (top_labels < cutoff)).sum()
-        ret.append(num_corrects / max(num_positives, 1e-12))
-    return ret
+        for ratio in ratios:
+            num_tops = max(1, int(seq_len * ratio))
+            assert 0 < num_tops <= seq_len
+            top_labels = sorted_pred_truth[:num_tops, 1]
+            num_corrects = ((0 < top_labels) & (top_labels < cutoff)).sum()
+            yield (i, j), ratio, num_corrects / float(num_tops)
+
+def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
+    # (l, l)
+    assert truth.shape[-1] == truth.shape[-2]
+    assert pred.shape == truth.shape
+
+    seq_len = truth.shape[-1]
+    mask1s = np.ones_like(truth, dtype=np.int8)
+    if exists(mask):
+        mask1s = mask1s * (mask[...:,None] * mask[...,None,:])
+    mask_range = map(
+            lambda r: np.triu(mask1s, default(r[0], 0)) - np.triu(mask1s, default(r[1], seq_len)),
+            ranges)
+
+    pred_truth = np.stack((pred, truth), dim=-1)
+
+    for mask in mask_range:
+        masked_pred_truth = pred_truth[mask.nonzero()]
+        sorter_idx = (-masked_pred_truth[:, 0]).argsort()
+        sorted_pred_truth = masked_pred_truth[sorter_idx]
+
+        for ratio in ratios:
+            num_tops = max(1, int(seq_len * ratio))
+            assert 0 < num_tops <= seq_len
+            top_labels = sorted_pred_truth[:num_tops, 1]
+            num_corrects = ((0 < top_labels) & (top_labels < cutoff)).sum()
+            yield num_corrects / float(num_tops)
 
 @set_backend_kwarg
-@invoke_torch_or_numpy(contacts_auc_torch, contacts_auc_numpy)
-def contacts_auc(pred, truth, **kwargs):
-    return pred, truth, kwargs
-
+@invoke_torch_or_numpy(contact_precision_torch, contact_precision_numpy)
+def contact_precision(pred, truth, ratios=None, ranges=None, **kwargs):
+    if not exists(ratios):
+        ratios = [1, .5, .2, .1]
+    if not exists(ranges):
+        ranges = [(6, 12), (12, 24), (24, None)]
+    return pred, truth, ratios, ranges, kwargs
