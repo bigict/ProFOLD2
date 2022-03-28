@@ -33,7 +33,7 @@ class Jackhmmer:
                *,
                binary_path: str,
                database_path: str,
-               n_cpu: int = 8,
+               n_cpu: int = os.cpu_count(),
                n_iter: int = 1,
                e_value: float = 0.0001,
                z_value: Optional[int] = None,
