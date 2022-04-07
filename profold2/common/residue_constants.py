@@ -892,3 +892,6 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5,
           'upper_bound': restype_atom14_bond_upper_bound,  # shape (21,14,14)
           'stddev': restype_atom14_bond_stddev,  # shape (21,14,14)
          }
+
+def make_mask(restypes, mask):
+  pass

@@ -20,11 +20,31 @@ def softmax_cross_entropy(logits, labels, mask=None):
     loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
     return loss
 
+def softmax_kl_diversity(logits, labels, mask=None):
+    if not exists(mask):
+        mask = 1.0
+    loss = torch.sum(
+            F.kl_div(F.log_softmax(logits, dim=-1), labels, reduction='none') * mask,
+            dim=-1)
+    return loss
+
 def softmax_cosine_similarity(logits, labels, mask=None):
     if not exists(mask):
         mask = 1.0
     pred = F.softmax(logits, dim=-1)
     return F.cosine_similarity(pred*mask, labels*mask, dim=-1)
+
+def make_mask(restypes, mask, device=None):
+    num_class = len(restypes)
+    if exists(mask) and mask:
+        m = [restypes.index(i) for i in mask]
+        # Shape (k, c)
+        m = F.one_hot(torch.as_tensor(m, device=device),
+                num_class)
+        # Shape (c)
+        m = ~(torch.sum(m, dim=0) > 0)
+        return m.float()
+    return torch.as_tensor([1.0]*num_class, device=device)
 
 class ConfidenceHead(nn.Module):
     """Head to predict confidence.
@@ -43,11 +63,13 @@ class ConfidenceHead(nn.Module):
 class ContactHead(nn.Module):
     """Head to predict a contact.
     """
-    def __init__(self, dim, diagonal=1, cutoff=8.):
+    def __init__(self, dim, diagonal=1, cutoff=8., loss_min=None, loss_max=None):
         super().__init__()
  
         self.diagonal = diagonal
         self.cutoff = cutoff
+        self.loss_min = loss_min
+        self.loss_max = loss_max
 
     def forward(self, headers, representations, batch):
         assert 'mlm' in representations and 'contacts' in representations['mlm']
@@ -57,24 +79,107 @@ class ContactHead(nn.Module):
         assert 'logits' in value
         logits = value['logits']
         assert len(logits.shape) == 3
-        positions = batch['pseudo_beta']
-        mask = batch['pseudo_beta_mask']
+        if 'pseudo_beta' in batch:
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
 
-        assert positions.shape[-1] == 3
+            assert positions.shape[-1] == 3
 
-        dist2 = torch.cdist(positions, positions, p=2)
+            dist2 = torch.cdist(positions, positions, p=2)
 
-        targets = (dist2 <= self.cutoff).float()
-        errors = F.binary_cross_entropy(logits, targets,
-                reduction='none')
+            targets = (dist2 <= self.cutoff).float()
 
-        square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
-        square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
+            errors = F.binary_cross_entropy(logits, targets,
+                    reduction='none')
+
+            square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
+            square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
+
+            avg_error = (
+                torch.sum(errors * square_mask) /
+                (1e-6 + torch.sum(square_mask)))
+            logger.debug('ContactHead.loss: %s', avg_error.item())
+            if self.loss_min or self.loss_max:
+                avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+            return dict(loss=avg_error)
+        return None
+
+class CoevolutionHead(nn.Module):
+    """Head to predict Co-evolution.
+    """
+    def __init__(self, dim, mask='-', loss_min=None, loss_max=None):
+        super().__init__()
+
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+        self.single= nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Linear(dim, num_class))
+        self.pairwize = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, num_class**2))
+        self.mask = mask
+
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        """Builds CoevolutionHead module.
+
+        Arguments:
+         representations: Dictionary of representations, must contain:
+           * 'pair': pair representation, shape [N_res, N_res, c_z].
+         batch: Batch, unused.
+
+        Returns:
+         Dictionary containing:
+           * logits: logits for distogram, shape [N_res, N_res, N_bins].
+        """
+        assert 'msa' in batch
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+
+        si, zij = representations['single'], representations['pair']
+        m = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=si.device)
+
+        ei = self.single(si)
+        eij = self.pairwize((zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+
+        eij = eij * rearrange(1-torch.eye(zij.shape[-2], device=zij.device),
+                'i j -> i j ()')  # eii = 0
+        hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                F.one_hot(batch['msa'], num_class).float(),
+                rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
+                m)
+        logits = rearrange(ei, 'b i c -> b () i c') + hi
+        return dict(logits=logits)
+
+    def loss(self, value, batch):
+        """Log loss of a distogram."""
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+
+        logits = value['logits']
+        labels = F.one_hot(batch['msa'], num_class)
+        logger.debug('CoevolutionHead.loss.logits: %s', logits.shape)
+
+        assert len(logits.shape) == 4
+        assert 'msa' in batch
+        label_mask = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=logits.device)
+
+        errors = softmax_cross_entropy(
+                labels=labels,
+                logits=logits, mask=label_mask)
+        mask = torch.einsum('b i,b m i c,c -> b m i',
+                batch['mask'].float(),
+                labels.float(),
+                label_mask)
 
         avg_error = (
-            torch.sum(errors * square_mask) /
-            (1e-6 + torch.sum(square_mask)))
-        logger.debug('ContactHead.loss: %s', avg_error.item())
+            torch.sum(errors * mask) /
+            (1e-6 + torch.sum(mask)))
+        logger.debug('CoevolutionHead.loss: %s', avg_error.item())
+        if self.loss_min or self.loss_max:
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
 
 class DistogramHead(nn.Module):
@@ -93,12 +198,12 @@ class DistogramHead(nn.Module):
     def forward(self, headers, representations, batch):
         """Builds DistogramHead module.
 
-       Arguments:
+        Arguments:
          representations: Dictionary of representations, must contain:
            * 'pair': pair representation, shape [N_res, N_res, c_z].
          batch: Batch, unused.
 
-       Returns:
+        Returns:
          Dictionary containing:
            * logits: logits for distogram, shape [N_res, N_res, N_bins].
         """
@@ -111,24 +216,33 @@ class DistogramHead(nn.Module):
         """Log loss of a distogram."""
         logits, breaks = value['logits'], value['breaks']
         assert len(logits.shape) == 4
-        positions = batch['pseudo_beta']
-        mask = batch['pseudo_beta_mask']
+        if 'pseudo_beta' in batch:
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
 
-        assert positions.shape[-1] == 3
+            assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(breaks)
+            sq_breaks = torch.square(breaks)
 
-        dist2 = torch.sum(
-            torch.square(
-                rearrange(positions, 'b l c -> b l () c') -
-                rearrange(positions, 'b l c -> b () l c')),
-            dim=-1,
-            keepdims=True)
+            dist2 = torch.sum(
+                torch.square(
+                    rearrange(positions, 'b l c -> b l () c') -
+                    rearrange(positions, 'b l c -> b () l c')),
+                dim=-1,
+                keepdims=True)
 
-        true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
+            true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
+            errors = softmax_cross_entropy(
+                labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
+        else:
+            b, l, device = *batch['seq'].shape, batch['seq'].device
+            mask = torch.ones((b, l), device=device, dtype=torch.bool)
 
-        errors = softmax_cross_entropy(
-            labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
+            with torch.no_grad():
+                labels = torch.zeros(logits.shape, device=logits.device) #F.softmax(logits, dim=-1)
+
+            errors = softmax_kl_diversity(
+                labels=labels, logits=logits)
 
 
         square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
@@ -137,7 +251,7 @@ class DistogramHead(nn.Module):
             torch.sum(errors * square_mask) /
             (1e-6 + torch.sum(square_mask)))
         logger.debug('DistogramHead.loss: %s', avg_error.item())
-        return dict(loss=avg_error, true_dist=torch.sqrt(dist2+1e-6))
+        return dict(loss=avg_error)
 
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
@@ -175,8 +289,20 @@ class FoldingHead(nn.Module):
         return dict(frames=(rotations, translations), backbones=backbones, coords=coords, representations=dict(single=act), traj=outputs)
 
     def loss(self, value, batch):
-        coords, labels = value['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
-        coord_mask = batch['coord_mask'][...,:self.num_atoms]
+        assert 'coords' in value
+        coords = value['coords'][...,:self.num_atoms,:]
+
+        if 'coord' in batch:
+            labels = batch['coord'][...,:self.num_atoms,:]
+            coord_mask = batch['coord_mask'][...,:self.num_atoms]
+            backbone_affine, backbone_affine_mask = batch['backbone_affine'], batch['backbone_affine_mask']
+        else:
+            with torch.no_grad():
+                labels = coords
+            coord_mask = torch.ones(labels.shape[:-1], device=labels.device, dtype=torch.bool)
+            backbone_affine = functional.rigids_from_3x3(labels[...,:3,:])
+            backbone_affine_mask = torch.any(coord_mask[...,:3] != 0, dim=-1)
+
         flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
 
         # rotate / align
@@ -193,14 +319,21 @@ class FoldingHead(nn.Module):
                         rearrange(labels_aligned, 'd l -> l d'))),
                     self.fape_min, self.fape_max) / self.fape_z
         if self.fape_weight > 0:
-            assert self.num_atoms >= 3 and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
+            assert self.num_atoms >= 3 #and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
 
-            true_frames, true_points = batch['backbone_affine'], labels
-            frames_mask, points_mask = batch['backbone_affine_mask'], coord_mask
+            true_frames, true_points = backbone_affine, labels
+            frames_mask, points_mask = backbone_affine_mask, coord_mask
 
             def yield_fape_loss(outputs):
                 for i, traj in enumerate(outputs):
                     pred_frames, pred_points = map(lambda key: traj[key], ('frames', 'backbones'))
+                    if 'backbone_affine' in batch:
+                        true_points = labels
+                        true_frames, frames_mask = batch['backbone_affine'], batch['backbone_affine_mask']
+                    else:
+                        with torch.no_grad():
+                            true_frames, true_points = pred_frames, pred_points
+                            frames_mask = torch.any(coord_mask[...,:3] != 0, dim=-1)
                     r = functional.fape(
                             pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
                     logger.debug('FoldingHead.loss(%d): %s', i, r.item())
@@ -240,13 +373,19 @@ class LDDTHead(nn.Module):
         assert 'coords' in value and 'logits' in value
 
         ca_idx = residue_constants.atom_order['CA']
-
         # Shape (b, l, d)
         pred_points = value['coords'][...,ca_idx,:]
-        # Shape (b, l, d)
-        true_points = batch['coord'][...,ca_idx,:]
-        # Shape (b, l)
-        points_mask = batch['coord_mask'][...,ca_idx]
+
+        if 'coord' in batch:
+            # Shape (b, l, d)
+            true_points = batch['coord'][...,ca_idx,:]
+            # Shape (b, l)
+            points_mask = batch['coord_mask'][...,ca_idx]
+        else:
+            with torch.no_grad():
+                true_points = pred_points
+            points_mask = torch.ones(pred_points.shape[:-1], device=pred_points.device, dtype=torch.bool)
+
         with torch.no_grad():
             # Shape (b, l)
             lddt_ca = functional.lddt(pred_points, true_points, points_mask)
@@ -353,26 +492,37 @@ class MetricDictHead(nn.Module):
             for (i, j), ratio, precision in precision_list:
                 i, j = default(i, 0), default(j, 'inf')
                 metrics['contact'][f'[{i},{j})_{ratio}'] = precision
-        if 'profile' in headers and 'sequence_profile' in batch:
-            assert 'logits' in headers['profile']
-            logits, labels = headers['profile']['logits'], batch['sequence_profile']
-            label_mask = None
+            if '[24,inf)_1' in metrics['contact']:
+                logger.debug('MetricDictHead.contact.[24,inf]@L: %s', metrics['contact']['[24,inf)_1'].item())
+        if ('profile' in headers or 'coevolution' in headers) and 'sequence_profile' in batch:
+            labels, label_mask = batch['sequence_profile'], 1.0
             if 'sequence_profile_mask' in batch:
                 label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
-            metrics['profile'] = MetricDict()
-            sim = softmax_cosine_similarity(
-                    logits=logits, labels=labels, mask=label_mask)
+
+            if 'profile' in headers:
+                assert 'logits' in headers['profile']
+                logits = headers['profile']['logits']
+                sim = softmax_cosine_similarity(
+                        logits=logits, labels=labels, mask=label_mask)
+            else:
+                assert 'logits' in headers['coevolution']
+                pred = F.softmax(headers['coevolution']['logits'], dim=-1)
+                pred = torch.sum(pred, dim=-3)
+                sim = F.cosine_similarity(pred*label_mask, labels*label_mask, dim=-1)
+                
             mask = batch['mask']
             avg_sim = (
                 torch.sum(sim * mask) /
                 (1e-6 + torch.sum(mask)))
+            logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
+            metrics['profile'] = MetricDict()
             metrics['profile']['cosine'] = avg_sim
         return dict(loss=metrics) if metrics else None
 
 class SequenceProfileHead(nn.Module):
     """Head to predict sequence profile.
     """
-    def __init__(self, dim, input_dim=None, single_repr=None):
+    def __init__(self, dim, input_dim=None, single_repr=None, loss_func='CrossEntropy'):
         super().__init__()
 
         if not exists(input_dim):
@@ -387,6 +537,9 @@ class SequenceProfileHead(nn.Module):
                 nn.GELU(),
                 nn.LayerNorm(dim),
                 nn.Linear(dim, len(residue_constants.restypes_with_x_and_gap)))
+
+        assert loss_func in ('CrossEntropy', 'KLDiv')
+        self.loss_func = loss_func
 
     def forward(self, headers, representations, batch):
         assert 'sequence_profile' in batch
@@ -411,14 +564,18 @@ class SequenceProfileHead(nn.Module):
         if 'sequence_profile_mask' in batch:
             label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
 
-        errors = softmax_cross_entropy(
-                labels=labels, logits=logits, mask=label_mask)
+        if self.loss_func == 'CrossEntropy':
+            errors = softmax_cross_entropy(
+                    labels=labels, logits=logits, mask=label_mask)
+        else:
+            errors = softmax_kl_diversity(
+                    labels=labels, logits=logits, mask=label_mask)
 
         avg_error = (
             torch.sum(errors * mask) /
             (1e-6 + torch.sum(mask)))
 
-        logger.debug('SequenceProfileHead.loss: %s', avg_error.item())
+        logger.debug('SequenceProfileHead.loss(%s): %s', self.loss_func, avg_error.item())
         return dict(loss=avg_error)
 
 class TMscoreHead(nn.Module):
@@ -455,6 +612,7 @@ class TMscoreHead(nn.Module):
 
 class HeaderBuilder:
     _headers = dict(
+            coevolution = CoevolutionHead,
             confidence = ConfidenceHead,
             contact = ContactHead,
             distogram = DistogramHead, 

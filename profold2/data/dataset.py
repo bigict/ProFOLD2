@@ -68,7 +68,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     FEAT_MSA = 0x02
     FEAT_ALL = 0xff
 
-    def __init__(self, data_dir, data_idx='name.idx', max_msa_size=128, max_seq_len=None, coord_type=None, feat_flags=FEAT_ALL&(~FEAT_MSA)):
+    def __init__(self, data_dir, data_idx='name.idx', max_msa_size=128, max_seq_len=None, coord_type='npz', feat_flags=FEAT_ALL&(~FEAT_MSA)):
         super().__init__()
 
         self.data_dir = pathlib.Path(data_dir)
@@ -250,10 +250,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         return result
 
     def get_structure_label_npz(self, protein_id, str_seq):
-        with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
-            structure = np.load(BytesIO(f.read()))
-            return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
-        
+        if self._fstat(f'{self.PDB}/{protein_id}.npz'):
+            with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
+                structure = np.load(BytesIO(f.read()))
+                return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
+        return dict()
+
     def get_structure_label_numpy(self, protein_id, str_seq):
         labels = np.zeros((len(str_seq), NUM_COORDS_PER_RES, 3), dtype=np.float32)
         label_mask = np.zeros((len(str_seq), NUM_COORDS_PER_RES), dtype=np.bool)
@@ -313,10 +315,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 elif not exists(min_crop_len):
                     assert max_crop_len < n
                     return max_crop_len
-                assert min_crop_len <= max_crop_len and min_crop_len < n and max_crop_len < n
-                return np.random.randint(min_crop_len, max_crop_len+1) if crop else max_crop_len
+                logger.error('xxx: min_crop_len=%s, max_crop_len=%s, n=%s', min_crop_len, max_crop_len, n)
+                assert min_crop_len <= max_crop_len and (min_crop_len < n or max_crop_len < n)
+                return np.random.randint(min_crop_len, min(n, max_crop_len)+1) if crop else min(max_crop_len, n)
 
             l = _crop_length(n, np.random.random() < crop_probability)
+            logger.error('yyy: min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len, max_crop_len, n, l)
             i, j = 0, l
             if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask']):
                 while True:
@@ -426,7 +430,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 mask=padded_masks,
                 str_seq=str_seqs)
 
-        if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+        if self.feat_flags & ProteinStructureDataset.FEAT_PDB and 'coord' in batch[0]:
             fields = ('coord', 'coord_mask')
             coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
 

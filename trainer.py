@@ -6,6 +6,7 @@
 """
 import os
 import argparse
+import copy
 import functools
 import json
 import logging
@@ -126,13 +127,25 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
+        max_msa_size=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         feats=feats,
-        feat_flags=(~dataset.ProteinStructureDataset.FEAT_MSA),
         batch_size=args.batch_size,
         is_training=False,
+        num_workers=0)
+
+    fake_loader = dataset.load(
+        data_dir=args.eval_data,
+        max_msa_size=args.max_msa_size,
+        min_crop_len=args.min_crop_len,
+        max_crop_len=args.max_crop_len,
+        crop_algorithm=args.crop_algorithm,
+        feats=feats,
+        batch_size=args.batch_size,
+        is_training=False,
+        shuffle=True,
         num_workers=0)
 
   data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
@@ -182,7 +195,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       if isinstance(loss, torch.Tensor):
         loss = loss.item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
-      writer.add_scalar(prefix, loss, it)
+      if writer:
+        writer.add_scalar(prefix, loss, it)
 
   global_step = 0
   # CheckpointManager
@@ -195,13 +209,14 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     global_step = checkpoint_manager.restore_or_initialize() + 1
     model.train()
 
-  # training loop
-  for it in range(global_step, args.num_batches):
+  def _step(data_loader, it, writer, batch_callback=None):
     optim.zero_grad()
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
-      epoch, batch = next(dl)
+      epoch, batch = next(data_loader)
+      if batch_callback:
+        batch = batch_callback(batch)
 
       seq = batch['seq']
       logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
@@ -209,10 +224,6 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
       # sequence embedding (msa / esm / attn / or nothing)
       r = ReturnValues(**model(batch=batch, num_recycle=args.model_recycles))
-
-      if it == 0 and jt == 0 and args.tensorboard_add_graph:
-        with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
-          w.add_graph(model, (batch, ), verbose=True)
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -233,6 +244,17 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     optim.step()
 
+  def batch_seq_only(batch):
+    batch = copy.copy(batch)
+    for field in ('coord', 'coord_mask', 'backbone_affine', 'backbone_affine_mask', 'pseudo_beta', 'pseudo_beta_mask'):
+      if field in batch:
+        del batch[field]
+    return batch
+
+  # training loop
+  for it in range(global_step, args.num_batches):
+    _step(dl, it, writer)
+
     if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
         (not args.gpu_list or rank == 0)):
       # Save a checkpoint every N iters.
@@ -241,10 +263,14 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       # Add embeddings
       writer_add_embeddings(writer, model, it)
 
+    if (args.eval_data and 
+        args.eval_every > 0 and (it + 1) % args.eval_every == 0):
+      _step(cycling(fake_loader), it, None, batch_callback=batch_seq_only)
+
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
+      
       model.eval()
-
       with torch.no_grad():
         # eval loss
         n, eval_loss = 0, MetricDict()
@@ -407,8 +433,6 @@ if __name__ == '__main__':
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
-  parser.add_argument('--tensorboard_add_graph', action='store_true',
-      help='call tensorboard.add_graph')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

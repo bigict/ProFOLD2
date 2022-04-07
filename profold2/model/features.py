@@ -39,9 +39,13 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
     assert not is_training or 'msa' in protein
     # Shape (b, m, l, c)
     if 'msa' in protein:
+        msa = protein['msa']
+        if hasattr(protein['seq'], 'device'):
+            msa = msa.to(device=protein['seq'].device)
         p = F.one_hot(
-                protein['msa'],
+                msa,
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
+        del msa
         # Shape (b, l, c)
         p = torch.sum(p, dim=1)
     else:
@@ -50,7 +54,7 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
     if exists(mask) and len(mask) > 0:
         m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
-        m = F.one_hot(torch.as_tensor(m),
+        m = F.one_hot(torch.as_tensor(m, device=p.device),
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
         # Shape (k, c)
         m = ~(torch.sum(m, dim=0) > 0)
@@ -61,6 +65,49 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
     if density:
         p = p / (torch.sum(p, dim=-1, keepdim=True) + epsilon)
     protein['sequence_profile'] = p
+    return protein
+
+@take1st
+def make_seq_profile_pairwise(protein, mask=None, density=False, epsilon=1e-8, is_training=True, chunk=8):
+    assert 'seq' in protein
+    assert not is_training or 'msa' in protein
+    # Shape (b, m, l, c)
+    if 'msa' in protein:
+        msa = protein['msa']
+        if hasattr(protein['seq'], 'device'):
+            msa = msa.to(device=protein['seq'].device)
+        q = F.one_hot(
+                msa,
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        del msa
+    else:
+        q = F.one_hot(
+                rearrange(protein['seq'], 'b ... -> b () ...'),
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+    # Shape (b, m, l, l, c, c)
+    # p = rearrange(p, '... i c -> ... i () c ()') * rearrange(p, '... j d -> ... () j () d')
+    # Shape (b, l, l, c, c)
+    # p = torch.sum(p, dim=1)
+    b, m, l, c = q.shape
+    p = torch.zeros((b, l, l, c, c), device=q.device)
+    for i in range(0, m, chunk):
+        p += torch.sum(
+                rearrange(q[:,i:i+chunk,...], 'b m i c -> b m i () c ()') * rearrange(q[:,i:i+chunk,...], 'b m j d -> b m () j () d'),
+                dim=1)
+    if exists(mask) and len(mask) > 0:
+        m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
+        m = F.one_hot(torch.as_tensor(m, device=p.device),
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        # Shape (k, c)
+        m = ~(torch.sum(m, dim=0) > 0)
+        m = rearrange(m, 'c -> c ()') * rearrange(m, 'd -> () d')
+        protein['sequence_profile_pairwise_mask'] = rearrange(m, 'c d -> (c d)')
+        p = p * rearrange(m, 'c d -> () () () c d')
+    # Shape (b, l, l, c, c)
+    if density:
+        p = p / (torch.sum(p, dim=(-2, -1), keepdim=True) + epsilon)
+    # Shape (b, l, l, c^2)
+    protein['sequence_profile_pairwise'] = rearrange(p, '... c d -> ... (c d)')
     return protein
 
 @take1st
@@ -109,8 +156,8 @@ def make_pseudo_beta(protein, prefix='', is_training=True):
 
 @take1st
 def make_backbone_affine(protein, is_training=True):
-    assert (not is_training) or ('coord' in protein and 'coord_mask' in protein)
-    if is_training or ('coord' in protein and 'coord_mask' in protein):
+    #assert (not is_training) or ('coord' in protein and 'coord_mask' in protein)
+    if is_training and ('coord' in protein and 'coord_mask' in protein):
         assert protein['coord'].shape[-2] >= 3
         protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
         protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
@@ -140,6 +187,13 @@ def make_to_device(protein, fields, device, is_training=True):
     for k in fields:
         if k in protein:
             protein[k] = protein[k].to(device)
+    return protein
+
+@take1st
+def make_delete_fields(protein, fields, is_training=True):
+    for k in fields:
+        if k in protein:
+            del protein[k]
     return protein
 
 @take1st

@@ -91,14 +91,14 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   test_loader = dataset.load(
       data_dir=args.casp_data,
+      max_msa_size=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
-      feat_flags=((~dataset.ProteinStructureDataset.FEAT_MSA) &
-              (~dataset.ProteinStructureDataset.FEAT_PDB
+      feat_flags=(~dataset.ProteinStructureDataset.FEAT_PDB
                   if args.casp_without_pdb
-                  else dataset.ProteinStructureDataset.FEAT_ALL)),
+                  else dataset.ProteinStructureDataset.FEAT_ALL),
       batch_size=args.batch_size,
       feats=feats,
       is_training=False,
@@ -240,6 +240,8 @@ if __name__ == '__main__':
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('--max_msa_size', type=int, default=128,
+      help='filter out msas whose size>SIZE, default=128')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN, default=None')
   parser.add_argument('--max_crop_len', type=int, default=None,

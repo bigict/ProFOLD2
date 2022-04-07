@@ -345,9 +345,14 @@ def rigids_from_angles(aatypes, backb_frames, angles):
     # the previous frame. So chain them up accordingly.
     def to_prev_frames(frames, idx):
         rotations, translations = frames
-        rotations[...,idx,:,:], translations[...,idx,:] = rigids_multiply(
-                (rotations[...,idx-1,:,:], translations[...,idx-1,:]), (rotations[...,idx,:,:], translations[...,idx,:]))
-        return rotations, translations
+
+        assert rotations.device == translations.device
+        assert rotations.shape[:-2] == translations.shape[:-1]
+
+        ri, ti = rigids_multiply(
+                (rotations[...,idx-1:idx,:,:], translations[...,idx-1:idx,:]),
+                (rotations[...,idx:idx+1,:,:], translations[...,idx:idx+1,:]))
+        return torch.cat((rotations[...,:idx,:,:], ri, rotations[...,idx+1:,:,:]), dim=-3), torch.cat((translations[...,:idx,:], ti, translations[...,idx+1:,:]), dim=-2)
 
     for i in range(5, n+1):
         atom_frames = to_prev_frames(atom_frames, i)
