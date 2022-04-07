@@ -23,6 +23,46 @@ logger = logging.getLogger(__file__)
 
 NUM_COORDS_PER_RES = 14
 
+class ProteinSequenceDataset(torch.utils.data.Dataset):
+    def __init__(self, sequences):
+        self.sequences = sequences
+
+    def __getitem__(self, idx):
+        input_sequence = self.sequences[idx]
+        seq = torch.tensor(residue_constants.sequence_to_onehot(
+            sequence=input_sequence,
+            mapping=residue_constants.restype_order_with_x,
+            map_unknown_to_x=True), dtype=torch.int).argmax(-1)
+        #residue_index = torch.arange(len(input_sequence), dtype=torch.int)
+        str_seq = ''.join(map(lambda a: a if a in residue_constants.restype_order_with_x else residue_constants.restypes_with_x[-1], input_sequence))
+        mask = torch.ones(len(input_sequence), dtype=torch.bool)
+        return dict(pid=str(idx),
+                seq=seq,
+                str_seq=str_seq,
+                mask=mask)
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def collate_fn(self, batch, feat_builder=None):
+        fields = ('pid', 'seq', 'mask', 'str_seq')
+        pids, seqs, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
+        lengths = tuple(len(s) for s in str_seqs)
+        max_batch_len = max(lengths)
+
+        padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
+        padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
+
+        ret = dict(pid=pids,
+                seq=padded_seqs,
+                mask=padded_masks,
+                str_seq=str_seqs)
+
+        if feat_builder:
+            ret = feat_builder.build(ret)
+
+        return ret
+
 class ProteinStructureDataset(torch.utils.data.Dataset):
     FEAT_PDB = 0x01
     FEAT_MSA = 0x02

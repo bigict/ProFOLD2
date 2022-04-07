@@ -20,6 +20,12 @@ def softmax_cross_entropy(logits, labels, mask=None):
     loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
     return loss
 
+def softmax_cosine_similarity(logits, labels, mask=None):
+    if not exists(mask):
+        mask = 1.0
+    pred = F.softmax(logits, dim=-1)
+    return F.cosine_similarity(pred*mask, labels*mask, dim=-1)
+
 class ConfidenceHead(nn.Module):
     """Head to predict confidence.
     """
@@ -347,7 +353,20 @@ class MetricDictHead(nn.Module):
             for (i, j), ratio, precision in precision_list:
                 i, j = default(i, 0), default(j, 'inf')
                 metrics['contact'][f'[{i},{j})_{ratio}'] = precision
-
+        if 'profile' in headers and 'sequence_profile' in batch:
+            assert 'logits' in headers['profile']
+            logits, labels = headers['profile']['logits'], batch['sequence_profile']
+            label_mask = None
+            if 'sequence_profile_mask' in batch:
+                label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+            metrics['profile'] = MetricDict()
+            sim = softmax_cosine_similarity(
+                    logits=logits, labels=labels, mask=label_mask)
+            mask = batch['mask']
+            avg_sim = (
+                torch.sum(sim * mask) /
+                (1e-6 + torch.sum(mask)))
+            metrics['profile']['cosine'] = avg_sim
         return dict(loss=metrics) if metrics else None
 
 class SequenceProfileHead(nn.Module):
