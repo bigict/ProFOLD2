@@ -1,5 +1,6 @@
 import collections
 
+import numpy as np
 import torch
 from torch.nn import functional as F
 from einops import rearrange, repeat
@@ -8,6 +9,20 @@ from profold2.common import residue_constants
 
 def l2_norm(v, dim=-1, epsilon=1e-12):
     return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
+
+def masked_mean(mask, value, epsilon=1e-10):
+    return torch.sum(mask*value) / (epsilon + torch.sum(mask))
+
+def batched_gather(params, indices):
+    b, device = indices.shape[0], indices.device
+    params = torch.from_numpy(params).to(device)
+    params = repeat(params, 'n ... -> b n ...', b=b)
+    c = len(params.shape) - len(indices.shape)
+    assert c >= 0
+    ext = list(map(chr, range(ord('o'), ord('o') + c)))
+    kwargs = dict(zip(ext, params.shape[-c:]))
+    ext = ' '.join(ext)
+    return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
 
 """
 The transformation matrices returned from the functions in this file assume
@@ -245,23 +260,33 @@ def rigids_from_4x4(m):
     assert m.shape[-2:] == (4, 4)
     return m[...,:3,:3], m[...,:3,3]
 
-def rigids_batched_gather(params, indices):
-    b, device = indices.shape[0], indices.device
-    params = torch.from_numpy(params).to(device)
-    params = repeat(params, 'n ... -> b n ...', b=b)
-    c = len(params.shape) - len(indices.shape)
-    assert c >= 0
-    ext = list(map(chr, range(ord('o'), ord('o') + c)))
-    kwargs = dict(zip(ext, params.shape[-c:]))
-    ext = ' '.join(ext)
-    return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
+def rigids_from_positions(aatypes, coords, coord_mask):
+    group_atom14_idx = F.one_hot(
+            batched_gather(residue_constants.restype_rigid_group_atom14_idx, aatypes),
+            residue_constants.atom14_type_num)
+    # Compute a mask whether the group exists.
+    # (N, 8)
+    group_exists = batched_gather(residue_constants.restype_rigid_group_mask, aatypes)
+
+    group_points = torch.einsum('... n d,... g m n -> ... g m d', coords,
+            group_atom14_idx.float())
+    group_point_mask = torch.einsum('... n,... g m n', coord_mask.float(),
+            group_atom14_idx.float())
+
+    # Compute a mask whether ground truth exists for the group
+    group_mask = torch.all(group_point_mask > 0, dim=-1) * group_exists
+
+    # Compute the Rigids.
+    return dict(atom_affine=rigids_from_3x3(group_points),
+            atom_affine_exists=group_exists,
+            atom_affine_mask=group_mask)
 
 def rigids_to_positions(frames, aatypes):
     # Shape ((b, l, 8, 3, 3), (b, l, 8, 3))
     rotations, translations = frames
 
     # Shape (b, l, 14)
-    group_idx = rigids_batched_gather(
+    group_idx = batched_gather(
         residue_constants.restype_atom14_to_rigid_group, aatypes)
     # Shape (b, l, 14, 8)
     group_mask = F.one_hot(group_idx, num_classes=8).float()
@@ -271,14 +296,14 @@ def rigids_to_positions(frames, aatypes):
 
     # Gather the literature atom positions for each residue.
     # Shape (b, l, 14, 3)
-    group_pos = rigids_batched_gather(
+    group_pos = batched_gather(
         residue_constants.restype_atom14_rigid_group_positions, aatypes)
 
     # Transform each atom from it's local frame to the global frame.
     positions = torch.einsum('... w,... h w -> ... h', group_pos, rotations) + translations
 
     # Mask out non-existing atoms.
-    mask = rigids_batched_gather(
+    mask = batched_gather(
         residue_constants.restype_atom14_mask, aatypes)
     return positions*rearrange(mask, '... d->... d ()')
 
@@ -309,15 +334,15 @@ def rigids_from_angles(aatypes, backb_frames, angles):
     backb_rotations, backb_trans = backb_frames
     assert backb_rotations.shape[-2:] == (3, 3) and backb_trans.shape[-1] == 3
     # Shape (b, l)
-    assert aatypes.shape == backb_rotations.shape[:2]
+    assert aatypes.shape == backb_rotations.shape[:-2]
     # Shape (b, l, n, 2) s.t. n <= 7
     assert angles.shape[-1] == 2 and angles.shape[-2] <= 7
-    assert angles.shape[:2] == aatypes.shape
+    assert angles.shape[:-2] == aatypes.shape
     
     b, l, n = angles.shape[:3]
 
     # Gather the default frames for all rigids (b, l, 8, 3, 3), (b, l, 8, 3)
-    m = rigids_batched_gather(residue_constants.restype_rigid_group_default_frame, aatypes)
+    m = batched_gather(residue_constants.restype_rigid_group_default_frame, aatypes)
     default_frames = rigids_slice(rigids_from_4x4(m), 0, n+1)
 
     #
@@ -391,3 +416,175 @@ def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points
     dij_mask = rearrange(frames_mask, 'b i -> b i () ()') * rearrange(points_mask, 'b j n -> b () j n')
 
     return torch.sum(dij * dij_mask) / (epsilon + torch.sum(dij_mask))
+
+def between_ca_ca_distance_loss(pred_points, points_mask, residue_index, tau=1.5, epsilon=1e-6):
+    assert pred_points.shape[-1] == 3
+    assert pred_points.shape[:-1] == points_mask.shape
+    assert points_mask.shape[:-1] == residue_index.shape
+
+    ca_idx = residue_constants.atom_order['CA']
+
+    this_ca_point = pred_points[...,:-1,ca_idx,:]
+    this_ca_mask = points_mask[...,:-1,ca_idx]
+    next_ca_point = pred_points[...,1:,ca_idx,:]
+    next_ca_mask = points_mask[...,1:,ca_idx]
+    no_gap_mask = ((residue_index[...,1:] - residue_index[...,:-1]) == 1)
+
+    ca_ca_distance = torch.sqrt(
+            epsilon + torch.sum((this_ca_point - next_ca_point)**2, dim=-1))
+    violations = torch.gt(ca_ca_distance - residue_constants.ca_ca, tau)
+    mask = this_ca_mask * next_ca_mask * no_gap_mask
+    return masked_mean(mask=mask, value=violations, epsilon=epsilon)
+
+def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, tau=12.0, epsilon=1e-6):
+    assert pred_points.shape[-1] == 3
+    assert pred_points.shape[:-1] == points_mask.shape
+    assert points_mask.shape[:-1] == residue_index.shape
+    assert aatypes.shape == residue_index.shape
+
+    n_idx = residue_constants.atom_order['N']
+    ca_idx = residue_constants.atom_order['CA']
+    c_idx = residue_constants.atom_order['C']
+
+    # Get the positions of the relevant backbone atoms.
+    this_ca_point = pred_points[...,:-1,ca_idx,:]
+    this_ca_mask = points_mask[...,:-1,ca_idx]
+    this_c_point = pred_points[...,:-1,c_idx,:]
+    this_c_mask = points_mask[...,:-1,c_idx]
+    next_n_point = pred_points[...,1:,n_idx,:]
+    next_n_mask = points_mask[...,1:,n_idx]
+    next_ca_point = pred_points[...,1:,ca_idx,:]
+    next_ca_mask = points_mask[...,1:,ca_idx]
+    no_gap_mask = ((residue_index[...,1:] - residue_index[...,:-1]) == 1)
+
+
+    # Compute bond length
+    c_n_bond_length = torch.sqrt(
+            epsilon + torch.sum((this_c_point - next_n_point)**2, dim=-1))
+    ca_c_bond_length = torch.sqrt(
+            epsilon + torch.sum((this_ca_point - this_c_point)**2, dim=-1))
+    n_ca_bond_length = torch.sqrt(
+            epsilon + torch.sum((next_n_point - next_ca_point)**2, dim=-1))
+
+    # Compute loss for the C--N bond.
+    # The C-N bond to proline has slightly different length because of the ring.
+    next_is_proline = (
+            aatypes[...,1:] == residue_constants.resname_to_idx['PRO'])
+    c_n_bond_labels = ((~next_is_proline)*residue_constants.between_res_bond_length_c_n[0] +
+            next_is_proline*residue_constants.between_res_bond_length_c_n[1])
+    c_n_bond_stddev = ((~next_is_proline)*residue_constants.between_res_bond_length_stddev_c_n[0] +
+            next_is_proline*residue_constants.between_res_bond_length_stddev_c_n[1])
+    c_n_bond_errors = torch.sqrt(
+            epsilon + (c_n_bond_length - c_n_bond_labels)**2)
+    c_n_bond_loss = F.relu(c_n_bond_errors - tau*c_n_bond_stddev)
+    mask = this_c_mask * next_n_mask * no_gap_mask
+    c_n_loss = masked_mean(mask=mask, value=c_n_bond_loss, epsilon=epsilon)
+
+    # Compute loss for the angles.
+    c_ca_unit_vec = (this_ca_point - this_c_point) / ca_c_bond_length[...,None]
+    c_n_unit_vec = (next_n_point - this_c_point) / c_n_bond_length[...,None]
+    n_ca_unit_vec = (next_ca_point - next_n_point) / n_ca_bond_length[...,None]
+
+    def bond_angle_loss(x, y, gt, mask):
+        gt_angle, gt_stddev = gt
+        pred_angle = torch.sum(x*y, dim=-1)
+        angle_errors = torch.sqrt(
+                epsilon + (pred_angle - gt_angle)**2)
+        angle_loss = F.relu(angle_errors - tau*gt_stddev)
+        return masked_mean(mask=mask, value=angle_loss, epsilon=epsilon)
+
+    ca_c_n_loss = bond_angle_loss(c_ca_unit_vec, c_n_unit_vec,
+            residue_constants.between_res_cos_angles_ca_c_n,
+            this_ca_mask*this_c_mask*next_n_mask*no_gap_mask)
+    c_n_ca_loss = bond_angle_loss(-c_n_unit_vec, n_ca_unit_vec,
+            residue_constants.between_res_cos_angles_c_n_ca,
+            this_c_mask*next_n_mask*next_ca_mask*no_gap_mask)
+
+    # Compute a per residue loss (equally distribute the loss to both
+    # neighbouring residues).
+
+    return dict(c_n_loss=c_n_loss,
+                ca_c_n_loss=ca_c_n_loss,
+                c_n_ca_loss=c_n_ca_loss)
+
+def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
+    # pick the transformation matrices for the given residue sequence
+    # shape (num_res, 14, 14)
+    renaming_transform = batched_gather(
+            residue_constants.RENAMING_MATRICES, seq)
+
+    coord_alt = torch.einsum('... m d,... m n->... n d',
+            coord, renaming_transform)
+    coord_alt_mask = torch.einsum('... m,... m n->... n',
+            coord_mask.float(), renaming_transform)
+
+    is_symmetric_mask = 1.0 - np.eye(residue_constants.RENAMING_MATRICES.shape[-1])
+    coord_is_symmetric = batched_gather(
+            np.sum(is_symmetric_mask*residue_constants.RENAMING_MATRICES, axis=-1) > 0,
+            seq)
+
+    coord_exits = batched_gather(residue_constants.restype_atom14_mask,
+            seq)
+    return dict(coord_alt=coord_alt,
+            coord_alt_mask=coord_alt_mask.bool(),
+            coord_is_symmetric=coord_is_symmetric,
+            coord_exits=coord_exits)
+
+def symmetric_ground_truth_find_optimal(coord_pred, coord_exists,
+        coord, coord_mask, coord_alt, coord_alt_mask, coord_is_symmetric, epsilon=1e-10):
+    """Find optimal renaming for ground truth that maximizes LDDT. """
+    assert coord_pred.shape == coord.shape
+    assert coord_pred.shape == coord_alt.shape
+    assert coord_exists.shape == coord_mask.shape
+    assert coord_exists.shape == coord_alt_mask.shape
+    assert coord_exists.shape == coord_is_symmetric.shape
+
+    def to_distance(point):
+        return torch.sqrt(epsilon + torch.sum(
+                rearrange(point, '... i c r-> ... i () c () r') - rearrange(point, '... j d r -> ... () j () d r')**2,
+                dim=-1))
+    # Create the pred distance matrix.
+    # shape (N, N, 14, 14)
+    pred_dist = to_distance(coord_pred)
+    # Compute distances for ground truth with original and alternative names.
+    # shape (N, N, 14, 14)
+    gt_dist = to_distance(coord)
+    gt_alt_dist = to_distance(coord_alt)
+
+    def to_lddt(x, y):
+        return torch.sqrt(epsilon + (x - y)**2)
+    # Compute LDDT's.
+    # shape (N, N, 14, 14)
+    lddt = to_lddt(pred_dist, gt_dist)
+    lddt_alt = to_lddt(pred_dist, gt_alt_dist)
+
+    # Create a mask for ambiguous atoms in rows vs. non-ambiguous atoms
+    # in cols.
+    # shape (N ,N, 14, 14)
+    mask = (rearrange(coord_exists*coord_is_symmetric, '... i c -> ... i () c ()') * # rows
+            rearrange(coord_exists*(~coord_is_symmetric), '... j d -> ... () j () d')) # cols
+
+    # Aggregate distances for each residue to the non-amibuguous atoms.
+    # shape (N)
+    per_res_lddt = torch.sum(lddt * mask, dim=(-3, -2, -1))
+    per_res_lddt_alt = torch.sum(lddt_alt * mask, dim=(-3, -2, -1))
+
+    # Decide for each residue, whether alternative naming is better.
+    # shape (N)
+    return per_res_lddt_alt < per_res_lddt  # alt_naming_is_better
+
+def symmetric_ground_truth_rename(coord_pred, coord_exists,
+        coord, coord_mask, coord_alt, coord_alt_mask, coord_is_symmetric, epsilon=1e-10):
+    """Find optimal renaming of ground truth based on the predicted positions. """
+    alt_naming_is_better = symmetric_ground_truth_find_optimal(
+            coord_pred, coord_exists,
+            coord, coord_mask, coord_alt, coord_alt_mask, coord_is_symmetric,
+            epsilon=epsilon)
+    coord_renamed = (rearrange(~alt_naming_is_better, '... i -> ... i () ()')*coord +
+            rearrange(alt_naming_is_better, '... i -> ... i () ()')*coord_alt)
+    coord_renamed_mask = (rearrange(~alt_naming_is_better, '... i -> ... i () ()')*coord_mask +
+            rearrange(alt_naming_is_better, '... i -> ... i () ()')*coord_alt_mask)
+
+    return dict(alt_naming_is_better=alt_naming_is_better,
+            coord_renamed=coord_renamed,
+            coord_renamed_mask=coord_renamed_mask)

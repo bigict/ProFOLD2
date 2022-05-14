@@ -5,7 +5,7 @@ import logging
 import torch
 from torch import nn
 from torch.nn import functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import functional, folding, sidechain
@@ -610,6 +610,38 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
+class ViolationHead(nn.Module):
+    """Head to structure violations.
+    """
+    def __init__(self, dim, num_atoms=3):
+        super().__init__()
+
+        self.num_atoms = num_atoms
+        assert self.num_atoms >= 3 and self.num_atoms <= 14
+
+    def forward(self, headers, representations, batch):
+        assert 'folding' in headers and 'coords' in headers['folding']
+        return dict(coords=headers['folding']['coords'])
+
+    def loss(self, value, batch):
+        assert 'coords' in  value
+        seq, mask = batch['seq'], batch['mask']
+        seq_index = batch.get('seq_index')
+        if not exists(seq_index):
+            b, n = seq.shape[:2]
+            seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
+        if 'coord' in batch:
+            points, point_mask = value['coords'][...,:self.num_atoms,:], batch['coord_mask'][...,:self.num_atoms]
+            
+            # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
+            #         points, point_mask, seq_index))
+            loss_dict = functional.between_residue_bond_loss(
+                    points, point_mask, seq_index, seq)
+            for k, v in loss_dict.items():
+                logger.debug('ViolationHead.%s: %s', k, v.item())
+            return dict(loss=sum(loss_dict.values()))
+        return None
+
 class HeaderBuilder:
     _headers = dict(
             coevolution = CoevolutionHead,
@@ -621,7 +653,9 @@ class HeaderBuilder:
             metric = MetricDictHead,
             mlm = MaskedLMHead,
             profile = SequenceProfileHead,
-            tmscore = TMscoreHead)
+            tmscore = TMscoreHead,
+            violation = ViolationHead)
+
     @staticmethod
     def build(dim, config, parent=None):
         def gen():

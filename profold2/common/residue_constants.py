@@ -494,6 +494,7 @@ atom_types = [
 ]
 atom_order = {atom_type: i for i, atom_type in enumerate(atom_types)}
 atom_type_num = len(atom_types)  # := 37.
+atom14_type_num = 14  # := 14.
 
 # A compact atom encoding with 14 columns
 # pylint: disable=line-too-long
@@ -692,13 +693,13 @@ MAP_HHBLITS_AATYPE_TO_OUR_AATYPE = tuple(
 def _make_standard_atom_mask() -> np.ndarray:
   """Returns [num_res_types, num_atom_types] mask array."""
   # +1 to account for unknown (all 0s).
-  mask = np.zeros([restype_num + 1, atom_type_num], dtype=np.int32)
+  mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.int32)
   for restype, restype_letter in enumerate(restypes):
     restype_name = restype_1to3[restype_letter]
-    atom_names = residue_atoms[restype_name]
-    for atom_name in atom_names:
-      atom_type = atom_order[atom_name]
-      mask[restype, atom_type] = 1
+    atom_list = restype_name_to_atom14_names[restype_name]
+    for atom_type, atom_name in enumerate(atom_list):
+      if atom_name:
+        mask[restype, atom_type] = 1
   return mask
 
 
@@ -776,9 +777,17 @@ restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int)
 restype_atom14_mask = np.zeros([21, 14], dtype=np.float32)
 restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
 restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
-
+restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int)
+restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int)
+restype_rigid_group_mask = np.zeros([21, 8], dtype=np.bool)
 
 def _make_rigid_group_constants():
+  def to_atom37_index(atom_names):
+    return [atom_order[atom_name] for atom_name in atom_names]
+  def to_atom14_index(resname, atom_names):
+    atom_list = restype_name_to_atom14_names[resname]
+    return [atom_list.index(atom_name) for atom_name in atom_names]
+
   """Fill the arrays above."""
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
@@ -802,6 +811,8 @@ def _make_rigid_group_constants():
 
     # backbone to backbone is the identity transform
     restype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
+    restype_rigid_group_atom14_idx[restype, 0, :] = np.array(to_atom14_index(resname, ['C', 'CA', 'N']))
+    restype_rigid_group_mask[restype, 0] = True
 
     # pre-omega-frame to backbone (currently dummy identity matrix)
     restype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
@@ -819,6 +830,8 @@ def _make_rigid_group_constants():
         ey=atom_positions['CA'] - atom_positions['N'],
         translation=atom_positions['C'])
     restype_rigid_group_default_frame[restype, 3, :, :] = mat
+    restype_rigid_group_atom14_idx[restype, 3, :] = np.array(to_atom14_index(resname, ['CA', 'C', 'O']))
+    restype_rigid_group_mask[restype, 3] = True
 
     # chi1-frame to backbone
     if chi_angles_mask[restype][0]:
@@ -829,6 +842,7 @@ def _make_rigid_group_constants():
           ey=base_atom_positions[0] - base_atom_positions[1],
           translation=base_atom_positions[2])
       restype_rigid_group_default_frame[restype, 4, :, :] = mat
+      restype_rigid_group_atom14_idx[restype, 4, :] = np.array(to_atom14_index(resname, base_atom_names[1:]))
 
     # chi2-frame to chi1-frame
     # chi3-frame to chi2-frame
@@ -844,7 +858,8 @@ def _make_rigid_group_constants():
             ey=np.array([-1., 0., 0.]),
             translation=axis_end_atom_position)
         restype_rigid_group_default_frame[restype, 4 + chi_idx, :, :] = mat
-
+        restype_rigid_group_atom14_idx[restype, 4 + chi_idx, :] = np.array(to_atom14_index(resname, chi_angles_atoms[resname][chi_idx][1:]))
+    restype_rigid_group_mask[restype, 4:] = chi_angles_mask[restype]
 
 _make_rigid_group_constants()
 
@@ -893,5 +908,26 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5,
           'stddev': restype_atom14_bond_stddev,  # shape (21,14,14)
          }
 
-def make_mask(restypes, mask):
-  pass
+def _make_renaming_matrices():
+  """Matrices to map atoms to symmetry partners in ambiguous case."""
+  # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
+  # alternative groundtruth coordinates where the naming is swapped
+  # Matrices for renaming ambiguous atoms.
+  all_matrices = {res: np.eye(14, dtype=np.float32) for res in resnames}
+  for resname, swap in residue_atom_renaming_swaps.items():
+    correspondences = np.arange(14)
+    for source_atom_swap, target_atom_swap in swap.items():
+      source_index = restype_name_to_atom14_names[
+          resname].index(source_atom_swap)
+      target_index = restype_name_to_atom14_names[
+          resname].index(target_atom_swap)
+      correspondences[source_index] = target_index
+      correspondences[target_index] = source_index
+    renaming_matrix = np.zeros((14, 14), dtype=np.float32)
+    for index, correspondence in enumerate(correspondences):
+      renaming_matrix[index, correspondence] = 1.
+    all_matrices[resname] = renaming_matrix.astype(np.float32)
+  renaming_matrices = np.stack([all_matrices[restype] for restype in resnames])
+  return renaming_matrices
+
+RENAMING_MATRICES = _make_renaming_matrices()
