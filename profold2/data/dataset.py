@@ -24,8 +24,10 @@ logger = logging.getLogger(__file__)
 NUM_COORDS_PER_RES = 14
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences):
+    def __init__(self, sequences, descriptions = None):
         self.sequences = sequences
+        self.descriptions = descriptions
+        assert not exists(self.descriptions) or len(self.sequences) == len(self.descriptions)
 
     def __getitem__(self, idx):
         input_sequence = self.sequences[idx]
@@ -36,7 +38,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
         #residue_index = torch.arange(len(input_sequence), dtype=torch.int)
         str_seq = ''.join(map(lambda a: a if a in residue_constants.restype_order_with_x else residue_constants.restypes_with_x[-1], input_sequence))
         mask = torch.ones(len(input_sequence), dtype=torch.bool)
-        return dict(pid=str(idx),
+        return dict(pid=self.descriptions[idx] if self.descriptions else str(idx),
                 seq=seq,
                 str_seq=str_seq,
                 mask=mask)

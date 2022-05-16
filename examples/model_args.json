@@ -1,0 +1,32 @@
+{"dim":256, "evoformer_depth":1, "evoformer_head_num":8, "evoformer_head_dim": 64, "mlm_dim": 1280,
+"feats":[
+  ["make_pseudo_beta", {}],
+  ["make_backbone_affine", {}],
+  ["make_seq_profile", {"mask":"-", "density":true}],
+  ["make_to_device", {
+      "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask", "sequence_profile", "sequence_profile_mask"],
+      "device":"%(device)s"}]
+],
+"headers":[
+  ["contact", {
+    "cutoff":8.0, "loss_max":1.5}, {"weight":1.0}],                                                                                                                                                                                                            
+  ["coevolution", {"mask":"-", "loss_max":5.0}, {"weight":0.2}],
+  ["profile", {"single_repr":"struct_module", "loss_func":"KLDiv"}, {"weight":1.0}],                                                                                                                                                                           
+  ["distogram", {                                                                                                                                                                                                                                              
+    "buckets_first_break": 2.3125,                                                                                                                                                                                                                             
+    "buckets_last_break": 21.6875,                                                                                                                                                                                                                             
+    "buckets_num":37}, {"weight":1.0}],                                                                                                                                                                                                                        
+  ["folding", {                                                                                                                                                                                                                                                
+    "structure_module_depth":6,                                                                                                                                                                                                                                
+    "structure_module_heads":6,                                                                                                                                                                                                                                
+    "fape_min":1e-4,                                                                                                                                                                                                                                           
+    "fape_max":15.0,                                                                                                                                                                                                                                           
+    "fape_z":15.0,                                                                                                                                                                                                                                             
+    "fape_weight":1.0,                                                                                                                                                                                                                                         
+    "fape_reduction":0}, {"weight":0.1}],                                                                                                                                                                                                                      
+  ["lddt", {}, {"weight":0.001}],                                                                                                                                                                                                                              
+  ["violation", {}, {"weight":0.01}],
+  ["metric", {"cutoff":8}, {}],                                                                                                                                                                                                                                
+  ["tmscore", {}, {}],                                                                                                                                                                                                                                         
+  ["confidence", {}, {}]                                                                                                                                                                                                                                       
+]}

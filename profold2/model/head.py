@@ -136,23 +136,25 @@ class CoevolutionHead(nn.Module):
          Dictionary containing:
            * logits: logits for distogram, shape [N_res, N_res, N_bins].
         """
-        assert 'msa' in batch
-        num_class = len(residue_constants.restypes_with_x_and_gap)
+        if self.training or 'msa' in batch:
+            assert 'msa' in batch
+            num_class = len(residue_constants.restypes_with_x_and_gap)
 
-        si, zij = representations['single'], representations['pair']
-        m = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=si.device)
+            si, zij = representations['single'], representations['pair']
+            m = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=si.device)
 
-        ei = self.single(si)
-        eij = self.pairwize((zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+            ei = self.single(si)
+            eij = self.pairwize((zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
 
-        eij = eij * rearrange(1-torch.eye(zij.shape[-2], device=zij.device),
-                'i j -> i j ()')  # eii = 0
-        hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
-                F.one_hot(batch['msa'], num_class).float(),
-                rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-                m)
-        logits = rearrange(ei, 'b i c -> b () i c') + hi
-        return dict(logits=logits)
+            eij = eij * rearrange(1-torch.eye(zij.shape[-2], device=zij.device),
+                    'i j -> i j ()')  # eii = 0
+            hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                    F.one_hot(batch['msa'], num_class).float(),
+                    rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
+                    m)
+            logits = rearrange(ei, 'b i c -> b () i c') + hi
+            return dict(logits=logits)
+        return None
 
     def loss(self, value, batch):
         """Log loss of a distogram."""
