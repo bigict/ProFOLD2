@@ -639,6 +639,10 @@ class ViolationHead(nn.Module):
             #         points, point_mask, seq_index))
             loss_dict = functional.between_residue_bond_loss(
                     points, point_mask, seq_index, seq)
+            if self.num_atoms >= 3:
+                loss_dict.update(functional.between_residue_clash_loss(
+                        points, point_mask, seq_index, seq))
+
             for k, v in loss_dict.items():
                 logger.debug('ViolationHead.%s: %s', k, v.item())
             return dict(loss=sum(loss_dict.values()))

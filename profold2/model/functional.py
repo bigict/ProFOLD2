@@ -507,6 +507,122 @@ def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, 
                 ca_c_n_loss=ca_c_n_loss,
                 c_n_ca_loss=c_n_ca_loss)
 
+def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau=1.5, epsilon=1e-6):
+    """Loss to penalize steric clashes between residues"""
+    assert pred_points.shape[-1] == 3
+    assert pred_points.shape[:-1] == points_mask.shape
+    assert points_mask.shape[:-1] == residue_index.shape
+    assert aatypes.shape == residue_index.shape
+
+    atom_radius = batched_gather(
+            residue_constants.atom14_van_der_waals_radius,
+            aatypes)
+    atom_radius = atom_radius[...,:points_mask.shape[-1]]
+    assert atom_radius.shape == points_mask.shape
+
+    # Create the distance matrix
+    dists = torch.sqrt(epsilon + torch.sum(
+            (rearrange(pred_points,
+                    '... i m d -> ... i () m () d') - 
+             rearrange(pred_points,
+                    '... j n d -> ... () j () n d'))**2, dim=-1))
+
+    # Create the mask for valid distances.
+    dist_mask = (
+                rearrange(points_mask, '... i m -> ... i () m ()') *
+                rearrange(points_mask, '... j n -> ... () j () n'))
+    # Mask out all the duplicate entries in the lower triangular matrix.
+    # Also mask out the diagonal (atom-pairs from the same residue) -- these atoms
+    # are handled separately.
+    dist_mask *= (
+                rearrange(residue_index, '... i -> ... i () () ()') <
+                rearrange(residue_index, '... j -> ... () j () ()'))
+        
+    # Backbone C--N bond between subsequent residues is no clash.
+    n_idx = residue_constants.atom_order['N']
+    c_idx = residue_constants.atom_order['C']
+    c_atom = F.one_hot(
+            torch.as_tensor(c_idx, dtype=torch.long, device=pred_points.device),
+            points_mask.shape[-1])
+    n_atom = F.one_hot(
+            torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device),
+            points_mask.shape[-1])
+    neighbour_mask = (
+            rearrange(residue_index, '... i -> ... i () () ()') + 1 ==
+            rearrange(residue_index, '... j -> ... () j () ()'))
+    c_n_bonds = (
+            neighbour_mask *
+            rearrange(c_atom, 'm -> () () m ()') *
+            rearrange(n_atom, 'n -> () () () n'))
+    dist_mask *= (1. - c_n_bonds)
+
+    # Disulfide bridge between two cysteines is no clash.
+    cys_sg_idx = residue_constants.restype_name_to_atom14_names['CYS'].index('SG')
+    if cys_sg_idx < points_mask.shape[-1]:
+        cys_sg_atom = F.one_hot(
+                torch.as_tensor(cys_sg_idx, dtype=torch.long, device=pred_points.device),
+                points_mask.shape[-1])
+        disulfide_bonds = (
+                rearrange(cys_sg_atom, 'm -> () () m ()') *
+                rearrange(cys_sg_atom, 'n -> () () () n'))
+        dist_mask *= (1. - disulfide_bonds)
+
+    # Compute the lower bound for the allowed distances.
+    dist_lower_bound = (
+            rearrange(atom_radius, '... i m -> ... i () m ()') +
+            rearrange(atom_radius, '... j n -> ... () j () n') - tau)
+
+    # Compute the error.
+    errors = F.relu(dist_lower_bound - dists)
+
+    # Compute the mean loss.
+    clash_loss = masked_mean(mask=dist_mask, value=errors)
+
+    return dict(between_residue_clash_loss=clash_loss)
+
+def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-6):
+    """Loss to penalize steric clashes within residues"""
+    assert pred_points.shape[-1] == 3
+    assert pred_points.shape[:-1] == points_mask.shape
+    assert points_mask.shape[:-1] == residue_index.shape
+    assert aatypes.shape == residue_index.shape
+
+    # Compute the mask for each residue.
+    dist_mask = (rearrange(points_mask, '... m -> ... m ()') *
+            rearrange(points_mask, '... n -> ... () n'))
+    dist_mask *= (1. - torch.eye(points_mask.shape[-1], device=points_mask.device))
+
+    # Distance matrix
+    dists = torch.sqrt(epsilon + torch.sum(
+            (rearrange(pred_points,
+                    '... m d -> ... m () d') - 
+             rearrange(pred_points,
+                    '... n d -> ... () n d'))**2, dim=-1))
+
+    # Compute the loss.
+    restype_atom14_bounds = residue_constants.make_atom14_dists_bounds(
+            overlap_tolerance=tau1,
+            bond_length_tolerance_factor=tau2)
+    atom_lower_bound = batched_gather(
+            restype_atom14_bounds['lower_bound'], aatypes)
+    atom_upper_bound = batched_gather(
+            restype_atom14_bounds['upper_bound'], aatypes)
+
+    lower_errors = F.relu(atom_lower_bound - dists)
+    upper_errors = F.relu(dists - (atom_upper_bound))
+
+    clash_loss = masked_mean(mask=dist_mask,
+            value=lower_errors+upper_errors,
+            epsilon=epsilon)
+
+    # Compute the violations mask.
+    violations = dist_mask * ((dists < atom_lower_bound) |
+                              (dists > atom_upper_bound))
+    violations = torch.maximum(
+            torch.amax(violations, dim=-2), torch.amax(violations, dim=-1))
+    
+    return dict(within_residue_clash_loss=clash_loss)
+
 def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
     # pick the transformation matrices for the given residue sequence
     # shape (num_res, 14, 14)

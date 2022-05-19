@@ -402,7 +402,7 @@ def load_stereo_chemical_props() -> Tuple[Mapping[str, List[Bond]],
     residue_bond_angles: dict that maps resname --> list of BondAngle tuples
   """
   stereo_chemical_props_path = (
-      'alphafold/common/stereo_chemical_props.txt')
+      'profold2/common/stereo_chemical_props.txt')
   with open(stereo_chemical_props_path, 'rt') as f:
     stereo_chemical_props = f.read()
   lines_iter = iter(stereo_chemical_props.splitlines())
@@ -863,6 +863,19 @@ def _make_rigid_group_constants():
 
 _make_rigid_group_constants()
 
+atom14_van_der_waals_radius = np.zeros((21, 14), dtype=np.float32)
+
+def _make_atom14_van_der_waals_radius():
+  for restype, restype_letter in enumerate(restypes):
+    resname = restype_1to3[restype_letter]
+    atom_list = restype_name_to_atom14_names[resname]
+    for atom_idx, atom_name in enumerate(atom_list):
+      if not atom_name:
+        continue
+      atom_radius = van_der_waals_radius[atom_name[0]]
+      atom14_van_der_waals_radius[restype, atom_idx] = atom_radius
+
+_make_atom14_van_der_waals_radius()
 
 def make_atom14_dists_bounds(overlap_tolerance=1.5,
                              bond_length_tolerance_factor=15):

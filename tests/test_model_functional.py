@@ -6,9 +6,14 @@ import numpy as np
 import torch
 from einops import repeat, rearrange
 
+from profold2.common import residue_constants, protein
 from profold2.model import functional as F
 
 class TestUtils(unittest.TestCase):
+    def setUp(self):
+        self.data_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'data/relax')
+
     def test_lddt(self):
         params = [
                 ('same',
@@ -254,14 +259,6 @@ class TestUtils(unittest.TestCase):
 
             self.assertTrue(torch.allclose(rotations_pf2, rotations_af2))
             self.assertTrue(torch.allclose(translations_pf2, translations_af2))
-        else:
-            aatypes = torch.randint(0, 20, size=(b, n))
-            backb_points = torch.rand(b, n, 3, 3)
-            backb_frames = F.rigids_from_3x3(backb_points)
-            angles = torch.rand(b, n, 3, 2)
-            angles = angles / torch.linalg.norm(angles, dim=-1, keepdim=True) + 1e-12
-            x = F.rigids_from_angles(aatypes, backb_frames, angles)
-            print('test_rigids_from_angles: ', x[0].shape, x[1].shape)
 
     def test_rigids_to_positions(self):
         b, n = 1, 10
@@ -284,8 +281,6 @@ class TestUtils(unittest.TestCase):
 
             coords_pf2 = F.rigids_to_positions(all_atom_frames_pf2, aatype)
             self.assertTrue(torch.allclose(coords_af2, coords_pf2))
-        else:
-            print(all_atom_frames_pf2)
 
     def test_fape2(self):
         true_points = torch.rand(1, 5, 3, 3)
@@ -299,7 +294,7 @@ class TestUtils(unittest.TestCase):
         frames_mask = torch.ones(1, 5)
         points_mask = torch.ones(1, 5, 3)
         loss = F.fape(true_frames, true_frames, frames_mask, true_points, true_points, points_mask, epsilon=0.)
-        print('loss: ', loss)
+        # print('loss: ', loss)
         self.assertAlmostEqual(loss, .0)
 
     def test_pytorch3d(self):
@@ -313,6 +308,99 @@ class TestUtils(unittest.TestCase):
         quaternions = F.quaternion_multiply(quaternions, quaternion_update)
         rotations = torch.einsum('b l h w,b l w d -> b l h d', rotations, rotation_update)
         self.assertTrue(torch.allclose(rotations, F.quaternion_to_matrix(quaternions)))
+
+    def test_batched_gather(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        batch = dict(seq=torch.from_numpy(prot.aatype),
+                coord=torch.tensor(prot.atom_positions, dtype=torch.float),
+                coord_mask=torch.from_numpy(prot.atom_mask))
+        for k, v in batch.items():
+            batch[k] = rearrange(v, '... -> () ...')
+        print('---------')
+        print(F.rigids_from_positions(batch['seq'],
+                batch['coord'], batch['coord_mask']))
+        print('---------')
+
+    def test_rigids_from_positions(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+    def test_between_ca_ca_distance_loss(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        loss = F.between_ca_ca_distance_loss(
+            torch.tensor(prot.atom_positions, dtype=torch.float),
+            torch.tensor(prot.atom_mask, dtype=torch.bool),
+            torch.tensor(prot.residue_index, dtype=torch.int))
+        self.assertAlmostEqual(loss, .0)
+
+    def test_between_residue_bond_loss(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        loss_dict = F.between_residue_bond_loss(
+            torch.tensor(prot.atom_positions,  dtype=torch.float),
+            torch.tensor(prot.atom_mask, dtype=torch.bool),
+            torch.tensor(prot.residue_index, dtype=torch.int),
+            torch.tensor(prot.aatype, dtype=torch.int))
+        for k, v in loss_dict.items():
+            self.assertAlmostEqual(v, .0)
+        #print('-------------')
+
+    def test_between_residue_clash_loss(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        batch = dict(seq=torch.from_numpy(prot.aatype),
+                coord=torch.tensor(prot.atom_positions, dtype=torch.float),
+                coord_mask=torch.from_numpy(prot.atom_mask),
+                seq_index=torch.tensor(prot.residue_index, dtype=torch.int))
+        for k, v in batch.items():
+            batch[k] = rearrange(v, '... -> () ...')
+
+        loss_dict = F.between_residue_clash_loss(
+            batch['coord'],
+            batch['coord_mask'],
+            batch['seq_index'],
+            batch['seq'])
+        for k, v in loss_dict.items():
+            print(k, v)
+            self.assertAlmostEqual(v, .0)
+        #print('-------------')
+
+    def test_within_residue_clash_loss(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        batch = dict(seq=torch.from_numpy(prot.aatype),
+                coord=torch.tensor(prot.atom_positions, dtype=torch.float),
+                coord_mask=torch.from_numpy(prot.atom_mask),
+                seq_index=torch.tensor(prot.residue_index, dtype=torch.int))
+        for k, v in batch.items():
+            batch[k] = rearrange(v, '... -> () ...')
+
+        loss_dict = F.within_residue_clash_loss(
+            batch['coord'],
+            batch['coord_mask'],
+            batch['seq_index'],
+            batch['seq'])
+        for k, v in loss_dict.items():
+            print(k, v)
+            self.assertAlmostEqual(v, .0)
+        #print('-------------')
+
+    def test_symmetric_ground_truth_rename(self):
+        with open(os.path.join(self.data_dir, 'T1024-D1.pdb')) as f:
+            prot = protein.from_pdb_string(f.read())
+        batch = dict(seq=torch.from_numpy(prot.aatype),
+                coord=torch.tensor(prot.atom_positions, dtype=torch.float),
+                coord_mask=torch.from_numpy(prot.atom_mask))
+        for k, v in batch.items():
+            batch[k] = rearrange(v, '... -> () ...')
+        batch.update(F.symmetric_ground_truth_create_alt(batch['seq'],
+                batch['coord'], batch['coord_mask']))
+        #print(F.symmetric_ground_truth_rename(batch['coord'],
+        #    batch['coord_exits'],
+        #    batch['coord'], batch['coord_mask'],
+        #    batch['coord_alt'], batch['coord_alt_mask'],
+        #    batch['coord_is_symmetric']))
 
 if __name__ == '__main__':
     unittest.main()
