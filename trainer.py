@@ -124,6 +124,18 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       weights=list(weights_from_file(args.sampling_by_weights)),
       shuffle=True,
       num_workers=args.num_workers)
+  if args.tuning_data:
+    tuning_loader = dataset.load(
+        data_dir=args.tuning_data,
+        max_msa_size=args.max_msa_size,
+        min_crop_len=args.min_crop_len,
+        max_crop_len=args.max_crop_len,
+        feats=feats,
+        batch_size=args.batch_size,
+        is_training=True,
+        shuffle=True,
+        num_workers=0)
+
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
@@ -149,7 +161,9 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         num_workers=0)
 
   data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
-  dl = cycling(train_loader, data_cond)
+  train_data = cycling(train_loader, data_cond)
+  if args.tuning_data:
+    tuning_data = cycling(tuning_loader, data_cond)
 
   # model
   with open(args.model_headers, 'r', encoding='utf-8') as f:
@@ -209,7 +223,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     global_step = checkpoint_manager.restore_or_initialize() + 1
     model.train()
 
-  def _step(data_loader, it, writer, batch_callback=None):
+  def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optim.zero_grad()
 
     running_loss = MetricDict()
@@ -239,7 +253,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
-      writer_add_scalars(writer, v, it, prefix=f'Loss/train@{k}')
+      writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       #writer.add_scalar(f'Loss/train@{k}', v, it)
 
     optim.step()
@@ -253,7 +267,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # training loop
   for it in range(global_step, args.num_batches):
-    _step(dl, it, writer)
+    _step(train_data, it, writer, stage='train')
 
     if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
         (not args.gpu_list or rank == 0)):
@@ -263,9 +277,13 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       # Add embeddings
       writer_add_embeddings(writer, model, it)
 
+    if (args.tuning_data and 
+        args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
+      _step(tuning_data, it, writer, stage='tuning', batch_callback=batch_seq_only)
+
     if (args.eval_data and 
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      _step(cycling(fake_loader), it, None, batch_callback=batch_seq_only)
+      _step(cycling(fake_loader), it, None, stage='fake', batch_callback=batch_seq_only)
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -378,6 +396,8 @@ if __name__ == '__main__':
       help='number of batches, default=10^5')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
       help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_data', type=str, default=None,
+      help='eval dataset dir, default=None')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
       help='sample train data by weights, default=None')
   parser.add_argument('--min_protein_len', type=int, default=50,
@@ -403,6 +423,8 @@ if __name__ == '__main__':
       help='the maximum number of checkpoints to keep, default=5')
   parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
+  parser.add_argument('--tuning_every', type=int, default=10,
+      help='eval model every K times, default=1000')
   parser.add_argument('--eval_every', type=int, default=1000,
       help='eval model every K times, default=1000')
   parser.add_argument(

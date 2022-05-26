@@ -20,6 +20,13 @@ def softmax_cross_entropy(logits, labels, mask=None):
     loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
     return loss
 
+def softmax_cross_entropy_with_probability(probs, labels, mask=None):
+    """Computes softmax cross entropy given logits and one-hot class labels."""
+    if not exists(mask):
+        mask = 1.0
+    loss = -torch.sum(labels * torch.log(probs) * mask, dim=-1)
+    return loss
+
 def softmax_kl_diversity(logits, labels, mask=None):
     if not exists(mask):
         mask = 1.0
@@ -58,6 +65,7 @@ class ConfidenceHead(nn.Module):
             metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
         if 'plddt' in metrics:
             metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
+            logger.debug('ConfidenceHead.loss: %s', metrics['loss'].item())
         return metrics
 
 class ContactHead(nn.Module):
@@ -183,6 +191,81 @@ class CoevolutionHead(nn.Module):
         if self.loss_min or self.loss_max:
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
+
+class DistillationHead(nn.Module):
+    """Head to predict Co-evolution.
+    """
+    def __init__(self, dim, pij_model_dir, loss_fn=None, loss_min=None, loss_max=None):
+        super().__init__()
+
+        pij_model = np.load(pij_model_dir)
+        self.pij = torch.from_numpy(pij_model['model'])
+
+        if not exists(loss_fn):
+            loss_fn = 'evoformer_module'
+        assert loss_fn in ('evoformer_module', 'struct_module')
+        self.loss_fn = loss_fn
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        assert 'distogram' in headers and 'breaks' in headers['distogram']
+        if not 'coord' in batch and not 'coord_mask' in batch:
+            if self.loss_fn == 'evoformer_module':
+                assert 'logits' in headers['distogram']
+                return dict(logits=headers['distogram']['logits'], breaks=headers['distogram']['breaks'])
+            else:
+                assert 'folding' in headers and 'coords' in headers['folding']
+                return dict(coords=headers['folding']['coords'], breaks=headers['distogram']['breaks'])
+        return None
+
+    def loss(self, value, batch):
+        sq_breaks = (value['breaks'] ** 2)
+        b, seq_len, device = *batch['seq'].shape, batch['seq'].device
+
+        pij, pij_mask = self.pij_from_ref(seq_len, device=device)
+        assert sq_breaks.shape[-1] + 1 == pij.shape[-1]
+        if self.loss_fn == 'evoformer_module':
+            logits = value['logits']
+            errors = softmax_kl_diversity(labels=pij, logits=logits)
+        else:
+            ca_idx = residue_constants.atom_order['CA']
+            # is_gly = torch.eq(batch['seq'], residue_constants.restype_order['G'])
+            # cb_idx = residue_constants.atom_order['CB']
+            # cb_coord = torch.where(
+            #     repeat(is_gly, '... i -> ... i d', d=3),
+            #     coords[..., ca_idx, :],
+            #     coords[..., cb_idx, :])
+            # cb_dist2 = torch.sum((rearrange(cb_coord, '... i d -> ... i () d') -
+            #     rearrange(cb_coord, '... j d -> ... () j d'))**2, dim=-1, keepdims=True)
+            # cb_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
+            coords = value['coords']
+            ca_coord = coords[..., ca_idx, :]
+            ca_dist2 = torch.sum((rearrange(ca_coord, '... i d -> ... i () d') -
+                    rearrange(ca_coord, '... j d -> ... () j d'))**2, dim=-1, keepdims=True)
+            ca_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
+            errors = softmax_cross_entropy_with_probability(
+                    labels=F.one_hot(ca_bins, num_classes=pij.shape[-1]),
+                    probs=repeat(pij, '... -> b ...', b=b))
+        avg_error = (
+            torch.sum(errors * pij_mask) /
+            (1e-6 + torch.sum(pij_mask)))
+        logger.debug('DistillationHead.loss(%s): %s', self.loss_fn, avg_error.item())
+        if self.loss_min or self.loss_max:
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+        return dict(loss=avg_error)
+
+    def pij_from_ref(self, seq_len, device=None, epsilon=1e-10):
+        max_sep_len, num_buckets = self.pij.shape
+        value = torch.zeros((seq_len, seq_len, num_buckets), device=device) + epsilon
+        mask = torch.zeros((seq_len, seq_len), dtype=torch.bool, device=device)
+        for i in range(seq_len):
+            for j in range(i + 1, min(seq_len, i + max_sep_len)):
+                value[i, j] = self.pij[j-i].to(device=device)
+                value[j, i] = value[i, j]
+                mask[i, j] = True
+                mask[j, i] = mask[i, j]
+        return value, mask
 
 class DistogramHead(nn.Module):
     """Head to predict a distogram.
@@ -642,6 +725,8 @@ class ViolationHead(nn.Module):
             if self.num_atoms >= 3:
                 loss_dict.update(functional.between_residue_clash_loss(
                         points, point_mask, seq_index, seq))
+            loss_dict.update(functional.within_residue_clash_loss(
+                    points, point_mask, seq_index, seq))
 
             for k, v in loss_dict.items():
                 logger.debug('ViolationHead.%s: %s', k, v.item())
@@ -653,6 +738,7 @@ class HeaderBuilder:
             coevolution = CoevolutionHead,
             confidence = ConfidenceHead,
             contact = ContactHead,
+            distillation = DistillationHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,

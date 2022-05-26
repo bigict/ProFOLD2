@@ -14,6 +14,7 @@
 
 """Constants used in AlphaFold."""
 
+import os
 import collections
 import functools
 from typing import Mapping, List, Tuple
@@ -401,8 +402,9 @@ def load_stereo_chemical_props() -> Tuple[Mapping[str, List[Bond]],
     residue_virtual_bonds: dict that maps resname --> list of Bond tuples
     residue_bond_angles: dict that maps resname --> list of BondAngle tuples
   """
-  stereo_chemical_props_path = (
-      'profold2/common/stereo_chemical_props.txt')
+  stereo_chemical_props_path = os.path.join(
+      os.path.dirname(__file__),
+      'stereo_chemical_props.txt')
   with open(stereo_chemical_props_path, 'rt') as f:
     stereo_chemical_props = f.read()
   lines_iter = iter(stereo_chemical_props.splitlines())

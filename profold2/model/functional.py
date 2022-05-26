@@ -554,7 +554,7 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
             neighbour_mask *
             rearrange(c_atom, 'm -> () () m ()') *
             rearrange(n_atom, 'n -> () () () n'))
-    dist_mask *= (1. - c_n_bonds)
+    dist_mask *= (~c_n_bonds.bool())
 
     # Disulfide bridge between two cysteines is no clash.
     cys_sg_idx = residue_constants.restype_name_to_atom14_names['CYS'].index('SG')
@@ -565,15 +565,15 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
         disulfide_bonds = (
                 rearrange(cys_sg_atom, 'm -> () () m ()') *
                 rearrange(cys_sg_atom, 'n -> () () () n'))
-        dist_mask *= (1. - disulfide_bonds)
+        dist_mask *= (~disulfide_bonds.bool())
 
     # Compute the lower bound for the allowed distances.
     dist_lower_bound = (
             rearrange(atom_radius, '... i m -> ... i () m ()') +
-            rearrange(atom_radius, '... j n -> ... () j () n') - tau)
+            rearrange(atom_radius, '... j n -> ... () j () n'))
 
     # Compute the error.
-    errors = F.relu(dist_lower_bound - dists)
+    errors = F.relu(dist_lower_bound - tau - dists)
 
     # Compute the mean loss.
     clash_loss = masked_mean(mask=dist_mask, value=errors)
@@ -590,7 +590,7 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     # Compute the mask for each residue.
     dist_mask = (rearrange(points_mask, '... m -> ... m ()') *
             rearrange(points_mask, '... n -> ... () n'))
-    dist_mask *= (1. - torch.eye(points_mask.shape[-1], device=points_mask.device))
+    dist_mask *= (~torch.eye(points_mask.shape[-1], dtype=torch.bool, device=points_mask.device))
 
     # Distance matrix
     dists = torch.sqrt(epsilon + torch.sum(
@@ -603,13 +603,14 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     restype_atom14_bounds = residue_constants.make_atom14_dists_bounds(
             overlap_tolerance=tau1,
             bond_length_tolerance_factor=tau2)
+    num_atoms = points_mask.shape[-1]
     atom_lower_bound = batched_gather(
-            restype_atom14_bounds['lower_bound'], aatypes)
+            restype_atom14_bounds['lower_bound'][...,:num_atoms,:num_atoms], aatypes)
     atom_upper_bound = batched_gather(
-            restype_atom14_bounds['upper_bound'], aatypes)
+            restype_atom14_bounds['upper_bound'][...,:num_atoms,:num_atoms], aatypes)
 
     lower_errors = F.relu(atom_lower_bound - dists)
-    upper_errors = F.relu(dists - (atom_upper_bound))
+    upper_errors = F.relu(dists - atom_upper_bound)
 
     clash_loss = masked_mean(mask=dist_mask,
             value=lower_errors+upper_errors,

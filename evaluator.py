@@ -123,7 +123,7 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     if 'confidence' in r.headers:
       logging.info('%d pid: %s Confidence: %s',
-            i, ','.join(batch['pid']), r.headers['confidence'])
+            i, ','.join(batch['pid']), r.headers['confidence']['loss'].item())
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']
       if 'coord' in batch:
