@@ -177,6 +177,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
                      heads=8,
                      dim_head=64,
                      embedd_dim=args.model_embedd_dim,
+                     attn_dropout=args.model_dropout,
                      headers=headers), args)
 
   # optimizer
@@ -452,6 +453,8 @@ if __name__ == '__main__':
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
       help='depth of evoformer in model, default=1')
+  parser.add_argument('--model_dropout', type=float, default=0,
+      help='dropout of evoformer in model, default=0')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')

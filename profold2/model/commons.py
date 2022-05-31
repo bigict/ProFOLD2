@@ -1,11 +1,13 @@
+import functools
+
 import torch
-from torch import nn,einsum
+from torch import nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
-from einops import rearrange,repeat
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from profold2.utils import default,exists
+from profold2.utils import default, exists
 
 # helpers
 def init_zero_(layer):
@@ -99,10 +101,10 @@ class Attention(nn.Module):
             q, k = map(lambda t: rearrange(t, '(b r) ... -> b r ...', r = tie_dim), (q, k))
             q = q.mean(dim = 1)
 
-            dots = einsum('b h i d, b r h j d -> b r h i j', q, k)
+            dots = torch.einsum('b h i d, b r h j d -> b r h i j', q, k)
             dots = rearrange(dots, 'b r ... -> (b r) ...')
         else:
-            dots = einsum('b h i d, b h j d -> b h i j', q, k)
+            dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
 
         # add attention bias, if supplied (for pairwise to msa attention communication)
 
@@ -126,7 +128,7 @@ class Attention(nn.Module):
 
         # aggregate
 
-        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
 
         # merge heads
 
@@ -262,7 +264,7 @@ class TriangleMultiplicativeModule(nn.Module):
         left = left * left_gate
         right = right * right_gate
 
-        out = einsum(self.mix_einsum_eq, left, right)
+        out = torch.einsum(self.mix_einsum_eq, left, right)
 
         out = self.to_out_norm(out)
         out = out * out_gate
@@ -319,6 +321,8 @@ class PairwiseAttentionBlock(nn.Module):
         self.triangle_multiply_outgoing = TriangleMultiplicativeModule(dim = dim, mix = 'outgoing')
         self.triangle_multiply_ingoing = TriangleMultiplicativeModule(dim = dim, mix = 'ingoing')
 
+        self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
+
     def forward(
         self,
         x,
@@ -329,10 +333,10 @@ class PairwiseAttentionBlock(nn.Module):
         if exists(msa_repr):
             x = x + self.outer_mean(msa_repr, mask = msa_mask)
 
-        x = self.triangle_multiply_outgoing(x, mask = mask) + x
-        x = self.triangle_multiply_ingoing(x, mask = mask) + x
-        x = self.triangle_attention_outgoing(x, edges = x, mask = mask) + x
-        x = self.triangle_attention_ingoing(x, edges = x, mask = mask) + x
+        x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask = mask))
+        x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask = mask))
+        x = x + self.dropout_fn(self.triangle_attention_outgoing(x, edges = x, mask = mask))
+        x = x + self.dropout_fn(self.triangle_attention_ingoing(x, edges = x, mask = mask))
         return x
 
 class MsaAttentionBlock(nn.Module):
@@ -347,14 +351,16 @@ class MsaAttentionBlock(nn.Module):
         self.row_attn = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
         self.col_attn = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = False, col_attn = True)
 
+        self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
+
     def forward(
         self,
         x,
         mask = None,
         pairwise_repr = None
     ):
-        x = self.row_attn(x, mask = mask, edges = pairwise_repr) + x
-        x = self.col_attn(x, mask = mask) + x
+        x = x + self.dropout_fn(self.row_attn(x, mask = mask, edges = pairwise_repr))
+        x = x + self.col_attn(x, mask = mask)
         return x
 
 class RelativePositionEmbedding(nn.Module):
@@ -385,7 +391,7 @@ class PairwiseEmbedding(nn.Module):
         x_mask = rearrange(x_mask, 'b i -> b i ()') * rearrange(x_mask, 'b j -> b () j') if exists(x_mask) else None
         if exists(self.relative_pos_emb):
             seq_index = default(seq_index, lambda: torch.arange(n, device=device))
-            x += self.relative_pos_emb(seq_index)
+            x = x + self.relative_pos_emb(seq_index)
         return x, x_mask
 
 def checkpoint_sequential_nargs(functions, segments, input, **kwargs):
