@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
+from profold2.utils import default, exists
 
 def l2_norm(v, dim=-1, epsilon=1e-12):
     return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
@@ -233,15 +234,18 @@ def plddt(logits):
 
 Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
 
-def rigids_from_3x3(points, epsilon=1e-6):
+def rigids_from_3x3(points, indices=None, epsilon=1e-6):
     """Create rigids from 3 points.
     This creates a set of rigid transformations from 3 points by Gram Schmidt
     orthogonalization.
     """
+    indices = default(indices, (0, 1, 2))
+
     # Shape (b, l, 3, 3)
-    assert points.shape[-2:] == (3, 3)
-    v1 = points[...,0,:] - points[...,1,:]
-    v2 = points[...,2,:] - points[...,1,:]
+    assert points.shape[-1] == 3
+    assert points.shape[-2] >= 3
+    v1 = (points[...,indices[0],:] - points[...,indices[1],:])
+    v2 = points[...,indices[2],:] - points[...,indices[1],:]
 
     e1 = l2_norm(v1, epsilon=epsilon)
     c = torch.sum(e1 * v2, dim=-1, keepdim=True)
@@ -249,7 +253,7 @@ def rigids_from_3x3(points, epsilon=1e-6):
     e2 = l2_norm(u2, epsilon=epsilon)
     e3 = torch.cross(e1, e2, dim=-1)
     R = torch.stack((e1, e2, e3), dim=-1)
-    t = points[...,1,:]
+    t = points[...,indices[1],:]
 
     return R, t
 
@@ -260,13 +264,84 @@ def rigids_from_4x4(m):
     assert m.shape[-2:] == (4, 4)
     return m[...,:3,:3], m[...,:3,3]
 
+def angles_from_positions(aatypes, coords, coord_mask):
+    prev_coords, prev_mask = coords[...,:-1,:,:], coord_mask[...,:-1,:]
+    this_coords, this_mask = coords[...,1:,:,:], coord_mask[...,1:,:]
+
+    #omega_points = torch.stack((prev_coords[...,]))
+    # (N, 7, 4, 14)
+    torsion_atom14_idx = F.one_hot(
+            batched_gather(residue_constants.chi_angles_atom14_indices, aatypes),
+            residue_constants.atom14_type_num)
+    torsion_atom14_exists = batched_gather(residue_constants.chi_angles_atom14_exists, aatypes)
+
+    # (N, 7, 4, 3)
+    torsion_points = torch.einsum('... n d,... g m n -> ... g m d', coords,
+            torsion_atom14_idx.float())
+    # (N, 7, 4)
+    torsion_point_mask = torch.einsum('... n,... g m n -> ... g m', coord_mask.float(),
+            torsion_atom14_idx.float())
+
+    # fix omega, phi angles
+    for i in range(torsion_points.shape[-4] - 1, 0, -1):
+        torsion_points[...,i,0,:2,:] = torsion_points[...,i-1,0,:2,:]  # omega
+        torsion_point_mask[...,i,0,:2] = torsion_point_mask[...,i-1,0,:2]
+
+        torsion_points[...,i,1,:1,:] = torsion_points[...,i-1,1,:1,:]  # phi
+        torsion_point_mask[...,i,1,:1] = torsion_point_mask[...,i-1,1,:1]
+
+    torsion_points[...,0,0,:2,:] = 0  # omega
+    torsion_point_mask[...,0,0,:2] = 0
+    torsion_points[...,0,1,:1,:] = 0  # phi
+    torsion_point_mask[...,0,1,:1] = 0
+
+    # Create a frame from the first three atoms:
+    # First atom: point on x-y-plane
+    # Second atom: point on negative x-axis
+    # Third atom: origin
+    torsion_frames = rigids_from_3x3(torsion_points, indices=(2, 1, 0))
+
+    # Compute the position of the forth atom in this frame (y and z coordinate
+    # define the chi angle)
+    def to_local(rotations, translations, points):
+        rotations = rearrange(rotations, '... h w -> ... w h')
+        translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
+        return torch.einsum('... w,... h w -> ... h', points, rotations) + translations
+    def to_angles(rotations, translations, torsion_points_4):
+        local_points = to_local(rotations, translations, torsion_points_4)
+        angles_sin_cos = torch.stack((local_points[...,2], local_points[...,1]), dim=-1)
+        return angles_sin_cos / torch.sqrt(1e-8 +
+                torch.sum(angles_sin_cos**2, dim=-1, keepdim=True))
+
+    torsion_angles = to_angles(*torsion_frames, torsion_points[...,3,:])
+    torsion_angles_mask = torch.prod(torsion_point_mask, dim=-1) * torsion_atom14_exists
+
+    # Mirror psi, because we computed it from the Oxygen-atom.
+    torsion_angles *= rearrange(
+            torch.as_tensor([1.,1.,-1.,1.,1.,1.,1.], device=torsion_angles.device),
+            'g -> g ()')
+
+    # Create alternative angles for ambiguous atom names.
+    chi_is_ambiguous = batched_gather(np.asarray(residue_constants.chi_pi_periodic), aatypes)
+    mirror_ambiguous = torch.cat((
+            torch.ones(aatypes.shape + (3,), device=aatypes.device),
+            1 - 2*chi_is_ambiguous), dim=-1)
+    torsion_angles_alt = torsion_angles * mirror_ambiguous[...,None]
+
+    return dict(torsion_angles=torsion_angles,
+            torsion_angles_mask=torsion_angles_mask,
+            torsion_angles_alt=torsion_angles_alt)
+
 def rigids_from_positions(aatypes, coords, coord_mask):
+    # (N, 8, 3, 14)
     group_atom14_idx = F.one_hot(
             batched_gather(residue_constants.restype_rigid_group_atom14_idx, aatypes),
             residue_constants.atom14_type_num)
     # Compute a mask whether the group exists.
     # (N, 8)
     group_exists = batched_gather(residue_constants.restype_rigid_group_mask, aatypes)
+    if not exists(coords):
+        return dict(atom_affine_exists=group_exists)
 
     group_points = torch.einsum('... n d,... g m n -> ... g m d', coords,
             group_atom14_idx.float())
@@ -277,9 +352,32 @@ def rigids_from_positions(aatypes, coords, coord_mask):
     group_mask = torch.all(group_point_mask > 0, dim=-1) * group_exists
 
     # Compute the Rigids.
-    return dict(atom_affine=rigids_from_3x3(group_points),
+    group_affine = rigids_from_3x3(group_points)
+
+    # The frames for ambiguous rigid groups are just rotated by 180 degree around
+    # the x-axis. The ambiguous group is always the last chi-group.
+    restype_rigid_group_is_ambiguous = np.zeros([21, 8], dtype=np.float32)
+    restype_rigid_group_rotations = np.tile(np.eye(3, dtype=np.float32), [21, 8, 1, 1])
+
+    for resname, _ in residue_constants.residue_atom_renaming_swaps.items():
+        restype = residue_constants.restype_order[
+                residue_constants.restype_3to1[resname]]
+        chi_idx = int(sum(residue_constants.chi_angles_mask[restype]) - 1)
+        restype_rigid_group_is_ambiguous[restype, chi_idx + 4] = 1
+        restype_rigid_group_rotations[restype, chi_idx + 4, 1, 1] = -1
+        restype_rigid_group_rotations[restype, chi_idx + 4, 2, 2] = -1
+
+    group_is_ambiguous = batched_gather(restype_rigid_group_is_ambiguous, aatypes)
+    group_ambiguous_rotations = batched_gather(restype_rigid_group_rotations, aatypes)
+
+    # Create the alternative ground truth frames.
+    group_affine_alt = rigids_rotate(group_affine, group_ambiguous_rotations)
+
+    return dict(atom_affine=group_affine,
             atom_affine_exists=group_exists,
-            atom_affine_mask=group_mask)
+            atom_affine_mask=group_mask,
+            atom_affine_is_ambiguous=group_is_ambiguous,
+            atom_affine_alt=group_affine_alt)
 
 def rigids_to_positions(frames, aatypes):
     # Shape ((b, l, 8, 3, 3), (b, l, 8, 3))
@@ -387,23 +485,24 @@ def rigids_from_angles(aatypes, backb_frames, angles):
 def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, clamp_distance=None, epsilon=1e-8):
     """ FAPE(Frame Aligined Point Error) - Measure point error under different alignments
     """
-    # Shape (b, l, 3 3), (b, l, 3)
+    # Shape (b, l, 3, 3), (b, l, 3)
     pred_rotations, pred_trans = pred_frames
     assert pred_rotations.shape[-2:] == (3, 3) and pred_trans.shape[-1] == 3
-    # Shape (b, l, 3 3), (b, l, 3)
+    # Shape (b, l, 3, 3), (b, l, 3)
     true_rotations, true_trans = true_frames
     assert true_rotations.shape[-2:] == (3, 3) and true_trans.shape[-1] == 3
-    # Shape (b, l)
-    assert frames_mask.shape == points_mask.shape[:-1]
-    # Shape (b, l, n, 3)
+    ## Shape (b, l)
+    #assert frames_mask.shape[:2] == points_mask.shape[:2]
+    # Shape (b, n, 3)
     assert pred_points.shape[-1] == 3 and true_points.shape[-1] == 3
-    # Shape (b, l, n)
-    assert pred_points.shape[:3] == points_mask.shape
+    # Shape (b, n)
+    assert pred_points.shape[:-1] == points_mask.shape
 
     def to_local(rotations, translations, points):
-        rotations = rearrange(rotations, 'b l h w -> b l w h')
-        translations = -torch.einsum('b l w,b l h w -> b l h', translations, rotations)
-        return torch.einsum('b j n w,b i h w -> b i j n h', points, rotations) + rearrange(translations, 'b i h -> b i () () h')
+        # inverse frames
+        rotations = rearrange(rotations, '... h w -> ... w h')
+        translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
+        return torch.einsum('... j w,... i h w -> ... i j h', points, rotations) + rearrange(translations, '... i h -> ... i () h')
     
     pred_xij = to_local(pred_rotations, pred_trans, pred_points)
     true_xij = to_local(true_rotations, true_trans, true_points)
@@ -413,7 +512,7 @@ def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points
             torch.sum((pred_xij - true_xij)**2, dim=-1) + epsilon)
     if clamp_distance:
         dij = torch.clip(dij, 0, clamp_distance)
-    dij_mask = rearrange(frames_mask, 'b i -> b i () ()') * rearrange(points_mask, 'b j n -> b () j n')
+    dij_mask = rearrange(frames_mask, '... i -> ... i ()') * rearrange(points_mask, '... j -> ... () j')
 
     return torch.sum(dij * dij_mask) / (epsilon + torch.sum(dij_mask))
 
@@ -625,6 +724,11 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     return dict(within_residue_clash_loss=clash_loss)
 
 def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
+    coord_exists = batched_gather(residue_constants.restype_atom14_mask,
+            seq)
+    if not exists(coord):
+        return dict(coord_exists=coord_exists)
+
     # pick the transformation matrices for the given residue sequence
     # shape (num_res, 14, 14)
     renaming_transform = batched_gather(
@@ -640,12 +744,10 @@ def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
             np.sum(is_symmetric_mask*residue_constants.RENAMING_MATRICES, axis=-1) > 0,
             seq)
 
-    coord_exits = batched_gather(residue_constants.restype_atom14_mask,
-            seq)
     return dict(coord_alt=coord_alt,
             coord_alt_mask=coord_alt_mask.bool(),
             coord_is_symmetric=coord_is_symmetric,
-            coord_exits=coord_exits)
+            coord_exists=coord_exists)
 
 def symmetric_ground_truth_find_optimal(coord_pred, coord_exists,
         coord, coord_mask, coord_alt, coord_alt_mask, coord_is_symmetric, epsilon=1e-10):
@@ -658,7 +760,7 @@ def symmetric_ground_truth_find_optimal(coord_pred, coord_exists,
 
     def to_distance(point):
         return torch.sqrt(epsilon + torch.sum(
-                rearrange(point, '... i c r-> ... i () c () r') - rearrange(point, '... j d r -> ... () j () d r')**2,
+                (rearrange(point, '... i c r-> ... i () c () r') - rearrange(point, '... j d r -> ... () j () d r'))**2,
                 dim=-1))
     # Create the pred distance matrix.
     # shape (N, N, 14, 14)
@@ -678,8 +780,8 @@ def symmetric_ground_truth_find_optimal(coord_pred, coord_exists,
     # Create a mask for ambiguous atoms in rows vs. non-ambiguous atoms
     # in cols.
     # shape (N ,N, 14, 14)
-    mask = (rearrange(coord_exists*coord_is_symmetric, '... i c -> ... i () c ()') * # rows
-            rearrange(coord_exists*(~coord_is_symmetric), '... j d -> ... () j () d')) # cols
+    mask = (rearrange(coord_mask*coord_is_symmetric, '... i c -> ... i () c ()') * # rows
+            rearrange(coord_mask*(~coord_is_symmetric), '... j d -> ... () j () d')) # cols
 
     # Aggregate distances for each residue to the non-amibuguous atoms.
     # shape (N)

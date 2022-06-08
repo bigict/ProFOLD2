@@ -742,6 +742,37 @@ chi_angles_atom_indices = np.array([
     chi_atoms + ([[0, 0, 0, 0]] * (4 - len(chi_atoms)))
     for chi_atoms in chi_angles_atom_indices])
 
+chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int)
+chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.int)
+for res_name, res_chi_angles in chi_angles_atoms.items():
+  restype = resname_to_idx[res_name]
+  atom_list = restype_name_to_atom14_names[res_name]
+
+  # omega angles
+  for i, atom_name in enumerate(('CA', 'C', 'N', 'CA')):
+    atom_idx = atom_list.index(atom_name)
+    chi_angles_atom14_indices[restype, 0, i] = atom_idx
+  chi_angles_atom14_exists[restype, 0] = 1
+
+  # phi angles
+  for i, atom_name in enumerate(('C', 'N', 'CA', 'C')):
+    atom_idx = atom_list.index(atom_name)
+    chi_angles_atom14_indices[restype, 1, i] = atom_idx
+  chi_angles_atom14_exists[restype, 1] = 1
+
+  # psi angles
+  for i, atom_name in enumerate(('N', 'CA', 'C', 'O')):
+    atom_idx = atom_list.index(atom_name)
+    chi_angles_atom14_indices[restype, 2, i] = atom_idx
+  chi_angles_atom14_exists[restype, 2] = 1
+
+  # chi angles
+  for chi_idx, chi_angle in enumerate(res_chi_angles):
+    for i, atom_name in enumerate(chi_angle):
+      atom_idx = atom_list.index(atom_name)
+      chi_angles_atom14_indices[restype, 3 + chi_idx, i] = atom_idx
+    chi_angles_atom14_exists[restype, 3 + chi_idx] = 1
+
 # Mapping from (res_name, atom_name) pairs to the atom's chi group index
 # and atom index within that group.
 chi_groups_for_atom = collections.defaultdict(list)

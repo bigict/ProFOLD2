@@ -156,7 +156,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         crop_algorithm=args.crop_algorithm,
         feats=feats,
         batch_size=args.batch_size,
-        is_training=False,
+        is_training=True,
         shuffle=True,
         num_workers=0)
 
@@ -261,7 +261,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
-    for field in ('coord', 'coord_mask', 'backbone_affine', 'backbone_affine_mask', 'pseudo_beta', 'pseudo_beta_mask'):
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask'):
       if field in batch:
         del batch[field]
     return batch

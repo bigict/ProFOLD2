@@ -341,92 +341,185 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15, fape_weight=1., fape_reduction=None):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, fape_min=1e-6, fape_max=15, fape_z=15, **params):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
-        self.num_atoms = num_atoms
-        assert self.num_atoms in [3, 14]
 
         self.fape_min = fape_min
         self.fape_max = fape_max
         self.fape_z = fape_z
-        self.fape_weight = fape_weight
 
-        self.fape_reduction = fape_reduction
+        self.params = params
 
     def forward(self, headers, representations, batch):
         #(rotations, translations), act = self.struct_module(representations, batch)
         outputs = self.struct_module(representations, batch)
-        (rotations, translations), act, backbones = map(lambda key: outputs[-1][key], ('frames', 'act', 'backbones'))
+        (rotations, translations), act, atoms = map(lambda key: outputs[-1][key], ('frames', 'act', 'atoms'))
 
-        if self.num_atoms > 3:
-            atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
-            atom_mask[..., 0] = 1
-            atom_mask[..., 1] = 1
-            atom_mask[..., 2] = 1
-
-            # build SC container. set SC points to CA and optionally place carbonyl O
-            coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
-                                                  cloud_mask=batch.get('coord_mask'), num_coords_per_res=self.num_atoms)
-        else:
-            coords = backbones
-
-        return dict(frames=(rotations, translations), backbones=backbones, coords=coords, representations=dict(single=act), traj=outputs)
+        return dict(frames=(rotations, translations),
+                coords=atoms['coords'],
+                representations=dict(single=act),
+                traj=outputs)
 
     def loss(self, value, batch):
-        assert 'coords' in value
-        coords = value['coords'][...,:self.num_atoms,:]
+        def backbone_fape_loss(pred_frames_list, gt_frames, frames_mask):
+            assert pred_frames_list and exists(frames_mask)
 
-        if 'coord' in batch:
-            labels = batch['coord'][...,:self.num_atoms,:]
-            coord_mask = batch['coord_mask'][...,:self.num_atoms]
-            backbone_affine, backbone_affine_mask = batch['backbone_affine'], batch['backbone_affine_mask']
-        else:
+            for i, pred_frames in enumerate(pred_frames_list):
+                with torch.no_grad():
+                    true_frames = default(gt_frames, pred_frames)
+
+                _, pred_points = pred_frames
+                _, true_points = true_frames
+                r = functional.fape(
+                        pred_frames, true_frames, frames_mask,
+                        pred_points, true_points, frames_mask,
+                        self.fape_max)/self.fape_z
+                logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r.item())
+                yield r
+
+        def sidechain_fape_loss(pred_frames, true_frames, frames_mask,
+                pred_points, true_points, point_mask):
+
+            def frames_to_fape_shape(frames):
+                rotations, translations = frames
+                return (rearrange(rotations, '... i c h w -> ... (i c) h w'),
+                        rearrange(translations, '... i c h -> ... (i c) h'))
+
+            def points_to_fape_shape(points):
+                return rearrange(points, '... i n d -> ... (i n) d')
+
             with torch.no_grad():
-                labels = coords
-            coord_mask = torch.ones(labels.shape[:-1], device=labels.device, dtype=torch.bool)
-            backbone_affine = functional.rigids_from_3x3(labels[...,:3,:])
-            backbone_affine_mask = torch.any(coord_mask[...,:3] != 0, dim=-1)
+                true_frames = default(true_frames, pred_frames)
+                true_points = default(true_points, pred_points)
 
-        flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
+            r = functional.fape(
+                    frames_to_fape_shape(pred_frames),
+                    frames_to_fape_shape(true_frames),
+                    rearrange(frames_mask, '... i c -> ... (i c)'),
+                    points_to_fape_shape(pred_points),
+                    points_to_fape_shape(true_points),
+                    rearrange(point_mask, '... i n -> ... (i n)'),
+                    self.fape_max)/self.fape_z
+            logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r.item())
+            return r
 
-        # rotate / align
-        coords_aligned, labels_aligned = Kabsch(
-                rearrange(rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
-                rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
+        def fape_loss(traj, gt):
+            coords = gt.get('coord')
+            if 'coord_mask' in gt:
+                coord_mask = gt['coord_mask']
+            else:
+                assert 'coord_exists' in gt
+                coord_mask = gt['coord_exists']
+            backbone_affine, backbone_affine_mask = (
+                    gt.get('backbone_affine'), gt.get('backbone_affine_mask'))
+            if not exists(backbone_affine_mask):
+                n_idx = residue_constants.atom_order['N']
+                ca_idx = residue_constants.atom_order['CA']
+                c_idx = residue_constants.atom_order['C']
+                backbone_affine_mask = torch.all(
+                        torch.stack((
+                                coord_mask[...,c_idx],
+                                coord_mask[...,ca_idx],
+                                coord_mask[...,n_idx]), dim=-1) != 0,
+                        dim=-1)
+            # backbone loss
+            backbone_loss = sum(backbone_fape_loss(
+                    [x['frames'] for x in traj],
+                    backbone_affine, backbone_affine_mask)) / len(traj)
+            # sidechine loss
+            atoms = traj[-1]['atoms']
+            atom_affine, atom_affine_mask = (
+                    gt.get('atom_affine'), gt.get('atom_affine_mask'))
+            if not exists(atom_affine_mask):
+                assert 'atom_affine_exists' in gt, gt.keys()
+                atom_affine_mask = gt['atom_affine_exists']
 
-        # loss
-        loss = .0
-        if 1.0 - self.fape_weight > 0:
-            loss += (1.0 - self.fape_weight) * torch.clamp(
-                    torch.sqrt(F.mse_loss(
-                        rearrange(coords_aligned, 'd l -> l d'),
-                        rearrange(labels_aligned, 'd l -> l d'))),
-                    self.fape_min, self.fape_max) / self.fape_z
-        if self.fape_weight > 0:
-            assert self.num_atoms >= 3 #and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
+            if exists(atom_affine):
+                assert exists(coords), gt.keys()
+                # Renamed frames
+                alt_is_better = functional.symmetric_ground_truth_find_optimal(atoms['coords'], gt['coord_exists'],
+                        coords, coord_mask, gt['coord_alt'], gt['coord_alt_mask'], gt['coord_is_symmetric'])
+                def to_renamed(x, x_alt):
+                    if isinstance(x, tuple):
+                        assert isinstance(x_alt, tuple) and len(x) == 2
+                        return to_renamed(x[0], x_alt[0]), to_renamed(x[1], x_alt[1])
 
-            true_frames, true_points = backbone_affine, labels
-            frames_mask, points_mask = backbone_affine_mask, coord_mask
-
-            def yield_fape_loss(outputs):
-                for i, traj in enumerate(outputs):
-                    pred_frames, pred_points = map(lambda key: traj[key], ('frames', 'backbones'))
-                    if 'backbone_affine' in batch:
-                        true_points = labels
-                        true_frames, frames_mask = batch['backbone_affine'], batch['backbone_affine_mask']
+                    shape = len(x.shape) - len(alt_is_better.shape)
+                    assert shape >= 0
+                    if shape > 0:
+                        ext = ' '.join(['()']*shape)
+                        m = rearrange(alt_is_better, f'... i -> ... i {ext}')
                     else:
-                        with torch.no_grad():
-                            true_frames, true_points = pred_frames, pred_points
-                            frames_mask = torch.any(coord_mask[...,:3] != 0, dim=-1)
-                    r = functional.fape(
-                            pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
-                    logger.debug('FoldingHead.loss(%d): %s', i, r.item())
-                    yield r
+                        m = alt_is_better
+                    return (~m)*x + m*x_alt
 
-            loss += self.fape_weight*sum(yield_fape_loss(value['traj'][self.fape_reduction:])) / len(value['traj'][self.fape_reduction:])
+                atom_affine = to_renamed(atom_affine, gt['atom_affine_alt'])
+                coords = to_renamed(coords, gt['coord_alt'])
+                coord_mask = to_renamed(coord_mask, gt['coord_alt_mask'])
 
-        return dict(loss=loss, coords_aligned=coords_aligned, labels_aligned=labels_aligned)
+            sidechain_loss = sidechain_fape_loss(
+                    atoms['frames'], atom_affine, atom_affine_mask,
+                    atoms['coords'], coords, coord_mask)
+
+            sidechain_w = self.params.get('sidechain_w', 0.5)
+            assert 0 <= sidechain_w <= 1
+            return ((1.-sidechain_w)*backbone_loss +
+                    sidechain_w*sidechain_loss)
+
+        def torsion_angle_loss(traj, gt, epsilon=1e-6):
+            def yield_norm_angle_loss(pred_angles_list):
+                for i, pred_angles in enumerate(pred_angles_list):
+                    angle_norm = torch.sqrt(epsilon +
+                            torch.sum(pred_angles**2, dim=-1))
+                    errors = torch.abs(angle_norm - 1.)
+                    avg_error = torch.mean(errors)
+                    logger.debug('FoldingHead.loss(norm_angle_loss: %d): %s', i, avg_error.item())
+                    yield avg_error
+                
+            def yield_pred_angle_loss(pred_angles_list, true_angles):
+                for i, pred_angles in enumerate(pred_angles_list):
+                    pred_angles = functional.l2_norm(pred_angles)
+                    errors = torch.sum((pred_angles - true_angles)**2, dim=-1)
+                    yield errors
+
+            pred_angles_list = [x['atoms']['angles'] for x in traj]
+            # angle norm loss
+            norm_loss = sum(yield_norm_angle_loss(pred_angles_list)) / len(traj)
+
+            # angle pred loss
+            pred_loss = []
+            if 'torsion_angles_mask' in gt:
+                if 'torsion_angles' in gt:
+                    pred_loss.append(sum(yield_pred_angle_loss(
+                            pred_angles_list, gt.get('torsion_angles'))) / len(traj))
+                if 'torsion_angles_alt' in gt:
+                    pred_loss.append(sum(yield_pred_angle_loss(
+                        pred_angles_list, gt.get('torsion_angles_alt'))) / len(traj))
+            angles_mask = gt.get('torsion_angles_mask')
+            if exists(angles_mask):
+                angles_mask[...,:3] = 0  # chi angle only
+            if pred_loss:
+                if len(pred_loss) == 2:
+                    pred_loss = functional.masked_mean(
+                            value=torch.minimum(*pred_loss), mask=angles_mask)
+                elif len(pred_loss) == 1:
+                    pred_loss = functional.masked_mean(
+                            value=pred_loss[0], mask=angles_mask)
+                logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss.item())
+            else:
+                pred_loss = .0
+                logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss)
+
+            return (self.params.get('angle_norm_w', 0.01)*norm_loss +
+                    self.params.get('angle_pred_w', 0.5)*pred_loss)
+
+        assert 'traj' in value
+        # loss
+        loss = (fape_loss(value['traj'], batch) +
+                torsion_angle_loss(value['traj'], batch))
+
+        return dict(loss=loss)
 
 class LDDTHead(nn.Module):
     """Head to predict the pLDDT to be used as a per-residue configence score.
@@ -698,11 +791,9 @@ class TMscoreHead(nn.Module):
 class ViolationHead(nn.Module):
     """Head to structure violations.
     """
-    def __init__(self, dim, num_atoms=3):
+    def __init__(self, dim):
         super().__init__()
-
-        self.num_atoms = num_atoms
-        assert self.num_atoms >= 3 and self.num_atoms <= 14
+        del dim
 
     def forward(self, headers, representations, batch):
         assert 'folding' in headers and 'coords' in headers['folding']
@@ -716,15 +807,16 @@ class ViolationHead(nn.Module):
             b, n = seq.shape[:2]
             seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
         if 'coord' in batch:
-            points, point_mask = value['coords'][...,:self.num_atoms,:], batch['coord_mask'][...,:self.num_atoms]
+            points, point_mask = value['coords'], batch['coord_mask']
             
             # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
             #         points, point_mask, seq_index))
-            loss_dict = functional.between_residue_bond_loss(
-                    points, point_mask, seq_index, seq)
-            if self.num_atoms >= 3:
-                loss_dict.update(functional.between_residue_clash_loss(
-                        points, point_mask, seq_index, seq))
+            loss_dict = {}
+
+            loss_dict.update(functional.between_residue_bond_loss(
+                    points, point_mask, seq_index, seq))
+            loss_dict.update(functional.between_residue_clash_loss(
+                    points, point_mask, seq_index, seq))
             loss_dict.update(functional.within_residue_clash_loss(
                     points, point_mask, seq_index, seq))
 
