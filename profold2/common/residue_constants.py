@@ -743,7 +743,7 @@ chi_angles_atom_indices = np.array([
     for chi_atoms in chi_angles_atom_indices])
 
 chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int)
-chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.int)
+chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.bool)
 for res_name, res_chi_angles in chi_angles_atoms.items():
   restype = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
@@ -804,10 +804,10 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
 restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int)
-restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
+restype_atom37_mask = np.zeros([21, 37], dtype=np.bool)
 restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
 restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int)
-restype_atom14_mask = np.zeros([21, 14], dtype=np.float32)
+restype_atom14_mask = np.zeros([21, 14], dtype=np.bool)
 restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
 restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
 restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int)

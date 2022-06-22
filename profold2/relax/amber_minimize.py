@@ -16,18 +16,19 @@
 
 import io
 import time
-from typing import Collection, Optional, Sequence
+from typing import Any, Collection, Dict, Optional, Sequence
 import logging
 
 import numpy as np
-import openmm
-from openmm import unit
-from openmm import app as openmm_app
-from openmm.app.internal.pdbstructure import PdbStructure
+import torch
+from simtk import openmm
+from simtk.openmm import unit
+from simtk.openmm import app as openmm_app
+from simtk.openmm.app.internal.pdbstructure import PdbStructure
 
 from profold2.common import protein
 from profold2.common import residue_constants
-from profold2.model import folding
+from profold2.model import functional
 from profold2.relax import cleanup
 from profold2.relax import utils
 
@@ -162,7 +163,8 @@ def clean_protein(
   Returns:
     pdb_string: A string of the cleaned protein.
   """
-  # _check_atom_mask_is_ideal(prot)
+  if checks:
+    _check_atom_mask_is_ideal(prot)
 
   # Clean pdb.
   prot_pdb_string = protein.to_pdb(prot)
@@ -221,14 +223,16 @@ def make_atom14_positions(prot):
   residx_atom14_mask = restype_atom14_mask[prot["aatype"]]
 
   # Create a mask for known ground truth positions.
-  residx_atom14_gt_mask = residx_atom14_mask * np.take_along_axis(
-      prot["all_atom_mask"], residx_atom14_to_atom37, axis=1).astype(np.float32)
+  #residx_atom14_gt_mask = residx_atom14_mask * np.take_along_axis(
+  #    prot["all_atom_mask"], residx_atom14_to_atom37, axis=1).astype(np.float32)
+  residx_atom14_gt_mask = prot["all_atom_mask"]
 
   # Gather the ground truth positions.
-  residx_atom14_gt_positions = residx_atom14_gt_mask[:, :, None] * (
-      np.take_along_axis(prot["all_atom_positions"],
-                         residx_atom14_to_atom37[..., None],
-                         axis=1))
+  #residx_atom14_gt_positions = residx_atom14_gt_mask[:, :, None] * (
+  #    np.take_along_axis(prot["all_atom_positions"],
+  #                       residx_atom14_to_atom37[..., None],
+  #                       axis=1))
+  residx_atom14_gt_positions = prot["all_atom_positions"]
 
   prot["atom14_atom_exists"] = residx_atom14_mask
   prot["atom14_gt_exists"] = residx_atom14_gt_mask
@@ -314,6 +318,52 @@ def make_atom14_positions(prot):
 
   return prot
 
+def find_structural_violations(
+    batch: Dict[str, np.ndarray],
+    atom14_pred_positions: np.ndarray,  # (N, 14, 3)
+    config: Dict[str, Any]
+    ):
+  """Computes several checks for structural violations."""
+
+  # From numpy
+  pred_points, points_mask, residue_index, aatypes = (
+      torch.from_numpy(batch['all_atom_positions'][None,...]),
+      torch.from_numpy(batch['all_atom_mask'][None,...]),
+      torch.from_numpy(batch['residue_index'][None,...]),
+      torch.from_numpy(batch['aatype'][None,...]))
+
+  # To numpy
+  def to_numpy(loss_dict):
+    for k, v in loss_dict.items():
+      if isinstance(v, torch.Tensor):
+        v = torch.squeeze(v, dim=0)
+        loss_dict[k] = v.numpy()
+    return loss_dict
+
+  # Compute between residue backbone violations of bonds and angles.
+  connection_violations = to_numpy(functional.between_residue_bond_loss(
+      pred_points, points_mask, residue_index, aatypes))
+  between_residue_violations = to_numpy(functional.between_residue_clash_loss(
+      pred_points, points_mask, residue_index, aatypes))
+  within_residue_violations = to_numpy(functional.within_residue_clash_loss(
+      pred_points, points_mask, residue_index, aatypes))
+
+  # Combine them to a single per-residue violation mask (used later for LDDT).
+  per_residue_violation_mask = np.max(np.stack([
+      connection_violations['per_residue_violation_mask'],
+      np.max(between_residue_violations['per_atom_clash_mask'], axis=-1),
+      np.max(within_residue_violations['per_atom_clash_mask'],
+              axis=-1)]), axis=0)
+  return dict(total_per_residue_violations_mask=per_residue_violation_mask)
+
+def compute_violation_metrics(
+    batch: Dict[str, np.ndarray],
+    atom14_pred_positions: np.ndarray,  # (N, 14, 3)
+    violations: Dict[str, np.ndarray],
+    ) -> Dict[str, np.ndarray]:
+  
+  violations_per_residue = np.sum(batch['seq_mask'] * violations['total_per_residue_violations_mask']) / (1e-8 + np.sum(batch['seq_mask']))
+  return dict(violations_per_residue=violations_per_residue)
 
 def find_violations(prot_np: protein.Protein):
   """Analyzes a protein and returns structural violation information.
@@ -333,16 +383,16 @@ def find_violations(prot_np: protein.Protein):
   }
 
   batch["seq_mask"] = np.ones_like(batch["aatype"], np.float32)
-  #batch = make_atom14_positions(batch)
+  batch = make_atom14_positions(batch)
 
-  violations = folding.find_structural_violations(
+  violations = find_structural_violations(
       batch=batch,
       atom14_pred_positions=batch["atom14_gt_positions"],
-      config=ml_collections.ConfigDict(
+      config=
           {"violation_tolerance_factor": 12,  # Taken from model config.
            "clash_overlap_tolerance": 1.5,  # Taken from model config.
-          }))
-  violation_metrics = folding.compute_violation_metrics(
+          })
+  violation_metrics = compute_violation_metrics(
       batch=batch,
       atom14_pred_positions=batch["atom14_gt_positions"],
       violations=violations,
@@ -482,7 +532,7 @@ def run_pipeline(
         use_gpu=use_gpu)
     prot = protein.from_pdb_string(ret["min_pdb"])
     if place_hydrogens_every_iteration:
-      pdb_string = clean_protein(prot, checks=True)
+      pdb_string = clean_protein(prot, checks=checks)
     else:
       pdb_string = ret["min_pdb"]
     ret.update(get_violation_metrics(prot))

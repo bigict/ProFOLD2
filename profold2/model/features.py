@@ -1,6 +1,7 @@
 import functools
 from inspect import isfunction
 
+import numpy as np
 import torch
 from torch.nn import functional as F
 from einops import rearrange
@@ -36,9 +37,30 @@ def make_seq_mask(protein, padd_id=20, is_training=True):
     return protein
 
 @take1st
-def make_coord_mask(protein, is_training=True):
-    coord_exists = batched_gather(residue_constants.restype_atom14_mask,
-            protein['seq'])
+def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
+    if exists(includes) or exists(excludes):
+        restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
+        if exists(includes):
+            includes = set(includes)
+            for i in range(residue_constants.restype_num):
+                resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+                atom_list = residue_constants.restype_name_to_atom14_names[resname]
+                for j in range(restype_atom14_mask.shape[1]):
+                    if restype_atom14_mask[i,j] > 0 and atom_list[j] not in includes:
+                        restype_atom14_mask[i,j] = 0
+        if exists(excludes):
+            excludes = set(excludes)
+            for i in range(residue_constants.restype_num):
+                resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+                atom_list = residue_constants.restype_name_to_atom14_names[resname]
+                for j in range(restype_atom14_mask.shape[1]):
+                    if restype_atom14_mask[i,j] > 0 and atom_list[j] in excludes:
+                        restype_atom14_mask[i,j] = 0
+        coord_exists = batched_gather(restype_atom14_mask,
+                protein['seq'])
+    else:
+        coord_exists = batched_gather(residue_constants.restype_atom14_mask,
+                protein['seq'])
     protein['coord_exists'] = coord_exists
     return protein
 

@@ -244,7 +244,7 @@ def rigids_from_3x3(points, indices=None, epsilon=1e-6):
     # Shape (b, l, 3, 3)
     assert points.shape[-1] == 3
     assert points.shape[-2] >= 3
-    v1 = (points[...,indices[0],:] - points[...,indices[1],:])
+    v1 = points[...,indices[0],:] - points[...,indices[1],:]
     v2 = points[...,indices[2],:] - points[...,indices[1],:]
 
     e1 = l2_norm(v1, epsilon=epsilon)
@@ -535,7 +535,7 @@ def between_ca_ca_distance_loss(pred_points, points_mask, residue_index, tau=1.5
     mask = this_ca_mask * next_ca_mask * no_gap_mask
     return masked_mean(mask=mask, value=violations, epsilon=epsilon)
 
-def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, tau=12.0, epsilon=1e-6):
+def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, tau=12.0, epsilon=1e-6, loss_only=False):
     assert pred_points.shape[-1] == 3
     assert pred_points.shape[:-1] == points_mask.shape
     assert points_mask.shape[:-1] == residue_index.shape
@@ -567,17 +567,23 @@ def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, 
 
     # Compute loss for the C--N bond.
     # The C-N bond to proline has slightly different length because of the ring.
+    def bond_length_loss(pred_length, gt, mask):
+        gt_length, gt_stddev = gt
+        length_errors = torch.sqrt(
+                epsilon + (pred_length - gt_length)**2)
+        length_loss = F.relu(length_errors - tau*gt_stddev)
+        return (length_loss,
+                masked_mean(mask=mask, value=length_loss, epsilon=epsilon),
+                mask * (length_errors > tau*gt_stddev))
+
     next_is_proline = (
             aatypes[...,1:] == residue_constants.resname_to_idx['PRO'])
     c_n_bond_labels = ((~next_is_proline)*residue_constants.between_res_bond_length_c_n[0] +
             next_is_proline*residue_constants.between_res_bond_length_c_n[1])
     c_n_bond_stddev = ((~next_is_proline)*residue_constants.between_res_bond_length_stddev_c_n[0] +
             next_is_proline*residue_constants.between_res_bond_length_stddev_c_n[1])
-    c_n_bond_errors = torch.sqrt(
-            epsilon + (c_n_bond_length - c_n_bond_labels)**2)
-    c_n_bond_loss = F.relu(c_n_bond_errors - tau*c_n_bond_stddev)
-    mask = this_c_mask * next_n_mask * no_gap_mask
-    c_n_loss = masked_mean(mask=mask, value=c_n_bond_loss, epsilon=epsilon)
+    c_n_bond_errors, c_n_loss, c_n_violation_mask = bond_length_loss(c_n_bond_length,
+            (c_n_bond_labels, c_n_bond_stddev), this_c_mask * next_n_mask * no_gap_mask)
 
     # Compute loss for the angles.
     c_ca_unit_vec = (this_ca_point - this_c_point) / ca_c_bond_length[...,None]
@@ -590,23 +596,41 @@ def between_residue_bond_loss(pred_points, points_mask, residue_index, aatypes, 
         angle_errors = torch.sqrt(
                 epsilon + (pred_angle - gt_angle)**2)
         angle_loss = F.relu(angle_errors - tau*gt_stddev)
-        return masked_mean(mask=mask, value=angle_loss, epsilon=epsilon)
+        return (angle_loss,
+                masked_mean(mask=mask, value=angle_loss, epsilon=epsilon),
+                mask * (angle_errors > tau*gt_stddev))
 
-    ca_c_n_loss = bond_angle_loss(c_ca_unit_vec, c_n_unit_vec,
+    ca_c_n_erros, ca_c_n_loss, ca_c_n_violation_mask = bond_angle_loss(c_ca_unit_vec, c_n_unit_vec,
             residue_constants.between_res_cos_angles_ca_c_n,
             this_ca_mask*this_c_mask*next_n_mask*no_gap_mask)
-    c_n_ca_loss = bond_angle_loss(-c_n_unit_vec, n_ca_unit_vec,
+    c_n_ca_errors, c_n_ca_loss, c_n_ca_violation_mask = bond_angle_loss(-c_n_unit_vec, n_ca_unit_vec,
             residue_constants.between_res_cos_angles_c_n_ca,
             this_c_mask*next_n_mask*next_ca_mask*no_gap_mask)
 
-    # Compute a per residue loss (equally distribute the loss to both
-    # neighbouring residues).
-
-    return dict(c_n_loss=c_n_loss,
+    if loss_only:
+        return dict(c_n_loss=c_n_loss,
                 ca_c_n_loss=ca_c_n_loss,
                 c_n_ca_loss=c_n_ca_loss)
 
-def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau=1.5, epsilon=1e-6):
+    # Compute a per residue loss (equally distribute the loss to both
+    # neighbouring residues).
+    per_residue_violation = (c_n_bond_errors + ca_c_n_erros + c_n_ca_errors)
+    per_residue_violation = 0.5 * (F.pad(per_residue_violation, (0, 1)) +
+            F.pad(per_residue_violation, (1, 0)))
+
+    # Compute hard violations.
+    per_residue_violation_mask = torch.amax(torch.stack((c_n_violation_mask,
+            ca_c_n_violation_mask, c_n_ca_violation_mask), dim=0), dim=0)
+    per_residue_violation_mask = torch.maximum(F.pad(per_residue_violation_mask, (0, 1)),
+            F.pad(per_residue_violation_mask, (1, 0)))
+
+    return dict(c_n_loss=c_n_loss,
+                ca_c_n_loss=ca_c_n_loss,
+                c_n_ca_loss=c_n_ca_loss,
+                per_residue_violation=per_residue_violation,
+                per_residue_violation_mask=per_residue_violation_mask)
+
+def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau=1.5, epsilon=1e-6, loss_only=False):
     """Loss to penalize steric clashes between residues"""
     assert pred_points.shape[-1] == 3
     assert pred_points.shape[:-1] == points_mask.shape
@@ -672,14 +696,29 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
             rearrange(atom_radius, '... j n -> ... () j () n'))
 
     # Compute the error.
-    errors = F.relu(dist_lower_bound - tau - dists)
+    dist_errors = dist_mask * F.relu(dist_lower_bound - tau - dists)
 
     # Compute the mean loss.
-    clash_loss = masked_mean(mask=dist_mask, value=errors)
+    #clash_loss = masked_mean(mask=dist_mask, value=dist_errors, epsilon=epsilon)
+    clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-    return dict(between_residue_clash_loss=clash_loss)
+    if loss_only:
+        return dict(between_residue_clash_loss=clash_loss)
 
-def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-6):
+    # Compute the per atom loss sum.
+    per_atom_clash = (torch.sum(dist_errors, dim=(-4, -2)) +
+            torch.sum(dist_errors, dim=(-3, -1)))
+
+    # Compute the hard clash mask.
+    clash_mask = dist_mask * (dists < dist_lower_bound - tau)
+    per_atom_clash_mask = torch.maximum(torch.amax(clash_mask, dim=(-4, -2)),
+            torch.amax(clash_mask, dim=(-3, -1)))
+
+    return dict(between_residue_clash_loss=clash_loss,
+            per_atom_clash=per_atom_clash,
+            per_atom_clash_mask=per_atom_clash_mask)
+
+def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-6, loss_only=False):
     """Loss to penalize steric clashes within residues"""
     assert pred_points.shape[-1] == 3
     assert pred_points.shape[:-1] == points_mask.shape
@@ -711,17 +750,27 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     lower_errors = F.relu(atom_lower_bound - dists)
     upper_errors = F.relu(dists - atom_upper_bound)
 
-    clash_loss = masked_mean(mask=dist_mask,
-            value=lower_errors+upper_errors,
-            epsilon=epsilon)
+    #clash_loss = masked_mean(mask=dist_mask,
+    #        value=lower_errors+upper_errors,
+    #        epsilon=epsilon)
+    dist_errors = dist_mask * (lower_errors + upper_errors)
+    clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
+
+    if loss_only:
+        return dict(within_residue_clash_loss=clash_loss)
+
+    # Compute the per atom loss sum.
+    per_atom_clash = (torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1))
 
     # Compute the violations mask.
-    violations = dist_mask * ((dists < atom_lower_bound) |
+    per_atom_clash_mask = dist_mask * ((dists < atom_lower_bound) |
                               (dists > atom_upper_bound))
-    violations = torch.maximum(
-            torch.amax(violations, dim=-2), torch.amax(violations, dim=-1))
+    per_atom_clash_mask = torch.maximum(
+            torch.amax(per_atom_clash_mask, dim=-2), torch.amax(per_atom_clash_mask, dim=-1))
     
-    return dict(within_residue_clash_loss=clash_loss)
+    return dict(within_residue_clash_loss=clash_loss,
+            per_atom_clash=per_atom_clash,
+            per_atom_clash_mask=per_atom_clash_mask)
 
 def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
     coord_exists = batched_gather(residue_constants.restype_atom14_mask,

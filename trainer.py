@@ -261,7 +261,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask'):
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
       if field in batch:
         del batch[field]
     return batch
@@ -284,7 +284,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     if (args.eval_data and 
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      _step(cycling(fake_loader), it, None, stage='fake', batch_callback=batch_seq_only)
+      _step(cycling(fake_loader), it, writer, stage='fake', batch_callback=batch_seq_only)
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):

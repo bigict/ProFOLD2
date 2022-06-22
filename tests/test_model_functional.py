@@ -599,8 +599,10 @@ class TestFunctional(unittest.TestCase):
             torch.tensor(prot.atom_positions,  dtype=torch.float),
             torch.tensor(prot.atom_mask, dtype=torch.bool),
             torch.tensor(prot.residue_index, dtype=torch.int),
-            torch.tensor(prot.aatype, dtype=torch.int))
+            torch.tensor(prot.aatype, dtype=torch.int),
+            loss_only=True)
         for k, v in loss_dict.items():
+            print(k, v)
             self.assertAlmostEqual(v, .0)
         #print('-------------')
 
@@ -618,7 +620,8 @@ class TestFunctional(unittest.TestCase):
             batch['coord'],
             batch['coord_mask'],
             batch['seq_index'],
-            batch['seq'])
+            batch['seq'],
+            loss_only=True)
         for k, v in loss_dict.items():
             print(k, v)
             self.assertAlmostEqual(v, .0)
@@ -638,7 +641,8 @@ class TestFunctional(unittest.TestCase):
             batch['coord'],
             batch['coord_mask'],
             batch['seq_index'],
-            batch['seq'])
+            batch['seq'],
+            loss_only=True)
         for k, v in loss_dict.items():
             print(k, v)
             self.assertAlmostEqual(v, .0)

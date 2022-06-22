@@ -22,34 +22,37 @@ class TestDataSet(unittest.TestCase):
     #         self.assertTrue(item['seq'].shape == item['msa'].shape[1:])
     #     self.assertTrue(True)
 
-    # def test_custom_loader(self):
-    #     data = load(self.data_dir, batch_size=1, max_crop_len=255)
-    #     s = datetime.now()
-    #     for i, batch in enumerate(iter(data)):
-    #         if i >= 500:
-    #             break
-    #         self.assertTrue('seq' in batch)
-    #         self.assertTrue(batch['seq'].shape[0], 2)
-    #         self.assertTrue('coord' in batch)
-    #         print(batch)
-    #     e = datetime.now()
-    #     print(e - s)
-    #     self.assertTrue(True)
-
-    def test_custom_loader_msa(self):
-        feats = [("make_seq_profile_pairwise", dict(mask='-', density=True))]
-        data = load(self.data_dir, batch_size=1, max_crop_len=255, feat_flags=ProteinStructureDataset.FEAT_ALL, feats=feats)
+    def test_custom_loader(self):
+        feats = [("make_coord_mask", dict(includes=['N', 'CA', 'C', 'CB']))]
+        data = load(self.data_dir, batch_size=1, max_crop_len=255, feats=feats)
         s = datetime.now()
         for i, batch in enumerate(iter(data)):
-            if i >= 1:
+            if i >= 500:
                 break
-            #print(batch)
             self.assertTrue('seq' in batch)
             self.assertTrue(batch['seq'].shape[0], 2)
             self.assertTrue('coord' in batch)
+            self.assertTrue('coord_mask' in batch)
+            print('x', batch['coord_mask'])
+            print('y', batch['coord_exists'])
         e = datetime.now()
         print(e - s)
         self.assertTrue(True)
+
+    #def test_custom_loader_msa(self):
+    #    feats = [("make_seq_profile_pairwise", dict(mask='-', density=True))]
+    #    data = load(self.data_dir, batch_size=1, max_crop_len=255, feat_flags=ProteinStructureDataset.FEAT_ALL, feats=feats)
+    #    s = datetime.now()
+    #    for i, batch in enumerate(iter(data)):
+    #        if i >= 1:
+    #            break
+    #        #print(batch)
+    #        self.assertTrue('seq' in batch)
+    #        self.assertTrue(batch['seq'].shape[0], 2)
+    #        self.assertTrue('coord' in batch)
+    #    e = datetime.now()
+    #    print(e - s)
+    #    self.assertTrue(True)
 
 if __name__ == '__main__':
     unittest.main()

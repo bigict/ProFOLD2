@@ -322,7 +322,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 return np.random.randint(min_crop_len, min(n, max_crop_len)+1) if crop else min(max_crop_len, n)
 
             l = _crop_length(n, np.random.random() < crop_probability)
-            logger.error('yyy: min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len, max_crop_len, n, l)
+            logger.debug('min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len, max_crop_len, n, l)
             i, j = 0, l
             if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask']):
                 while True:

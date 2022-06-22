@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import functional, folding, sidechain
+from profold2.model import functional, folding
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -806,8 +806,9 @@ class ViolationHead(nn.Module):
         if not exists(seq_index):
             b, n = seq.shape[:2]
             seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
-        if 'coord' in batch:
-            points, point_mask = value['coords'], batch['coord_mask']
+        if 'coord_mask' in batch or 'coord_exists' in batch:
+            points, point_mask = value['coords'], batch.get('coord_mask', batch.get('coord_exists'))
+            assert exists(point_mask)
             
             # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
             #         points, point_mask, seq_index))
