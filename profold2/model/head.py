@@ -115,7 +115,7 @@ class ContactHead(nn.Module):
 class CoevolutionHead(nn.Module):
     """Head to predict Co-evolution.
     """
-    def __init__(self, dim, mask='-', loss_min=None, loss_max=None):
+    def __init__(self, dim, mask='-', gammar=0.0, loss_min=None, loss_max=None):
         super().__init__()
 
         num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -129,6 +129,7 @@ class CoevolutionHead(nn.Module):
                 nn.Linear(dim, num_class**2))
         self.mask = mask
 
+        self.gammar = gammar
         self.loss_min = loss_min
         self.loss_max = loss_max
 
@@ -161,7 +162,7 @@ class CoevolutionHead(nn.Module):
                     rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
                     m)
             logits = rearrange(ei, 'b i c -> b () i c') + hi
-            return dict(logits=logits)
+            return dict(logits=logits, wij=eij)
         return None
 
     def loss(self, value, batch):
@@ -188,6 +189,15 @@ class CoevolutionHead(nn.Module):
             torch.sum(errors * mask) /
             (1e-6 + torch.sum(mask)))
         logger.debug('CoevolutionHead.loss: %s', avg_error.item())
+        if self.gammar > 0 and 'wij' in value:
+            epsilon = 1e-10
+            M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
+            p = torch.sum(M, dim=-1)
+            rlh = torch.square(
+                    torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon))
+            logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
+            avg_error += 0.5 * self.gammar * rlh
+
         if self.loss_min or self.loss_max:
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
