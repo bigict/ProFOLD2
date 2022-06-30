@@ -4,13 +4,17 @@
   ["make_backbone_affine", {}],
   ["make_seq_profile", {"mask":"-", "density":true}],
   ["make_to_device", {
-      "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask", "sequence_profile", "sequence_profile_mask"],
-      "device":"%(device)s"}]
+      "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask", "sequence_profile", "sequence_profile_mask", "msa"],
+      "device":"%(device)s"}],
+  ["make_coord_alt", {}],
+  ["make_coord_mask", {"includes":["N", "CA", "C", "CB"]}],
+  ["make_affine", {}],
+  ["make_torsion_angles", {}]
 ],
 "headers":[
   ["contact", {
     "cutoff":8.0, "loss_max":1.5}, {"weight":1.0}],                                                                                                                                                                                                            
-  ["coevolution", {"mask":"-", "loss_max":5.0}, {"weight":0.2}],
+  ["coevolution", {"mask":"-", "loss_max":512.0}, {"weight":0.5}],
   ["profile", {"single_repr":"struct_module", "loss_func":"KLDiv"}, {"weight":1.0}],                                                                                                                                                                           
   ["distogram", {                                                                                                                                                                                                                                              
     "buckets_first_break": 2.3125,                                                                                                                                                                                                                             

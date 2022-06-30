@@ -193,8 +193,8 @@ class CoevolutionHead(nn.Module):
             epsilon = 1e-10
             M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
             p = torch.sum(M, dim=-1)
-            rlh = torch.square(
-                    torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon))
+            rlh = torch.sum(torch.square(
+                    torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon)))
             logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
             avg_error += 0.5 * self.gammar * rlh
 
@@ -687,24 +687,27 @@ class MetricDictHead(nn.Module):
             if 'sequence_profile_mask' in batch:
                 label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
 
+            mask = batch['mask']
             if 'profile' in headers:
                 assert 'logits' in headers['profile']
                 logits = headers['profile']['logits']
                 sim = softmax_cosine_similarity(
                         logits=logits, labels=labels, mask=label_mask)
-            else:
+                avg_sim = functional.masked_mean(value=sim, mask=mask)
+                logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
+                metrics['profile'] = MetricDict()
+                metrics['profile']['cosine'] = avg_sim
+            if 'coevolution' in headers:
                 assert 'logits' in headers['coevolution']
                 pred = F.softmax(headers['coevolution']['logits'], dim=-1)
                 pred = torch.sum(pred, dim=-3)
+                pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
                 sim = F.cosine_similarity(pred*label_mask, labels*label_mask, dim=-1)
-                
-            mask = batch['mask']
-            avg_sim = (
-                torch.sum(sim * mask) /
-                (1e-6 + torch.sum(mask)))
-            logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
-            metrics['profile'] = MetricDict()
-            metrics['profile']['cosine'] = avg_sim
+                avg_sim = functional.masked_mean(value=sim, mask=mask)
+                logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
+                metrics['coevolution'] = MetricDict()
+                metrics['coevolution']['cosine'] = avg_sim
+
         return dict(loss=metrics) if metrics else None
 
 class SequenceProfileHead(nn.Module):
