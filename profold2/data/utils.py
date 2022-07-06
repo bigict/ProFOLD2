@@ -105,63 +105,42 @@ def filter_from_file(filename):
                 yield line
 
 def pdb_save(step, batch, headers, prefix='/tmp', return_pdb = False):
-    b, N = batch['seq'].shape
-    if return_pdb:
-        pdbs_result = []
-        for x, pid in enumerate(batch['pid']):
-            str_seq = batch['str_seq'][x]
-            #aatype = batch['seq'][x,...].numpy()
-            aatype = np.array([residue_constants.restype_order_with_x.get(aa, residue_constants.unk_restype_index) for aa in str_seq])
-            features = dict(aatype=aatype, 
-                    residue_index=np.arange(N))
-
-            if 'mask' in batch:
-                masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
-            else:
-                masked_seq_len = len(str_seq)
-            coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
-            _, _, num_atoms, _ = coords.shape
-            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
-
-            result = dict(structure_module=dict(
-                final_atom_mask = coord_mask,
-                final_atom_positions = coords[x,...].numpy()))
-            prot = protein.from_prediction(features=features, result=result)
-            pdbs_result.append(protein.to_pdb(prot))
-        return pdbs_result
-
-    for x, pid in enumerate(batch['pid']):
-        str_seq = batch['str_seq'][x]
-        #aatype = batch['seq'][x,...].numpy()
+    def to_pdb(b):
+        str_seq = batch['str_seq'][b]
+        #aatype = batch['seq'][b,...].numpy()
         aatype = np.array([residue_constants.restype_order_with_x.get(aa, residue_constants.unk_restype_index) for aa in str_seq])
         features = dict(aatype=aatype, 
                 residue_index=np.arange(N))
 
+        coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
+        _, _, num_atoms, _ = coords.shape
+        coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
+        b_factors = None
+        if 'confidence' in headers and 'plddt' in headers['confidence']:
+            plddt = headers['confidence']['plddt'].numpy() # (b l)
+            b_factors = coord_mask * plddt[b][...,None]
+
+        result = dict(structure_module=dict(
+            final_atom_mask = coord_mask,
+            final_atom_positions = coords[b,...].numpy()))
+        prot = protein.from_prediction(
+                features=features, result=result, b_factors=b_factors)
+        return protein.to_pdb(prot)
+
+    b, N = batch['seq'].shape
+    if return_pdb:
+        return [to_pdb(i) for i, _ in enumerate(batch['pid'])]
+
+    for x, pid in enumerate(batch['pid']):
+        pdb_str = to_pdb(x)
+
         p = os.path.join(prefix, '{}_{}_{}.pdb'.format(pid, step, x))
         with open(p, 'w') as f:
+            f.write(pdb_str)
+
+            str_seq = batch['str_seq'][b]
             if 'mask' in batch:
                 masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
             else:
                 masked_seq_len = len(str_seq)
-            coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
-            _, _, num_atoms, _ = coords.shape
-            coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
-
-            result = dict(structure_module=dict(
-                final_atom_mask = coord_mask,
-                final_atom_positions = coords[x,...].numpy()))
-            prot = protein.from_prediction(features=features, result=result)
-            f.write(protein.to_pdb(prot))
             logging.debug('step: {}/{} length: {}/{} PDB save: {}'.format(step, x, masked_seq_len, len(str_seq), pid))
-
-            if 'coord' in batch:
-                p = os.path.join(prefix, '{}_{}_{}_gt.pdb'.format(pid, step, x))
-                with open(p, 'w') as f:
-                    coord_mask = batch['coord_mask'].detach().cpu()
-                    coords = batch['coord'].detach().cpu()
-                    result = dict(structure_module=dict(
-                        final_atom_mask = coord_mask[x,...].numpy(),
-                        final_atom_positions = coords[x,...].numpy()))
-                    prot = protein.from_prediction(features=features, result=result)
-                    f.write(protein.to_pdb(prot))
-                    logging.debug('step: {}/{} length: {}/{} PDB save: {} (groundtruth)'.format(step, x, masked_seq_len, len(str_seq), pid))
