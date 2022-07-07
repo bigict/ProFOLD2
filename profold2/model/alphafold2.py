@@ -167,14 +167,33 @@ class Alphafold2(nn.Module):
         representations = {}
 
         # embed multiple sequence alignment (msa)
-        labels = self.sequence.batch_convert(batch['str_seq'], device=device)
-        embedds, logits, contacts = self.sequence(
+        if not self.training and n > self.sequence.max_input_len:
+            embedds, contacts = [], torch.zeros((b, n, n), device=device)
+            for k in range(0, n, self.sequence.max_step_len):
+                i, j = k, min(k + self.sequence.max_input_len, n)
+                delta = 0 if i == 0 else self.sequence.max_input_len - self.sequence.max_step_len
+                if i > 0 and j < i + self.sequence.max_input_len:
+                    delta += i + self.sequence.max_input_len - n
+                    i = n - self.sequence.max_input_len
+                labels = self.sequence.batch_convert(
+                        [s[i:j] for s in batch['str_seq']], device=device)
+                x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=True)
+                embedds.append(x[...,delta:j-i,:])
+                contacts[...,i:j,i:j] = y
+                if j < k + self.sequence.max_input_len:
+                    break
+            embedds = torch.cat(embedds, dim=-2)
+        else:
+            labels = self.sequence.batch_convert(batch['str_seq'], device=device)
+            embedds, contacts = self.sequence(
                         labels,
                         repr_layer=esm.ESM_EMBED_LAYER,
                         return_contacts=True)
 
+        logging.error('xxx.embedds.shape: %s', embedds.shape)
+        logging.error('xxx.contacts.shape: %s', contacts.shape)
         representations['mlm'] = dict(representations=embedds,
-                contacts=contacts, logits=logits, labels=labels)
+                contacts=contacts, labels=labels)
 
         embedds = rearrange(embedds, 'b l c -> b () l c')
 

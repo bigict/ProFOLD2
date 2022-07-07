@@ -120,8 +120,12 @@ class ESMEmbedding(nn.Module):
 
         self.model, self.alphabet = torch.hub.load(repo_or_dir, model)
 
-        self.max_input_len = 1022
-        self.max_step_len = 511
+        if (hasattr(self.model, 'args') and
+                hasattr(self.model.args, 'max_positions')):
+            self.max_input_len = self.model.args.max_positions - 2 # HACK: :(
+        else:
+            self.max_input_len = 1022
+        self.max_step_len = self.max_input_len // 2
 
     def batch_convert(self, seqs, device=None):
         batch_converter = self.alphabet.get_batch_converter()
@@ -147,10 +151,10 @@ class ESMEmbedding(nn.Module):
                 results = _esm_forward(self.model, x, batch_tokens, repr_layers=[repr_layer], return_contacts=return_contacts)
                 # index 0 is for start token. so take from 1 one
                 representations = results['representations'][repr_layer][...,1:-1,:]
-                logits = results['logits']
+                # logits = results['logits']
                 if return_contacts:
-                    return representations, logits, results['contacts']
-                return representations, logits
+                    return representations, results['contacts']
+                return representations
             return forward
 
         # Extract per-residue representations
