@@ -130,6 +130,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         max_msa_size=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
+        crop_algorithm=args.crop_algorithm,
         feats=feats,
         batch_size=args.batch_size,
         is_training=True,

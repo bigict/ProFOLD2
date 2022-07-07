@@ -190,8 +190,6 @@ class Alphafold2(nn.Module):
                         repr_layer=esm.ESM_EMBED_LAYER,
                         return_contacts=True)
 
-        logging.error('xxx.embedds.shape: %s', embedds.shape)
-        logging.error('xxx.contacts.shape: %s', contacts.shape)
         representations['mlm'] = dict(representations=embedds,
                 contacts=contacts, labels=labels)
 

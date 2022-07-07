@@ -392,6 +392,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         for k in range(len(batch)):
             n = len(batch[k]['str_seq'])
             if (exists(max_crop_len) and max_crop_len < n) or (exists(min_crop_len) and min_crop_len < n and crop_probability > 0):
+                sampler_fn = sampler_list[crop_algorithm]
+                if crop_algorithm == 'domain' and ('coord' not in batch[k] or 'coord_mask' not in batch[k]):
+                    sampler_fn = sampler_list['random']
+                    logger.debug('batch_clips_fn: crop_algorithm=%s downgrad to: random', crop_algorithm)
                 clip = sampler_list[crop_algorithm](k, n, batch)
                 if clip:
                     clips[k] = clip

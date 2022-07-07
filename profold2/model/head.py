@@ -828,11 +828,11 @@ class ViolationHead(nn.Module):
             loss_dict = {}
 
             loss_dict.update(functional.between_residue_bond_loss(
-                    points, point_mask, seq_index, seq))
+                    points, point_mask, seq_index, seq, loss_only=True))
             loss_dict.update(functional.between_residue_clash_loss(
-                    points, point_mask, seq_index, seq))
+                    points, point_mask, seq_index, seq, loss_only=True))
             loss_dict.update(functional.within_residue_clash_loss(
-                    points, point_mask, seq_index, seq))
+                    points, point_mask, seq_index, seq, loss_only=True))
 
             for k, v in loss_dict.items():
                 logger.debug('ViolationHead.%s: %s', k, v.item())
