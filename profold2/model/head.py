@@ -100,8 +100,13 @@ class ContactHead(nn.Module):
             errors = F.binary_cross_entropy(logits, targets,
                     reduction='none')
 
-            square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
+            square_mask = rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j')
             square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
+            if 'coord_plddt' in batch:
+                ca_idx = residue_constants.atom_order['CA']
+                square_mask *= torch.minimum(
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
 
             avg_error = (
                 torch.sum(errors * square_mask) /
@@ -321,8 +326,8 @@ class DistogramHead(nn.Module):
 
             dist2 = torch.sum(
                 torch.square(
-                    rearrange(positions, 'b l c -> b l () c') -
-                    rearrange(positions, 'b l c -> b () l c')),
+                    rearrange(positions, 'b i c -> b i () c') -
+                    rearrange(positions, 'b j c -> b () j c')),
                 dim=-1,
                 keepdims=True)
 
@@ -340,7 +345,12 @@ class DistogramHead(nn.Module):
                 labels=labels, logits=logits)
 
 
-        square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
+        square_mask = rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j')
+        if 'coord_plddt' in batch:
+            ca_idx = residue_constants.atom_order['CA']
+            square_mask *= torch.minimum(
+                    rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
+                    rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
 
         avg_error = (
             torch.sum(errors * square_mask) /

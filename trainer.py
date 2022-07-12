@@ -262,7 +262,13 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'coord_plddt', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
+      if field in batch:
+        del batch[field]
+    return batch
+  def batch_with_pseudo_beta(batch):
+    batch = copy.copy(batch)
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
       if field in batch:
         del batch[field]
     return batch
@@ -281,7 +287,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     if (args.tuning_data and 
         args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
-      _step(tuning_data, it, writer, stage='tuning', batch_callback=batch_seq_only)
+      _step(tuning_data, it, writer, stage='tuning',
+          batch_callback=batch_with_pseudo_beta if args.tuning_with_coords else batch_seq_only)
 
     if (args.eval_data and 
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -400,6 +407,7 @@ if __name__ == '__main__':
       help='eval dataset dir, default=None')
   parser.add_argument('--tuning_data', type=str, default=None,
       help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_with_coords', action='store_true', help='x')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
       help='sample train data by weights, default=None')
   parser.add_argument('--min_protein_len', type=int, default=50,

@@ -4,8 +4,9 @@
   ["make_backbone_affine", {}],
   ["make_seq_profile", {"mask":"-", "density":true}],
   ["make_to_device", {
-      "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask", "sequence_profile", "sequence_profile_mask", "msa"],
+      "fields":["seq", "mask", "coord", "coord_mask", "coord_plddt", "pseudo_beta", "pseudo_beta_mask", "sequence_profile", "sequence_profile_mask", "msa"],
       "device":"%(device)s"}],
+  ["make_coord_plddt", {"threshold":0.5}],
   ["make_coord_alt", {}],
   ["make_coord_mask", {"includes":["N", "CA", "C", "CB"]}],
   ["make_affine", {}],

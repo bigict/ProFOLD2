@@ -255,7 +255,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if self._fstat(f'{self.PDB}/{protein_id}.npz'):
             with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
                 structure = np.load(BytesIO(f.read()))
-                return dict(coord=torch.from_numpy(structure['coord']), coord_mask=torch.from_numpy(structure['coord_mask']))
+                ret = dict(
+                        coord=torch.from_numpy(structure['coord']),
+                        coord_mask=torch.from_numpy(structure['coord_mask']))
+                if 'bfactor' in structure:
+                    ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
+                return ret
         return dict()
 
     def get_structure_label_numpy(self, protein_id, str_seq):
@@ -317,7 +322,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 elif not exists(min_crop_len):
                     assert max_crop_len < n
                     return max_crop_len
-                logger.error('xxx: min_crop_len=%s, max_crop_len=%s, n=%s', min_crop_len, max_crop_len, n)
                 assert min_crop_len <= max_crop_len and (min_crop_len < n or max_crop_len < n)
                 return np.random.randint(min_crop_len, min(n, max_crop_len)+1) if crop else min(max_crop_len, n)
 
@@ -396,7 +400,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 if crop_algorithm == 'domain' and ('coord' not in batch[k] or 'coord_mask' not in batch[k]):
                     sampler_fn = sampler_list['random']
                     logger.debug('batch_clips_fn: crop_algorithm=%s downgrad to: random', crop_algorithm)
-                clip = sampler_list[crop_algorithm](k, n, batch)
+                clip = sampler_fn(k, n, batch)
                 if clip:
                     clips[k] = clip
 
@@ -412,7 +416,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             i, j = clip['i'], clip['j']
 
             batch[k]['str_seq'] = batch[k]['str_seq'][i:j]
-            for field in ('seq', 'mask', 'coord', 'coord_mask'):
+            for field in ('seq', 'mask', 'coord', 'coord_mask', 'coord_plddt'):
                 if field in batch[k]:
                     batch[k][field] = batch[k][field][i:j,...]
             for field in ('str_msa', 'del_msa'):
@@ -437,6 +441,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 str_seq=str_seqs)
 
         if self.feat_flags & ProteinStructureDataset.FEAT_PDB and 'coord' in batch[0]:
+            # required
             fields = ('coord', 'coord_mask')
             coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
 
@@ -445,6 +450,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             ret.update(
                 coord=padded_coords,
                 coord_mask=padded_coord_masks)
+            # optional
+            fields = ('coord_plddt',)
+            for field in fields:
+                if not field in batch[0]:
+                    continue
+                padded_values = pad_for_batch([b[field] for b in batch], max_batch_len, field)
+                ret[field] = padded_values
+
         if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
             fields = ('msa', 'str_msa', 'del_msa')
             msas, str_msas, del_msas = list(zip(*[[b[k] for k in fields] for b in batch]))
@@ -489,12 +502,12 @@ def pad_for_batch(items, batch_length, dtype):
             z = torch.zeros(batch_length - msk.shape[0], dtype=msk.dtype)
             c = torch.cat((msk, z), dim=0)
             batch.append(c)
-    elif dtype == "crd":
+    elif dtype == 'crd':
         for item in items:
             z = torch.zeros((batch_length - item.shape[0],  item.shape[-2], item.shape[-1]), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
             batch.append(c)
-    elif dtype == "crd_msk":
+    elif dtype == 'crd_msk' or dtype == 'coord_plddt':
         for item in items:
             z = torch.zeros((batch_length - item.shape[0],  item.shape[-1]), dtype=item.dtype)
             c = torch.cat((item, z), dim=0)
