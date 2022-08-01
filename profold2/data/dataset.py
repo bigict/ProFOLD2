@@ -21,13 +21,40 @@ from profold2.utils import default, exists
 
 logger = logging.getLogger(__file__)
 
-NUM_COORDS_PER_RES = 14
+def _make_msa_features(sequences):
+    """Constructs a feature dict of MSA features."""
+    def parse_a4m(sequences):
+        deletion_matrix = []
+        for msa_sequence in sequences:
+            deletion_vec = []
+            deletion_count = 0
+            for j in msa_sequence:
+                if j.islower():
+                    deletion_count += 1
+                else:
+                    deletion_vec.append(deletion_count)
+                    deletion_count = 0
+            deletion_matrix.append(deletion_vec)
+        # Make the MSA matrix out of aligned (deletion-free) sequences
+        deletion_table = str.maketrans('', '', string.ascii_lowercase)
+        aligned_sequences = [s.translate(deletion_table) for s in sequences]
+        return aligned_sequences, deletion_matrix
+
+    msa, del_matirx = parse_a4m(sequences)
+
+    int_msa = []
+    for sequence in msa:
+        int_msa.append([residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence])
+
+    return dict(msa=torch.as_tensor(int_msa), str_msa=msa, del_msa=del_matirx)
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences, descriptions = None):
+    def __init__(self, sequences, descriptions=None, msa=None):
         self.sequences = sequences
         self.descriptions = descriptions
+        self.msa = msa
         assert not exists(self.descriptions) or len(self.sequences) == len(self.descriptions)
+        assert not exists(self.msa) or len(self.sequences) == len(self.msa)
 
     def __getitem__(self, idx):
         input_sequence = self.sequences[idx]
@@ -38,10 +65,13 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
         #residue_index = torch.arange(len(input_sequence), dtype=torch.int)
         str_seq = ''.join(map(lambda a: a if a in residue_constants.restype_order_with_x else residue_constants.restypes_with_x[-1], input_sequence))
         mask = torch.ones(len(input_sequence), dtype=torch.bool)
-        return dict(pid=self.descriptions[idx] if self.descriptions else str(idx),
+        ret = dict(pid=self.descriptions[idx] if exists(self.descriptions) and exists(self.descriptions[idx]) else str(idx),
                 seq=seq,
                 str_seq=str_seq,
                 mask=mask)
+        if exists(self.msa) and exists(self.msa[idx]):
+            ret.update(_make_msa_features(self.msa[idx]))
+        return ret
 
     def __len__(self):
         return len(self.sequences)
@@ -59,6 +89,16 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
                 seq=padded_seqs,
                 mask=padded_masks,
                 str_seq=str_seqs)
+
+        fields = ('msa', 'str_msa', 'del_msa')
+        if all(all(field in b for field in fields) for b in batch):
+            msas, str_msas, del_msas = list(zip(*[[b[k] for k in fields] for b in batch]))
+
+            padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
+            ret.update(
+                msa=padded_msas,
+                str_msa=str_msas,
+                del_msa=del_msas)
 
         if feat_builder:
             ret = feat_builder.build(ret)
@@ -173,24 +213,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         return self.resolu.get(pid[0], None)
 
     def get_msa_features_new(self, protein_id):
-        """Constructs a feature dict of MSA features."""
-        def parse_a4m(sequences):
-            deletion_matrix = []
-            for msa_sequence in sequences:
-                deletion_vec = []
-                deletion_count = 0
-                for j in msa_sequence:
-                    if j.islower():
-                        deletion_count += 1
-                    else:
-                        deletion_vec.append(deletion_count)
-                        deletion_count = 0
-                deletion_matrix.append(deletion_vec)
-            # Make the MSA matrix out of aligned (deletion-free) sequences
-            deletion_table = str.maketrans('', '', string.ascii_lowercase)
-            aligned_sequences = [s.translate(deletion_table) for s in sequences]
-            return aligned_sequences, deletion_matrix
-
         k = np.random.randint(len(self.MSA_LIST))
         source = self.MSA_LIST[k]
         with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
@@ -198,58 +220,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if exists(self.max_msa_size) and len(sequences) > self.max_msa_size:
             sequences = sequences[:1] + list(np.random.choice(
                     sequences, size=self.max_msa_size - 1, replace=False) if self.max_msa_size > 1 else [])
-        msa, del_matirx = parse_a4m(sequences)
-
-        int_msa = []
-        for sequence in msa:
-            int_msa.append([residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence])
-
-        return dict(msa=torch.as_tensor(int_msa), str_msa=msa, del_msa=del_matirx)
-
-    def get_msa_features(self, protein_id):
-        """Constructs a feature dict of MSA features."""
-        msa_path = self.data_dir / f'a3ms/{protein_id}.a3m'
-        with open(msa_path) as f:
-            text = f.read()
-        msa, del_matirx = parse_a3m(text)
-        msas = (msa,)
-        if not msas:
-            raise ValueError('At least one MSA must be provided.')
-        deletion_matrices = (del_matirx,)
-
-        int_msa = []
-        deletion_matrix = []
-        seen_sequences = set()
-        for msa_index, msa in enumerate(msas):
-            if not msa:
-                raise ValueError(f'MSA {msa_index} must contain at least one sequence.')
-            for sequence_index, sequence in enumerate(msa):
-                if sequence in seen_sequences:
-                    continue
-                seen_sequences.add(sequence)
-                int_msa.append(
-                    [residue_constants.HHBLITS_AA_TO_ID[res] for res in sequence])
-                deletion_matrix.append(deletion_matrices[msa_index][sequence_index])
-
-        features = {}
-        if self.max_msa == 0:
-            features['deletion_matrix_int'] = np.array(deletion_matrix, dtype=np.int32)
-            features['msa'] = np.array(int_msa, dtype=np.int32)
-        else:
-            features['deletion_matrix_int'] = np.array(random.choices(deletion_matrix, k=self.max_msa), dtype=np.int32)
-            features['msa'] = np.array(random.choices(int_msa, k=self.max_msa), dtype=np.int32)
-
-        msa = torch.tensor(features['msa'], dtype=torch.long)[:, :self.max_seq_len]  # (N, L) 22 possible values.
-        msa_one_hot = F.one_hot(msa, 23).float()  # (N, L, 23) <- (N, L)  extra dim for mask flag.
-        deletion_matrix_int = torch.tensor(features['deletion_matrix_int'], dtype=torch.float)[:, :self.max_seq_len]  # (N, L)
-        cluster_deletion_value = 2 / math.pi * torch.arctan(deletion_matrix_int / 3)  # (N, L)
-        cluster_deletion_mean = deletion_matrix_int.mean(axis=0, keepdim=True)  # (1, L) <- (N, L)
-        cluster_deletion_mean = cluster_deletion_mean.expand(deletion_matrix_int.shape)  # (N, L) <- (1, L)
-        cluster_deletion_mean = 2 / math.pi * torch.arctan(cluster_deletion_mean / 3)  # (N, L)
-        cluster_has_deletion = (deletion_matrix_int != 0).float()  # (N, L)
-        deletion_features = torch.stack((cluster_deletion_value, cluster_deletion_mean, cluster_has_deletion), dim=2)  # (N, L, 3) <- ...
-        result = torch.cat((msa_one_hot, deletion_features), dim=2)  # (N, L, 23 + 3) <- ...
-        return result
+        return _make_msa_features(sequences)
 
     def get_structure_label_npz(self, protein_id, str_seq):
         if self._fstat(f'{self.PDB}/{protein_id}.npz'):
@@ -262,29 +233,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                     ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
                 return ret
         return dict()
-
-    def get_structure_label_numpy(self, protein_id, str_seq):
-        labels = np.zeros((len(str_seq), NUM_COORDS_PER_RES, 3), dtype=np.float32)
-        label_mask = np.zeros((len(str_seq), NUM_COORDS_PER_RES), dtype=np.bool)
-
-        #input_structure_path = self.data_dir / f"{self.PDB}/{protein_id}.npz"
-        with self._fileobj(f'{self.PDB}/{protein_id}.npz') as f:
-            structure = np.load(BytesIO(f.read()))
-
-            for atom_name, coords in structure.items():
-                for i, res_letter in enumerate(str_seq):
-                    res_name = residue_constants.restype_1to3.get(res_letter, residue_constants.unk_restype)
-                    res_atom14_list = residue_constants.restype_name_to_atom14_names[res_name]
-                    try:
-                        atom14idx = residue_constants.restype_name_to_atom14_names[res_name].index(atom_name)
-                        if np.any(np.isnan(coords[i])):
-                            continue
-                        labels[i][atom14idx] = coords[i]
-                        if np.any(coords[i]):
-                            label_mask[i][atom14idx] = 1
-                    except ValueError: pass
-
-        return dict(coord=torch.from_numpy(labels), coord_mask=torch.from_numpy(label_mask))
 
     def get_seq_features(self, protein_id):
         """Runs alignment tools on the input sequence and creates features."""

@@ -65,10 +65,13 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
     return protein
 
 @take1st
-def make_coord_plddt(protein, threshold=0, is_training=True):
+def make_coord_plddt(protein, threshold=0, gamma=None, use_weighted_mask=True, is_training=True):
     if is_training and 'coord_plddt' in protein:
         plddt_mask = (protein['coord_plddt'] >= threshold)
+        if exists(gamma):
+            protein['coord_plddt'] = torch.exp(gamma * (protein['coord_plddt'] - 1.0))
         protein['coord_plddt'] *= plddt_mask
+        protein['coord_plddt_use_weighted_mask'] = use_weighted_mask
     return protein
 
 @take1st

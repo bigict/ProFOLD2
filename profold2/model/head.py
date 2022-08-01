@@ -100,17 +100,21 @@ class ContactHead(nn.Module):
             errors = F.binary_cross_entropy(logits, targets,
                     reduction='none')
 
-            square_mask = rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j')
+            square_mask, square_weight = (
+                    rearrange(mask, '... i -> ... i ()')*rearrange(mask, '... j -> ... () j'), 1.0)
             square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
             if 'coord_plddt' in batch:
                 ca_idx = residue_constants.atom_order['CA']
-                square_mask *= torch.minimum(
+                plddt_weight = torch.minimum(
                         rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
                         rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
+                if batch.get('coord_plddt_mask', True):
+                    square_mask *= plddt_weight
+                else:
+                    square_weight = plddt_weight
 
-            avg_error = (
-                torch.sum(errors * square_mask) /
-                (1e-6 + torch.sum(square_mask)))
+            avg_error = functional.masked_mean(
+                    value=errors*square_weight, mask=square_mask, epsilon=1e-6)
             logger.debug('ContactHead.loss: %s', avg_error.item())
             if self.loss_min or self.loss_max:
                 avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
@@ -190,9 +194,8 @@ class CoevolutionHead(nn.Module):
                 labels.float(),
                 label_mask)
 
-        avg_error = (
-            torch.sum(errors * mask) /
-            (1e-6 + torch.sum(mask)))
+        avg_error = functional.masked_mean(
+                value=errors, mask=mask, epsilon=1e-6)
         logger.debug('CoevolutionHead.loss: %s', avg_error.item())
         if self.gammar > 0 and 'wij' in value:
             epsilon = 1e-10
@@ -262,9 +265,8 @@ class DistillationHead(nn.Module):
             errors = softmax_cross_entropy_with_probability(
                     labels=F.one_hot(ca_bins, num_classes=pij.shape[-1]),
                     probs=repeat(pij, '... -> b ...', b=b))
-        avg_error = (
-            torch.sum(errors * pij_mask) /
-            (1e-6 + torch.sum(pij_mask)))
+
+        avg_error = functional.masked_mean(value=errors, mask=pij_mask, epsilon=1e-6)
         logger.debug('DistillationHead.loss(%s): %s', self.loss_fn, avg_error.item())
         if self.loss_min or self.loss_max:
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
@@ -345,16 +347,20 @@ class DistogramHead(nn.Module):
                 labels=labels, logits=logits)
 
 
-        square_mask = rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j')
+        square_mask, square_weight = (
+                rearrange(mask, '... i -> ... i ()')*rearrange(mask, '... j -> ... () j'), 1.0)
         if 'coord_plddt' in batch:
             ca_idx = residue_constants.atom_order['CA']
-            square_mask *= torch.minimum(
+            plddt_weight = torch.minimum(
                     rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
                     rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
+            if batch.get('coord_plddt_use_weighted_mask', True):
+                square_mask *= plddt_weight
+            else:
+                square_weight = plddt_weight
 
-        avg_error = (
-            torch.sum(errors * square_mask) /
-            (1e-6 + torch.sum(square_mask)))
+        avg_error = functional.masked_mean(
+                value=errors*square_weight, mask=square_mask, epsilon=1e-6)
         logger.debug('DistogramHead.loss: %s', avg_error.item())
         return dict(loss=avg_error)
 
@@ -631,10 +637,7 @@ class MaskedLMHead(nn.Module):
         errors = softmax_cross_entropy(
                 labels=F.one_hot(labels, logits.shape[-1]), logits=logits)
 
-        avg_error = (
-            torch.sum(errors * mask) /
-            (1e-6 + torch.sum(mask)))
-
+        avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
         logger.debug('MaskedLMHead.loss: %s', avg_error.item())
         return dict(loss=avg_error)
 
@@ -708,15 +711,28 @@ class MetricDictHead(nn.Module):
                 metrics['profile'] = MetricDict()
                 metrics['profile']['cosine'] = avg_sim
             if 'coevolution' in headers:
+                metrics['coevolution'] = MetricDict()
+
                 assert 'logits' in headers['coevolution']
-                pred = F.softmax(headers['coevolution']['logits'], dim=-1)
-                pred = torch.sum(pred, dim=-3)
+                prob = F.softmax(headers['coevolution']['logits'], dim=-1)
+
+                pred = torch.sum(prob, dim=-3)
                 pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
                 sim = F.cosine_similarity(pred*label_mask, labels*label_mask, dim=-1)
                 avg_sim = functional.masked_mean(value=sim, mask=mask)
                 logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
-                metrics['coevolution'] = MetricDict()
                 metrics['coevolution']['cosine'] = avg_sim
+
+                if 'msa' in batch:
+                    num_class = prob.shape[-1]
+
+                    pred = torch.argmax(prob, dim=-1)
+                    mask = F.one_hot(batch['msa'], num_classes=num_class) * label_mask
+                    avg_sim = functional.masked_mean(
+                            value=F.one_hot(pred, num_classes=num_class),
+                            mask=mask)
+                    logger.debug('MetricDictHead.coevolution.identity: %s', avg_sim.item())
+                    metrics['coevolution']['identity'] = avg_sim
 
         return dict(loss=metrics) if metrics else None
 
@@ -772,10 +788,7 @@ class SequenceProfileHead(nn.Module):
             errors = softmax_kl_diversity(
                     labels=labels, logits=logits, mask=label_mask)
 
-        avg_error = (
-            torch.sum(errors * mask) /
-            (1e-6 + torch.sum(mask)))
-
+        avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
         logger.debug('SequenceProfileHead.loss(%s): %s', self.loss_func, avg_error.item())
         return dict(loss=avg_error)
 

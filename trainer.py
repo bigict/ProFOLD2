@@ -123,6 +123,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       batch_size=args.batch_size,
       weights=list(weights_from_file(args.sampling_by_weights)),
       shuffle=True,
+      prefetch_factor=args.prefetch_factor,
       num_workers=args.num_workers)
   if args.tuning_data:
     tuning_loader = dataset.load(
@@ -135,7 +136,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         batch_size=args.batch_size,
         is_training=True,
         shuffle=True,
-        num_workers=0)
+        prefetch_factor=args.prefetch_factor,
+        num_workers=args.num_workers)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -149,6 +151,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         is_training=False,
         num_workers=0)
 
+  if args.fake_data:
     fake_loader = dataset.load(
         data_dir=args.eval_data,
         max_msa_size=args.max_msa_size,
@@ -262,13 +265,13 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'coord_plddt', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'coord_plddt', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
       if field in batch:
         del batch[field]
     return batch
   def batch_with_pseudo_beta(batch):
     batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
       if field in batch:
         del batch[field]
     return batch
@@ -285,18 +288,21 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       # Add embeddings
       writer_add_embeddings(writer, model, it)
 
-    if (args.tuning_data and 
+    if (args.tuning_data and
         args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
       _step(tuning_data, it, writer, stage='tuning',
-          batch_callback=batch_with_pseudo_beta if args.tuning_with_coords else batch_seq_only)
+          batch_callback=(batch_with_pseudo_beta
+              if args.tuning_with_coords else batch_seq_only))
 
-    if (args.eval_data and 
+    if (args.fake_data and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      _step(cycling(fake_loader), it, writer, stage='fake', batch_callback=batch_seq_only)
+      _step(cycling(fake_loader), it, writer, stage='fake',
+          batch_callback=(batch_with_pseudo_beta
+              if args.fake_with_coords else batch_seq_only))
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      
+
       model.eval()
       with torch.no_grad():
         # eval loss
@@ -407,7 +413,12 @@ if __name__ == '__main__':
       help='eval dataset dir, default=None')
   parser.add_argument('--tuning_data', type=str, default=None,
       help='eval dataset dir, default=None')
-  parser.add_argument('--tuning_with_coords', action='store_true', help='x')
+  parser.add_argument('--tuning_with_coords', action='store_true',
+      help='use `coord` when tuning')
+  parser.add_argument('--fake_data', type=str, default=None,
+      help='fake dataset dir, default=None')
+  parser.add_argument('--fake_with_coords', action='store_true',
+      help='use `coord` when faking')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
       help='sample train data by weights, default=None')
   parser.add_argument('--min_protein_len', type=int, default=50,
@@ -444,6 +455,8 @@ if __name__ == '__main__':
       help='batch size, default=1')
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers, default=1')
+  parser.add_argument('--prefetch_factor', type=int, default=1,
+      help='number of batches loaded in advance by each worker, default=1')
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 

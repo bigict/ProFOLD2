@@ -98,20 +98,36 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     logger.info('initialized.')
 
   def preprocess(self, data):
-    sequences, descriptions = [], []
+    def _bytes_to_text(data):
+      f = io.TextIOWrapper(io.BytesIO(data))
+      return f.read()
+
+    sequences, descriptions, msa = [], [], []
 
     for row in data:
+      logger.info('%s', row.keys())
       fasta = row.get('data') or row.get('body')
       # If the image is sent as bytesarray
       if isinstance(fasta, (bytearray, bytes)):
-        f = io.TextIOWrapper(io.BytesIO(fasta))
-        fasta = f.read()
+        fasta = _bytes_to_text(fasta)
 
-      s, d = parse_fasta(fasta)
-      sequences += s
-      descriptions += d
+      fmt = _bytes_to_text(row['fmt']) if 'fmt' in row else 'single'
+      assert fmt in ('single', 'a3m', 'a4m')
+      if fmt == 'a4m':
+        s = fasta.splitlines()
+        d = [None] * len(s)
+      else:
+        s, d = parse_fasta(fasta)
+      if fmt == 'single':
+        sequences += s
+        descriptions += d
+        msa += [None]
+      else:
+        sequences += s[:1]
+        descriptions += d[:1]
+        msa += [s]
 
-    dataset = ProteinSequenceDataset(sequences, descriptions)
+    dataset = ProteinSequenceDataset(sequences, descriptions, msa=msa)
     loader = torch.utils.data.DataLoader(dataset,
         collate_fn=functools.partial(dataset.collate_fn,
             feat_builder=self.feat_builder),
@@ -120,6 +136,9 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     return [batch for batch in iter(loader)]  # pylint: disable=unnecessary-comprehension
 
   def inference(self, data, *args, **kwargs):
+    del args
+    del kwargs
+
     results = []
 
     with torch.no_grad():
@@ -139,15 +158,14 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
             base64.b64encode(f.getvalue())))
         return t.read()
     def to_dict(result):
-        i, b, r = result
-        return pdb_save(i, b, r.headers, return_pdb=True), to_base64(r.headers)
+      i, b, r = result
+      return pdb_save(i, b, r.headers, return_pdb=True), to_base64(r.headers)
 
     results = collections.defaultdict(list)
     for r in data:
       pdb, headers = to_dict(r)
       results['pdb'] += pdb
       results['headers'] += [headers]
-      
     return [results]
 
   def _load_pickled_model(self,
