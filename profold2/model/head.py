@@ -391,6 +391,13 @@ class FoldingHead(nn.Module):
         def backbone_fape_loss(pred_frames_list, gt_frames, frames_mask):
             assert pred_frames_list and exists(frames_mask)
 
+            dij_weight = None
+            if 'coord_plddt' in batch:
+                ca_idx = residue_constants.atom_order['CA']
+                dij_weight = torch.minimum(
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... i -> ... i ()'),
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... j -> ... () j'))
+
             for i, pred_frames in enumerate(pred_frames_list):
                 with torch.no_grad():
                     true_frames = default(gt_frames, pred_frames)
@@ -400,7 +407,7 @@ class FoldingHead(nn.Module):
                 r = functional.fape(
                         pred_frames, true_frames, frames_mask,
                         pred_points, true_points, frames_mask,
-                        self.fape_max)/self.fape_z
+                        self.fape_max, dij_weight=dij_weight)/self.fape_z
                 logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r.item())
                 yield r
 
@@ -413,7 +420,10 @@ class FoldingHead(nn.Module):
                         rearrange(translations, '... i c h -> ... (i c) h'))
 
             def points_to_fape_shape(points):
-                return rearrange(points, '... i n d -> ... (i n) d')
+                return rearrange(points, '... i c d -> ... (i c) d')
+
+            def mask_to_fape_shape(masks):
+                return rearrange(masks, '... i c -> ... (i c)')
 
             with torch.no_grad():
                 true_frames = default(true_frames, pred_frames)
@@ -422,10 +432,10 @@ class FoldingHead(nn.Module):
             r = functional.fape(
                     frames_to_fape_shape(pred_frames),
                     frames_to_fape_shape(true_frames),
-                    rearrange(frames_mask, '... i c -> ... (i c)'),
+                    mask_to_fape_shape(frames_mask),
                     points_to_fape_shape(pred_points),
                     points_to_fape_shape(true_points),
-                    rearrange(point_mask, '... i n -> ... (i n)'),
+                    mask_to_fape_shape(point_mask),
                     self.fape_max)/self.fape_z
             logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r.item())
             return r
