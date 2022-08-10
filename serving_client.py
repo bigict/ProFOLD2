@@ -7,6 +7,7 @@
 import os
 import base64
 import io
+import re
 import logging
 
 import matplotlib.pyplot as plt
@@ -22,7 +23,7 @@ logger = logging.getLogger(__file__)
 # pylint: enable=line-too-long
 def main(args):  # pylint: disable=redefined-outer-name
   def filename_get(desc, ext):
-    pid = desc.split()[0]
+    pid = re.split('[ |\t]', desc)[0]
     if args.multi_model_format:
       p = os.path.join(args.prefix, desc.split()[0])
       os.makedirs(p, exist_ok=True)
@@ -33,7 +34,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   for fasta_file in args.fasta_list:
     logger.info('Request: %s begin', fasta_file)
-    with open(fasta_file, 'r') as f:
+    with open(fasta_file, 'r', encoding='utf-8') as f:
       fasta_str = f.read()
     r = requests.post(args.uri,
         data=dict(body=fasta_str, fmt=args.fasta_fmt), timeout=7200)
@@ -55,18 +56,24 @@ def main(args):  # pylint: disable=redefined-outer-name
       assert len(sequences) == len(results['headers'])
       for seq, desc, pdb, header in zip(
           sequences, descriptions, results['pdb'], results['headers']):
+        with io.BytesIO(base64.b64decode(header)) as f:
+          header = torch.load(f, map_location='cpu')
+
+        plddt = None
+        if 'confidence' in header:
+          if 'loss' in header['confidence']:
+            plddt = header['confidence']['loss']
+
         print('======================')
-        print(f'>{desc}')
+        print(f'>{desc} pLDDT: {plddt}')
         print(f'{seq}')
 
         print('-------------')
         print(f'{pdb}')
         if args.dump_pdb:
-          with open(filename_get(desc, 'pdb'), 'w') as f:
+          with open(filename_get(desc, 'pdb'), 'w', encoding='utf-8') as f:
             f.write(pdb)
 
-        with io.BytesIO(base64.b64decode(header)) as f:
-          header = torch.load(f, map_location='cpu')
         if 'confidence' in header:
           if 'loss' in header['confidence']:
             plddt = header['confidence']['loss']
@@ -91,7 +98,7 @@ def main(args):  # pylint: disable=redefined-outer-name
           print('-------------')
           print(svg)
           if args.dump_contact:
-            with open(filename_get(desc, 'svg'), 'w') as f:
+            with open(filename_get(desc, 'svg'), 'w', encoding='utf-8') as f:
               f.write(svg)
 
 if __name__ == '__main__':

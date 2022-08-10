@@ -7,7 +7,7 @@ from torch.cuda.amp import autocast
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
-from profold2.model.commons import init_zero_
+from profold2.model.commons import init_zero_, embedd_dim_get
 from profold2.model.functional import (
         l2_norm,
         quaternion_multiply,
@@ -197,12 +197,13 @@ class IPABlock(nn.Module):
         **kwargs
     ):
         super().__init__()
+        dim_single, _ = embedd_dim_get(dim)
 
-        self.attn_norm = nn.LayerNorm(dim)
+        self.attn_norm = nn.LayerNorm(dim_single)
         self.attn = InvariantPointAttention(dim = dim, **kwargs)
 
-        self.ff_norm = nn.LayerNorm(dim)
-        self.ff = Transition(dim, mult = ff_mult, num_layers = ff_num_layers)
+        self.ff_norm = nn.LayerNorm(dim_single)
+        self.ff = Transition(dim_single, mult = ff_mult, num_layers = ff_num_layers)
 
     def forward(self, x, **kwargs):
         x = self.attn(x, **kwargs) + x
@@ -256,25 +257,27 @@ class AngleNet(nn.Module):
 class StructureModule(nn.Module):
     def __init__(self, dim, structure_module_depth, structure_module_heads):
         super().__init__()
+        dim_single, dim_pairwise = embedd_dim_get(dim)
 
         assert structure_module_depth >= 1
         self.structure_module_depth = structure_module_depth
         with torch_default_dtype(torch.float32):
             self.ipa_block = IPABlock(
-                dim = dim,
+                dim = dim_single,
+                pairwise_repr_dim = dim_pairwise,
                 heads = structure_module_heads,
             )
 
-            self.to_affine_update = nn.Linear(dim, 6)
+            self.to_affine_update = nn.Linear(dim_single, 6)
 
         init_zero_(self.ipa_block.attn.to_out)
 
-        self.single_repr_norm = nn.LayerNorm(dim)
-        self.pairwise_repr_norm = nn.LayerNorm(dim)
+        self.single_repr_norm = nn.LayerNorm(dim_single)
+        self.pairwise_repr_norm = nn.LayerNorm(dim_pairwise)
         self.single_repr_dim = nn.Sequential(
-                nn.Linear(dim, dim))
+                nn.Linear(dim_single, dim_single))
 
-        self.to_angles = AngleNet(dim)
+        self.to_angles = AngleNet(dim_single)
 
     def forward(self, representations, batch):
         b, n, device = *batch['seq'].shape[:2], batch['seq'].device

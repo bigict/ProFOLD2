@@ -66,7 +66,8 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
       logger.debug('Loading eager model')
       model_args = None
       if os.path.exists(os.path.join(model_dir, 'model_args.json')):
-        with open(os.path.join(model_dir, 'model_args.json'), 'r') as f:
+        with open(os.path.join(model_dir, 'model_args.json'), 'r',
+            encoding='utf-8') as f:
           model_args = json.load(f)
       logger.info('model_args: %s', model_args)
       self.model = self._load_pickled_model(
@@ -191,8 +192,8 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     model_class_definitions = list_classes_from_module(module)
     if len(model_class_definitions) != 1:
       raise ValueError(
-          'Expected only one class as model definition. {}'.format(
-              model_class_definitions))
+          f'Expected only one class as model definition. '
+          f'{model_class_definitions}')
 
     model_class = model_class_definitions[0]
     model = model_class(model_args)

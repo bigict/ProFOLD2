@@ -104,7 +104,9 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       is_training=False,
       num_workers=args.num_workers)
 
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
+  def data_cond(batch):
+    return (args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len)
 
   tmscore, n = 0, 0
   # eval loop

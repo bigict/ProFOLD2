@@ -97,11 +97,13 @@ class EvoformerBlock(nn.Module):
         global_column_attn = False
     ):
         super().__init__()
+
+        dim_single, dim_pairwise = embedd_dim_get(dim)
         self.layer = nn.ModuleList([
             PairwiseAttentionBlock(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout, global_column_attn = global_column_attn),
-            FeedForward(dim = dim, dropout = ff_dropout),
+            FeedForward(dim = dim_pairwise, dropout = ff_dropout),
             MsaAttentionBlock(dim = dim, heads = heads, dim_head = dim_head, dropout = attn_dropout),
-            FeedForward(dim = dim, dropout = ff_dropout),
+            FeedForward(dim = dim_single, dropout = ff_dropout),
         ])
 
     def forward(self, inputs):

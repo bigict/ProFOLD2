@@ -15,6 +15,12 @@ def init_zero_(layer):
     if exists(layer.bias):
         nn.init.constant_(layer.bias, 0.)
 
+def embedd_dim_get(dim):
+    if isinstance(dim, (tuple, list)):
+        assert len(dim) == 2  # (dim_single, dim_pairwise)
+        return dim
+    return (dim, dim)
+
 # helper classes
 class Always(nn.Module):
     def __init__(self, val):
@@ -162,12 +168,11 @@ class AxialAttention(nn.Module):
         self.col_attn = col_attn
         self.global_query_attn = global_query_attn
 
-        self.norm = nn.LayerNorm(dim)
-
-        self.attn = Attention(dim = dim, heads = heads, **kwargs)
-
+        dim_node, dim_edge = embedd_dim_get(dim)
+        self.norm = nn.LayerNorm(dim_node)
+        self.attn = Attention(dim = dim_node, heads = heads, **kwargs)
         self.edges_to_attn_bias = nn.Sequential(
-            nn.Linear(dim, heads, bias = False),
+            nn.Linear(dim_edge, heads, bias = False),
             Rearrange('b i j h -> b h i j')
         ) if accept_edges else None
 
@@ -276,17 +281,19 @@ class OuterMean(nn.Module):
     def __init__(
         self,
         dim,
-        hidden_dim = None,
+        dim_hidden = None,
         eps = 1e-5
     ):
         super().__init__()
-        self.eps = eps
-        self.norm = nn.LayerNorm(dim)
-        hidden_dim = default(hidden_dim, dim)
 
-        self.left_proj = nn.Linear(dim, hidden_dim)
-        self.right_proj = nn.Linear(dim, hidden_dim)
-        self.proj_out = nn.Linear(hidden_dim, dim)
+        self.eps = eps
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+        self.norm = nn.LayerNorm(dim_single)
+        dim_hidden = default(dim_hidden, dim_pairwise)
+
+        self.left_proj = nn.Linear(dim_single, dim_hidden)
+        self.right_proj = nn.Linear(dim_single, dim_hidden)
+        self.proj_out = nn.Linear(dim_hidden, dim_pairwise)
 
     def forward(self, x, mask = None):
         x = self.norm(x)
@@ -314,12 +321,14 @@ class PairwiseAttentionBlock(nn.Module):
         global_column_attn = False
     ):
         super().__init__()
-        self.outer_mean = OuterMean(dim)
 
-        self.triangle_attention_outgoing = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
-        self.triangle_attention_ingoing = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = False, col_attn = True, accept_edges = True, global_query_attn = global_column_attn)
-        self.triangle_multiply_outgoing = TriangleMultiplicativeModule(dim = dim, mix = 'outgoing')
-        self.triangle_multiply_ingoing = TriangleMultiplicativeModule(dim = dim, mix = 'ingoing')
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+
+        self.outer_mean = OuterMean(dim)
+        self.triangle_attention_outgoing = AxialAttention(dim = dim_pairwise, heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
+        self.triangle_attention_ingoing = AxialAttention(dim = dim_pairwise, heads = heads, dim_head = dim_head, row_attn = False, col_attn = True, accept_edges = True, global_query_attn = global_column_attn)
+        self.triangle_multiply_outgoing = TriangleMultiplicativeModule(dim = dim_pairwise, mix = 'outgoing')
+        self.triangle_multiply_ingoing = TriangleMultiplicativeModule(dim = dim_pairwise, mix = 'ingoing')
 
         self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
 
@@ -348,8 +357,10 @@ class MsaAttentionBlock(nn.Module):
         dropout = 0.
     ):
         super().__init__()
-        self.row_attn = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
-        self.col_attn = AxialAttention(dim = dim, heads = heads, dim_head = dim_head, row_attn = False, col_attn = True)
+
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+        self.row_attn = AxialAttention(dim = (dim_single, dim_pairwise), heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
+        self.col_attn = AxialAttention(dim = (dim_single, dim_pairwise), heads = heads, dim_head = dim_head, row_attn = False, col_attn = True)
 
         self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
 
@@ -366,18 +377,22 @@ class MsaAttentionBlock(nn.Module):
 class RelativePositionEmbedding(nn.Module):
     def __init__(self, dim, max_rel_dist):
         super().__init__()
+
+        _, dim_pairwise = embedd_dim_get(dim)
         self.max_rel_dist = max_rel_dist
-        self.embedding = nn.Embedding(max_rel_dist*2+1, dim)
+        self.embedding = nn.Embedding(max_rel_dist*2+1, dim_pairwise)
 
     def forward(self, seq_index):
-        seq_rel_dist = rearrange(seq_index, 'i -> () i ()') - rearrange(seq_index, 'j -> () () j')
+        seq_rel_dist = rearrange(seq_index, '... i -> ... i ()') - rearrange(seq_index, '... j -> ... () j')
         seq_rel_dist = seq_rel_dist.clamp(-self.max_rel_dist, self.max_rel_dist) + self.max_rel_dist
         return self.embedding(seq_rel_dist)
 
 class PairwiseEmbedding(nn.Module):
     def __init__(self, dim, max_rel_dist = 0):
         super().__init__()
-        self.to_pairwise_repr = nn.Linear(dim, dim*2)
+
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+        self.to_pairwise_repr = nn.Linear(dim_single, dim_pairwise*2)
         self.relative_pos_emb = RelativePositionEmbedding(dim, max_rel_dist) if max_rel_dist > 0 else None
 
     def embeddings(self):
@@ -386,7 +401,7 @@ class PairwiseEmbedding(nn.Module):
     def forward(self, x, x_mask, seq_index = None):
         (_, n), device = x.shape[:2], x.device
 
-        x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim = -1)
+        x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim=-1)
         x = rearrange(x_left, 'b i d -> b i () d') + rearrange(x_right, 'b j d-> b () j d') # create pair-wise residue embeds
         x_mask = rearrange(x_mask, 'b i -> b i ()') * rearrange(x_mask, 'b j -> b () j') if exists(x_mask) else None
         if exists(self.relative_pos_emb):

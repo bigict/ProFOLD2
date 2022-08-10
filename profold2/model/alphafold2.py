@@ -10,6 +10,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data import esm
+from profold2.model.commons import embedd_dim_get
 from profold2.model.evoformer import *
 from profold2.model.head import HeaderBuilder
 from profold2.model.mlm import MLM
@@ -77,9 +78,10 @@ class Alphafold2(nn.Module):
         super().__init__()
 
         self.dim = dim
+        dim_single, dim_pairwise = embedd_dim_get(dim)
 
         # token embedding
-        self.token_emb = nn.Embedding(num_tokens + 1, dim) if not disable_token_embed else Always(0)
+        self.token_emb = nn.Embedding(num_tokens + 1, dim_single) if not disable_token_embed else Always(0)
         self.disable_token_embed = disable_token_embed
         self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
@@ -96,7 +98,7 @@ class Alphafold2(nn.Module):
 
         # template embedding
         self.template_embedding = TemplateEmbedding(
-                dim = dim,
+                dim = dim_single,
                 dim_head = dim_head,
                 heads = heads,
                 attn_dropout = attn_dropout,
@@ -105,7 +107,7 @@ class Alphafold2(nn.Module):
                 templates_angles_feats_dim = templates_angles_feats_dim)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(embedd_dim, dim)
+        self.embedd_project = nn.Linear(embedd_dim, dim_single)
 
         self.sequence = ESMEmbedding(*esm.ESM_MODEL_PATH)
 
@@ -122,7 +124,7 @@ class Alphafold2(nn.Module):
         # MSA SSL MLM
 
         self.mlm = MLM(
-            dim = dim,
+            dim = dim_single,
             num_tokens = num_tokens,
             mask_id = num_tokens, # last token of embedding is used for masking
             mask_prob = mlm_mask_prob,
@@ -132,8 +134,8 @@ class Alphafold2(nn.Module):
         )
 
         # recycling params
-        self.recycling_msa_norm = nn.LayerNorm(dim)
-        self.recycling_pairwise_norm = nn.LayerNorm(dim)
+        self.recycling_msa_norm = nn.LayerNorm(dim_single)
+        self.recycling_pairwise_norm = nn.LayerNorm(dim_pairwise)
 
         self.headers = HeaderBuilder.build(dim, headers, parent=self)
 
@@ -323,8 +325,9 @@ class Alphafold2WithRecycling(nn.Module):
         b, n, device = *seq.shape[:2], seq.device
         # FIXME: fake recyclables
         if 'recyclables' not in batch:
-            batch['recyclables'] = Recyclables(single_msa_repr_row=torch.zeros(b, n, self.impl.dim, device=device),
-                        pairwise_repr=torch.zeros(b, n, n, self.impl.dim, device=device))
+            dim_single, dim_pairwise = embedd_dim_get(self.impl.dim)
+            batch['recyclables'] = Recyclables(single_msa_repr_row=torch.zeros(b, n, dim_single, device=device),
+                        pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device))
 
         ret = ReturnValues()
         if self.training:

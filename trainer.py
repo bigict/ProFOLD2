@@ -5,7 +5,6 @@
      for further help.
 """
 import os
-import argparse
 import copy
 import functools
 import json
@@ -164,7 +163,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         shuffle=True,
         num_workers=0)
 
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
+  def data_cond(batch):
+    return (args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len)
+
   train_data = cycling(train_loader, data_cond)
   if args.tuning_data:
     tuning_data = cycling(tuning_loader, data_cond)
@@ -396,6 +398,8 @@ def main(args):  # pylint: disable=redefined-outer-name
   listener.stop()
 
 if __name__ == '__main__':
+  import argparse
+
   parser = argparse.ArgumentParser()
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
@@ -468,8 +472,8 @@ if __name__ == '__main__':
       help='json format headers of model, default=model_headers_main.json')
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in model, default=0')
-  parser.add_argument('--model_dim', type=int, default=256,
-      help='dimension of model, default=256')
+  parser.add_argument('--model_dim', type=int, nargs=2, default=(256, 256),
+      help='dimension of model, default=(256, 256)')
   parser.add_argument('--model_embedd_dim', type=int,
       default=esm.ESM_EMBED_DIM,
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')

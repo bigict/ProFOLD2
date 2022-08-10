@@ -9,6 +9,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import functional, folding
+from profold2.model.commons import embedd_dim_get
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -126,16 +127,17 @@ class CoevolutionHead(nn.Module):
     """
     def __init__(self, dim, mask='-', gammar=0.0, loss_min=None, loss_max=None):
         super().__init__()
+        dim_single, dim_pairwise = embedd_dim_get(dim)
 
         num_class = len(residue_constants.restypes_with_x_and_gap)
         self.single= nn.Sequential(
-                nn.Linear(dim, dim),
+                nn.Linear(dim_single, dim_single),
                 nn.GELU(),
-                nn.LayerNorm(dim),
-                nn.Linear(dim, num_class))
+                nn.LayerNorm(dim_single),
+                nn.Linear(dim_single, num_class))
         self.pairwize = nn.Sequential(
-                nn.LayerNorm(dim),
-                nn.Linear(dim, num_class**2))
+                nn.LayerNorm(dim_pairwise),
+                nn.Linear(dim_pairwise, num_class**2))
         self.mask = mask
 
         self.gammar = gammar
@@ -290,6 +292,7 @@ class DistogramHead(nn.Module):
     def __init__(self, dim,
             buckets_first_break, buckets_last_break, buckets_num):
         super().__init__()
+        _, dim = embedd_dim_get(dim)
 
         self.num_buckets = buckets_num
         self.buckets = torch.linspace(buckets_first_break, buckets_last_break, steps=buckets_num-1)
@@ -562,6 +565,7 @@ class LDDTHead(nn.Module):
     """
     def __init__(self, dim, buckets_num=50, min_resolution=.0, max_resolution=sys.float_info.max):
         super().__init__()
+        dim, _ = embedd_dim_get(dim)
 
         self.net = nn.Sequential(
                 nn.LayerNorm(dim),
@@ -629,6 +633,7 @@ class MaskedLMHead(nn.Module):
     """
     def __init__(self, dim):
         super().__init__()
+        del dim
 
     def forward(self, headers, representations, batch):
         assert 'mlm' in representations
@@ -678,6 +683,7 @@ class MetricDictHead(nn.Module):
     """
     def __init__(self, dim, **kwargs):
         super().__init__()
+        del dim
 
         self.params = kwargs
 
@@ -751,6 +757,7 @@ class SequenceProfileHead(nn.Module):
     """
     def __init__(self, dim, input_dim=None, single_repr=None, loss_func='CrossEntropy'):
         super().__init__()
+        dim, _ = embedd_dim_get(dim)
 
         if not exists(input_dim):
             input_dim = dim
@@ -807,6 +814,7 @@ class TMscoreHead(nn.Module):
     """
     def __init__(self, dim, num_atoms=3):
         super().__init__()
+        del dim
 
         self.num_atoms = num_atoms
         assert self.num_atoms in [3, 14]
