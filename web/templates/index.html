@@ -1,0 +1,79 @@
+{% extends "layout-sidebar.html" %}
+
+{% block title %}{{ super() }}server - {{ app.name }} submit{% endblock %}
+
+{% block form %}
+            <h2>FALCON<big>2</big>/{{ app.name }} - Submit</h2>
+            <br>
+            <h3>Input Sequences:</h3>
+            <form name="input_job" action="#" method="post" target="_self" enctype="multipart/form-data">
+            <div class="row">
+                <div>
+                    <label for="sequence_input"> <font size="3px">Paste protein sequences<br> in FASTA format: </font> </label>
+                </div>
+                <div class="formw">
+                    <textarea id="sequence_input" maxlength="500000" name="sequences" wrap="virtual">{% if args %}{{ args.sequences | trim }}{% endif %}</textarea>
+                </div>
+            </div>
+{% if errors %}
+            <div id='error'>
+                  <ul>
+    {% for error in errors %}
+                    <li><font color="red">{{ error }}</font></li>
+    {% endfor %}
+                  </ul>
+            </div>
+{% endif %}
+            <br><br><br>
+            <div class="row">
+                <div class="">
+                    <label for="sequence_file"> <font size="3px">or upload a file: </font></label>
+                </div>
+                <div class="formw">
+                    <input id="sequence_file" maxlength="500000" name="sequence_file" type="file" accept="text/plain,.fasta,.fa" style="background-color:#C8C8C8;" >
+                </div>
+            </div>
+
+            <br><br><br>
+            <div class="row">
+                <div>
+                    <label for="job_input"> <font size="3px">Job ID:</font> </label>
+                </div>
+                <div class="formw">
+                    <input type="text" id="job_input"  name="job_id" size="10" value="{% if args %} {{ args.job_id }} {% endif %}"/>(leave empty for automatic creation)
+                </div>
+            </div>
+            <br><br><br>
+            <div class="row">
+                <div class="">
+                    <label for="email_input"> <font size="3px">Email Address (Optional): </font></label>
+                </div>
+                <div class="formw">
+                    <input type="text" id="email_input" name="email" value="{% if args %} {{ args.email }} {% endif %}"/>
+                </div>
+                <p>
+                <br><br>
+                <div class="formw">
+                    <center>
+                    <input type="reset" name="reset" value="Reset form" style="background-color:#33ccff;"/>
+                    <input type="submit" name="submit" value="Submit job" style="background-color:#00cc99;"/>
+                    </center>
+                </div>
+                <div class="">
+                    <label> <font size="3px">
+                    <br>
+                    Reference:
+                    <br>
+                  <br>
+                    Kong, L., Ju, F., Zheng, W. M., Sun, S., Xu, J., & Bu, D. (2020). ProALIGN: Directly learning alignments for pro    tein structure prediction via exploiting context-specific alignment motifs. RECOMB2021.<a href="lib/proalign.pdf" target="_black" >[pdf]</a> <a href="lib/proalign.bib" target="_black">[cite]</a>
+                    <br>
+                    Ju, F., Zhu, J., Shao, B., Kong, L., Liu, T. Y., Zheng, W. M., & Bu, D. (2020). CopulaNet: Learning residue co-e    volution directly from multiple sequence alignment for protein structure prediction. Nature communications, 12(1), 1-9.<a href="lib/profold.pdf" target="_black" >[pdf]</a><a href="lib/profold.bib" target="_black">[cite]</a>
+                    <br>
+                    Wang, C., et al. (2015). FALCON@home: a high-throughput protein structure prediction server based on remote homologue recognition. Bioinformatics, 32(3), 462-464.<a href="lib/falcon.pdf" target="_black">[pdf]</a> <a href="lib/falcon.bib" target="_black">[cite]</a>
+                 </font></label>
+                 </div>
+
+            </div>
+            <input type="hidden" name="_SUBMIT_CHECK_INPUT" value="2"/>
+            </form>
+{% endblock %}

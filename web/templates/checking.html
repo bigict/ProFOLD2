@@ -1,0 +1,177 @@
+{% extends "layout-sidebar.html" %}
+
+{% if not refresh %}
+    {% set refresh = 30 %}
+{% endif %}
+
+{% block title %}server - {{ app.name }} checking {% endblock %}
+{% block meta %}
+{{ super() }}
+{% if job.status != "Done" %}
+<meta http-equiv="refresh" content="{{ refresh }}" >
+{% endif %}
+{% endblock %}
+
+{% block form %}
+        <h2>FALCON<big>2</big>/{{ app.name }} - Checking</h2>
+
+        <!-- Specifications of the Job -->
+        <div class="block">
+            <table>
+                <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Job information</font></h4></th></tr>
+            </table>
+{% if job %}
+            <div class="row">
+                <div class="left" style="text-align: left; position: absolute;"><label>Job ID: </label> </div>
+                <div class='right' style='right: 100px; position: relative'>
+                    <select id="job_select" style="font-size:100%">
+                    <option selected>{{ job.job_id }}</option>
+                    </select>
+                    &nbsp;&nbsp;<a href="{{ module }}/submit/{{ job.job_id }}/">Resubmit</a>
+                </div>
+                <script>
+                    $(function() {
+                        var job_ids = window.localStorage.getItem("{{ app.id }}_job_id")
+                        if (job_ids) {
+                            job_ids = JSON.parse(job_ids);
+                        } else {
+                            job_ids = {};
+                        }
+
+                        job_ids["{{job.job_id}}"] = 1;
+                        window.localStorage.setItem("{{ app.id }}_job_id", JSON.stringify(job_ids));
+
+                        var job_select=$("#job_select");
+                        $.each(job_ids, function(key, value) {
+                            if ($.trim(key) != "" && key != "{{ job.job_id }}") {
+                                $("<option>" + key + "</option>").appendTo(job_select);
+                            }
+                        });
+
+                        $(job_select).on("change", function(e) {
+                            var s = e.target;
+                            var id = s.options[s.selectedIndex].text;
+                            if (id != "") {
+                                window.location.href="{{ module }}/checking/" + id + "/?app={{ app.id }}";
+                            }
+                        });
+
+                        var seconds = {{ refresh }};
+                        var count = setInterval(function() {
+                            if (seconds <= 0) {
+                                clearInterval(count);
+                            } else {
+                                $("#countdown").html(seconds);
+                                --seconds;
+                            }
+                        }, 1000);
+                    });
+                </script>
+            </div>
+            <br>
+
+            <div class="row">
+                <div class="left" style="text-align: left; position: absolute;"><label> Submission Time: </label> </div>
+                <div class="right" style="right: 100px; position: relative;">{{ job.time_create }}</div>
+            </div>
+    {% if job.time_run %}
+            <div class="row">
+                <div class="left" style="text-align: left; position: absolute;"><label> Running Time: </label> </div>
+                <div class="right" style="right: 100px; position: relative;">{{ job.time_run }}</div>
+            </div>
+    {% endif %}
+    {% if job.time_done %}
+            <div class="row">
+                <div class="left" style="text-align: left; position: absolute;"><label> Finished Time: </label> </div>
+                <div class="right" style="right: 100px; position: relative;">{{ job.time_done }}</div>
+            </div>
+    {% endif %}
+{% endif %}
+        </div>
+        <br>
+        <br>
+        <!-- End of specification -->
+        
+        <!-- Waiting for results -->
+        <div class="block">
+                <table>
+                    <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Job status</font></h4></th></tr>
+                </table>
+                <div class="row">
+                    <p>    <strong>Your job is currently being processed, please be patient. The results of your job will appear in this browser window!
+                    </strong>
+                    <br />(You may <a href="javascript:void(0);" title="bookmark" onclick="addFavorite(window.location, document.title);">bookmark</a> this page to view your results later if you wish.)</p>
+                </div>
+
+                <div class="row">
+                    <div class="left" style="text-align: left; position: absolute;"><label> Current Status:</label></div>
+                    <div class="right {{ status_css(job.status) }}"  style="right: 100px; position: relative;">{{ job.status }}</div>
+                </div>
+{% if job.status !="Done" %}
+            <form action="">
+                <br>                
+                <div class = "row">
+                    <div class="left" style="text-align: left; position: absolute;"><label> Next Check:</label></div>
+                    <div class="right" style="right: 100px; position: relative;"><span class="text-success" id="countdown">{{ refresh }}</span> seconds</div>
+                </div>    
+                 <br>    
+                <div class = "row" style="right: 100px; position: relative;">
+                    <div id="check_">
+                        <input type="hidden", name="app", value="{{ app.id }}"/>
+                        <input type="hidden", name="id", value="{{ job.job_id }}"/>
+                        <input type="submit" name="check" style="background-color:#00cc99; padding:8px 10px 8px 10px; font-size:12px; color:white" value="Check Now"> </input>
+                    </div>
+                </div>
+            </form>
+{% endif %}
+        </div>
+
+        <div class="block"> <!-- List all tasks begin -->
+            <table>
+                <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Status of each protein</font></h4></th></tr>
+            </table>
+
+        <table>
+            <tr>
+                <td> Index </td>
+                <td> Protein ID </td>
+                <td> Submission Time </td>
+                <td> Start Time </td>
+                <td> End Time </td>
+                <td> Status </td>
+                <td> Results </td>
+            </tr>
+{% if job  %}
+    {% for task in job.tasks  %}
+            <tr>
+                <td> {{ loop.index }} </td>
+                <td> {{ task.description }} </td>
+                <td> {% if task.time_create %} {{ task.time_create }} {% else %} -- {% endif %}</td>
+                <td> {% if task.time_run %} {{ task.time_run }} {% else %} -- {% endif %}</td>
+                <td> {% if task.time_done %} {{ task.time_done }} {% else %} -- {% endif %}</td>
+                <td class="{{ status_css(task.status) }}"> {{ task.status }} </td>
+                <td>
+        {% if task.status == "Done" %}
+                    <a href="{{ module }}/result/{{ job.job_id }}/{{ task.id }}/?app={{ app.id }}" title="head">Show Result</a>
+        {% else %}
+                    --
+        {% endif %}
+                </td>
+            </tr>
+    {% endfor %}
+{% endif %}
+        </table>
+        </div> <!-- List all tasks end -->      
+        <!-- End of waiting -->
+
+        <!-- Begin of Status Log -->
+        <div class="block">
+            <table>
+                <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Job logs</font></h4></th></tr>
+            </table>
+            <div class="statuslog">
+{% if job %}{{ job.logs }}{% endif %}
+            </div>
+        </div>
+        <!-- End of Status Log -->
+{% endblock %}

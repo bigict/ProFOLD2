@@ -1,0 +1,151 @@
+ <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+ <html xmlns="http://www.w3.org/1999/xhtml">
+ <head>
+    {% block meta %}
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <meta name="keywords" content="Falcon, Protein Structure Prediction"/>
+    <meta name="description" content="Falcon Server"/>
+    {% endblock %}
+
+    <title> FALCON2 | {% block title %}{% endblock %}</title>
+
+    {% block stylesheet %}
+    <!-- animate css -->
+    <link rel="stylesheet" href="{{ module }}/css/animate.min.css"/>
+    <!-- bootstrap css -->
+    <link rel="stylesheet" href="{{ module }}/css/bootstrap.min.css"/>
+    <!-- font-awesome -->
+    <link rel="stylesheet" href="{{ module }}/css/font-awesome.min.css"/>
+    <!-- google font -->
+    <link rel='stylesheet' id='zerif_style-css'  href='{{ module }}/css/style.css' type='text/css' media='all' />
+    <!-- custom css -->
+    <link rel="stylesheet" href="{{ module }}/css/templatemo-style.css">
+    <link href="{{ module }}/style.css" rel="stylesheet" type="text/css" />
+    <link href="{{ module }}/stylesheet/form.css" media="all" type="text/css" rel="stylesheet" />
+    <link href="{{ module }}/stylesheet/waiting.css" media="all" type="text/css" rel="stylesheet" />
+    <link href="{{ module }}/stylesheet/styles_tuebingen.css" media="all" type="text/css" rel="stylesheet" />
+    {% endblock %}
+
+    {% block javascript %}
+    <script type="text/javascript" src="{{ module }}/js/jquery3.3.0.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/cufon-yui.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/georgia.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/cuf_run.js"></script>
+
+    <script type="text/javascript" src="{{ module }}/js/drop.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/prompt.js"></script>
+    <!--[if IE 6]>
+    <script src="{{ module }}/js/DD_belatedPNG_0.0.8a-min.js"></script>
+    <script>
+      /* EXA MPLE */
+      DD_belatedPNG.fix('.logo img');
+
+     </script>
+     <![endif]-->
+    <script type="text/javascript" src="{{ module }}/js/bootstrap.min.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/wow.min.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/jquery.singlePageNav.min.js"></script>
+    <script type="text/javascript" src="{{ module }}/js/custom.js"></script>
+
+    <link rel="icon" href="{{ module }}/images/FALCON_icon.png" type="image/x-icon">
+    {% endblock %}
+    {% macro status_css(status) %}
+        {% if status == "Done" %}text-success{% elif status == "Error"%}text-danger{% elif status == "Running" %}text-warning{% else %}text-primary{% endif %}
+    {% endmacro %}
+</head>
+<body>
+    <!-- start preloader -->
+    {% block preloader %}
+    <div class="preloader">
+        <div class="sk-spinner sk-spinner-rotating-plane"></div>
+    </div>
+    {% endblock %}
+    <!-- end preloader -->
+
+    <!-- start navigation -->
+    {% block navigation %}
+    <div id="main-nav" class="navbar navbar-inverse bs-docs-nav" role="banner">
+
+        <div class="container">
+
+            <div class="navbar-header responsive-logo">
+
+                <button class="navbar-toggle" data-toggle="collapse" data-target=".bs-navbar-collapse" aria-expanded="false" aria-controls="falcon_collapse">
+                <span class="sr-only">Toggle navigation</span>
+                <span class="icon-bar"></span>
+                <span class="icon-bar"></span>
+                <span class="icon-bar"></span>
+                </button>
+
+                <a href="" class="navbar-brand">
+                    <img src="{{ module }}/logo/FALCON2_logo.jpg" width="200px" alt="FALCON2">
+                </a>
+
+            </div>
+            <div class= "collapse navbar-collapse bs-navbar-collapse" id="falcon_collapse">
+                        <ul id="menu-main" class="nav navbar-nav navbar-right responsive-nav main-nav-list">
+                            <li id="menu-item-41" class="menu-item menu-item-type-custom menu-item-object-custom current-menu-item menu-item-41">
+                                <a href="/#home">Home</a>
+                            </li>
+                            <li id="menu-item-321" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-321">
+                                <a href="/#focus">Benefits</a>
+                            </li>
+                            <li id="menu-item-12" class="menu-item menu-item-type-custom menu-item-object-custom current-menu-item menu-item-12">
+                                <a href="/#feature">Features</a>
+                            </li>
+                            <li id="menu-item-22" class="menu-item menu-item-type-custom menu-item-object-custom current-menu-item menu-item-22">
+                                <a href="/#pricing">News</a>
+                            </li>
+                            <li id="menu-item-13" class="dropdown menu-item menu-item-type-custom menu-item-object-custom current-menu-item current_page_item menu-item-has-children menu-item-13 has_children">
+                                <a id="Server_Tab" href="#" class="dropdown-toggle" data-toggle="dropdown" data-hover="dropdown">Server</a>
+                                <ul class="dropdown-menu">
+{% for a in app_list %}
+                                    <li id="menu-item-4{{ loop.index }}" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-4{{ loop.index }}">
+                                        <a href="{{ module }}/index?app={{ a.id }}">{{ a.name }}</a>
+                                    </li>
+{% endfor %}
+                                    <li id="menu-item-49" class="menu-item menu-item-type-post_type menu-item-object-page menu-item-44">
+                                        <a href="/serve/results_new.php?jobid=1ctfA_2021_1">Example</a>
+                                    </li>
+                                </ul>
+                            </li>
+                            <li id="menu-item-73" class="menu-item menu-item-type-custom menu-item-object-custom current-menu-item  menu-item-73">
+                                <a href="/#contact">Contact</a>
+                            </li>
+
+                            <li id="menu-item-73" class="menu-item menu-item-type-custom menu-item-object-custom current-menu-item  menu-item-73">
+                                <form name="job_search_form" method="post" action="{{ module }}/search/">
+                                    <span>
+                                    <input type="hidden" name="_SUBMIT_JOB_SEARCH" value="1">
+                                    <input name="job_search" type="text" class="grayTips" id="job_search" value="{{ job_search | default('job_ID or email') }}" style="width:140px;height:30px"/>
+                                    </span>
+                                    <input name="b" type="image" src="{{ module }}/images/search.jpg" class="image" style="height:25px" />
+                                </form>
+                            </li> 
+                     </ul>
+                </div>
+        </div>
+    </div>
+    {% endblock %}
+    <!-- end navigation -->
+
+    <!-- start content -->
+    {% block content %}
+    {% endblock %}
+    <!-- end content -->
+
+    <!-- start footer -->
+    {% block footer %}
+    <footer>
+        <div class="container">
+            <div class="row">
+            <p>&copy; Copyright 2010 - 2022 <a href="#" title="ICT" target="_blank"> Bioinformatics lab, </a>  <a href="http://www.ict.ac.cn" title="ICT" target="_blank"> Institute of Computing Technology, Chinese Academy of Sciences</a></p>
+            </div>
+        </div>
+    </footer>
+    {% endblock %}
+    <!-- end footer -->
+</body>
+</html>

@@ -271,12 +271,12 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       if field in batch:
         del batch[field]
     return batch
-  def batch_with_pseudo_beta(batch):
-    batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
-      if field in batch:
-        del batch[field]
-    return batch
+  # def batch_with_pseudo_beta(batch):
+  #   batch = copy.copy(batch)
+  #   for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
+  #     if field in batch:
+  #       del batch[field]
+  #   return batch
   def batch_with_coords(batch):
     return batch
 

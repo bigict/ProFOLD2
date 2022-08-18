@@ -2,6 +2,7 @@
 import contextlib
 from functools import wraps
 from inspect import isfunction
+import time
 import uuid
 
 import numpy as np
@@ -20,6 +21,14 @@ def unique_id():
     """Generate a unique ID as specified in RFC 4122."""
     # See https://docs.python.org/3/library/uuid.html
     return str(uuid.uuid4())
+
+@contextlib.contextmanager
+def timing(msg, print_func, prefix=''):
+    print_func(f'{prefix}Started {msg}')
+    tic = time.time()
+    yield
+    toc = time.time()
+    print_func(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
 
 # decorators
 
