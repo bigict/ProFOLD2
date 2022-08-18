@@ -482,7 +482,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
 
     return rigids_multiply(rigids_rearrange(backb_frames, 'b l ... -> b l () ...'), atom_frames)
 
-def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, clamp_distance=None, dij_weight=None, epsilon=1e-8):
+def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, clamp_distance=None, dij_weight=None, use_weighted_mask=True, epsilon=1e-8):
     """ FAPE(Frame Aligined Point Error) - Measure point error under different alignments
     """
     # Shape (b, l, 3, 3), (b, l, 3)
@@ -513,9 +513,14 @@ def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points
     if clamp_distance:
         dij = torch.clip(dij, 0, clamp_distance)
     dij_mask = rearrange(frames_mask, '... i -> ... i ()') * rearrange(points_mask, '... j -> ... () j')
-    dij_weight = default(dij_weight, 1.0)
 
-    return masked_mean(value=dij*dij_weight, mask=dij_mask, epsilon=epsilon)
+    dij_weight = default(dij_weight, 1.0)
+    if use_weighted_mask:
+        dij_mask = dij_mask * dij_weight
+    else:
+        dij *= dij_weight
+
+    return masked_mean(value=dij, mask=dij_mask, epsilon=epsilon)
 
 def between_ca_ca_distance_loss(pred_points, points_mask, residue_index, tau=1.5, epsilon=1e-6):
     assert pred_points.shape[-1] == 3

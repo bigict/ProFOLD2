@@ -277,6 +277,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       if field in batch:
         del batch[field]
     return batch
+  def batch_with_coords(batch):
+    return batch
 
   # training loop
   for it in range(global_step, args.num_batches):
@@ -293,13 +295,13 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     if (args.tuning_data and
         args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
       _step(tuning_data, it, writer, stage='tuning',
-          batch_callback=(batch_with_pseudo_beta
+          batch_callback=(batch_with_coords
               if args.tuning_with_coords else batch_seq_only))
 
     if (args.fake_data and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
       _step(cycling(fake_loader), it, writer, stage='fake',
-          batch_callback=(batch_with_pseudo_beta
+          batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))
 
     if (args.eval_data and (not args.gpu_list or rank == 0) and

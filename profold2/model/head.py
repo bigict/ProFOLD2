@@ -109,7 +109,7 @@ class ContactHead(nn.Module):
                 plddt_weight = torch.minimum(
                         rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
                         rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
-                if batch.get('coord_plddt_mask', True):
+                if batch.get('coord_plddt_use_weighted_mask', True):
                     square_mask *= plddt_weight
                 else:
                     square_weight = plddt_weight
@@ -410,7 +410,8 @@ class FoldingHead(nn.Module):
                 r = functional.fape(
                         pred_frames, true_frames, frames_mask,
                         pred_points, true_points, frames_mask,
-                        self.fape_max, dij_weight=dij_weight)/self.fape_z
+                        self.fape_max, dij_weight=dij_weight,
+                        use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False))/self.fape_z
                 logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r.item())
                 yield r
 
@@ -428,6 +429,19 @@ class FoldingHead(nn.Module):
             def mask_to_fape_shape(masks):
                 return rearrange(masks, '... i c -> ... (i c)')
 
+            dij_weight = None
+            if 'coord_plddt' in batch:
+                # (N, 8, 3, 14)
+                group_atom14_idx = F.one_hot(
+                        functional.batched_gather(residue_constants.restype_rigid_group_atom14_idx, batch['seq']),
+                        residue_constants.atom14_type_num)
+                # (N, 8)
+                group_atom14_plddt = torch.amin(
+                        torch.einsum('... g m n, ... n -> ... g m', group_atom14_idx.float(), batch['coord_plddt']),
+                        dim=-1)
+                dij_weight = torch.minimum(
+                        rearrange(mask_to_fape_shape(group_atom14_plddt), '... i -> ... i ()'),
+                        rearrange(mask_to_fape_shape(batch['coord_plddt']), '... j -> ... () j'))
             with torch.no_grad():
                 true_frames = default(true_frames, pred_frames)
                 true_points = default(true_points, pred_points)
@@ -439,7 +453,8 @@ class FoldingHead(nn.Module):
                     points_to_fape_shape(pred_points),
                     points_to_fape_shape(true_points),
                     mask_to_fape_shape(point_mask),
-                    self.fape_max)/self.fape_z
+                    self.fape_max, dij_weight=dij_weight,
+                    use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False))/self.fape_z
             logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r.item())
             return r
 
