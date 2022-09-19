@@ -1,3 +1,5 @@
+import functools
+
 from torch import nn
 
 from profold2.model.commons import *
@@ -106,7 +108,7 @@ class EvoformerBlock(nn.Module):
             FeedForward(dim = dim_single, dropout = ff_dropout),
         ])
 
-    def forward(self, inputs):
+    def forward(self, inputs, shard_size=None):
         x, m, mask, msa_mask = inputs
         attn, ff, msa_attn, msa_ff = self.layer
 
@@ -115,7 +117,7 @@ class EvoformerBlock(nn.Module):
         m = msa_ff(m) + m
 
         # pairwise attention and transition
-        x = attn(x, mask = mask, msa_repr = m, msa_mask = msa_mask)
+        x = attn(x, mask=mask, msa_repr=m, msa_mask=msa_mask, shard_size=shard_size)
         x = ff(x) + x
 
         return x, m, mask, msa_mask
@@ -135,8 +137,10 @@ class Evoformer(nn.Module):
         x,
         m,
         mask = None,
-        msa_mask = None
+        msa_mask = None,
+        shard_size = None
     ):
         inp = (x, m, mask, msa_mask)
-        x, m, *_ = checkpoint_sequential_nargs(self.layers, len(self.layers), inp)
+        x, m, *_ = checkpoint_sequential_nargs(self.layers, len(self.layers), inp,
+                shard_size=shard_size)
         return x, m

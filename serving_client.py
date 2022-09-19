@@ -37,7 +37,10 @@ def main(args):  # pylint: disable=redefined-outer-name
     with open(fasta_file, 'r', encoding='utf-8') as f:
       fasta_str = f.read()
     r = requests.post(args.uri,
-        data=dict(body=fasta_str, fmt=args.fasta_fmt), timeout=7200)
+                      data=dict(body=fasta_str, fmt=args.fasta_fmt,
+                                num_recycle=args.model_recycles,
+                                shard_size=args.model_shard_size),
+                      timeout=7200)
     if r.status_code != 200:
       logger.error('Request: %s error: %s', fasta_file, r.status_code)
     else:
@@ -115,6 +118,10 @@ if __name__ == '__main__':
   parser.add_argument('--fasta_fmt', type=str, default='single',
       choices=['single', 'a3m', 'a4m'],
       help='format of fasta files')
+  parser.add_argument('--model_recycles', type=int, default=0,
+      help='number of recycles in model, default=0')
+  parser.add_argument('--model_shard_size', type=int, default=None,
+      help='shard size in evoformer model, default=None')
   parser.add_argument('--multi_model_format', action='store_true',
       help='dump multi model format pdb files')
   parser.add_argument('--dump_pdb', action='store_true', help='dump pdb files')

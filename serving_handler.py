@@ -99,20 +99,25 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     logger.info('initialized.')
 
   def preprocess(self, data):
-    def _bytes_to_text(data):
-      f = io.TextIOWrapper(io.BytesIO(data))
-      return f.read()
+    def _data_to_text(data):
+      # If the data is sent as bytesarray
+      if isinstance(data, (bytearray, bytes)):
+        f = io.TextIOWrapper(io.BytesIO(data))
+        return f.read()
+      return data
 
-    sequences, descriptions, msa = [], [], []
+    sequences, descriptions, msa, kwargs = [], [], [], []
 
     for row in data:
       logger.info('%s', row.keys())
-      fasta = row.get('data') or row.get('body')
-      # If the image is sent as bytesarray
-      if isinstance(fasta, (bytearray, bytes)):
-        fasta = _bytes_to_text(fasta)
+      fasta = _data_to_text(row.get('data') or row.get('body'))
+      params = {'num_recycle': 2, 'shard_size': None}
+      if 'num_recycle' in row:
+        params['num_recycle'] = int(row['num_recycle'])
+      if 'shard_size' in row:
+        params['shard_size'] = int(row['shard_size'])
 
-      fmt = _bytes_to_text(row['fmt']) if 'fmt' in row else 'single'
+      fmt = _data_to_text(row['fmt']) if 'fmt' in row else 'single'
       assert fmt in ('single', 'a3m', 'a4m')
       if fmt == 'a4m':
         s = fasta.splitlines()
@@ -122,11 +127,13 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
       if fmt == 'single':
         sequences += s
         descriptions += d
-        msa += [None]
+        msa += [None] * len(s)
+        kwargs += [params] * len(s)
       else:
         sequences += s[:1]
         descriptions += d[:1]
         msa += [s]
+        kwargs += [params]
 
     dataset = ProteinSequenceDataset(sequences, descriptions, msa=msa)
     loader = torch.utils.data.DataLoader(dataset,
@@ -134,7 +141,7 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
             feat_builder=self.feat_builder),
         batch_size=1,
         shuffle=False)
-    return [batch for batch in iter(loader)]  # pylint: disable=unnecessary-comprehension
+    return [(batch, params) for batch, params in zip(iter(loader), kwargs)]  # pylint: disable=unnecessary-comprehension
 
   def inference(self, data, *args, **kwargs):
     del args
@@ -143,9 +150,9 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     results = []
 
     with torch.no_grad():
-      for i, batch in enumerate(iter(data)):
-        logger.info('inference: i=%d, batch=%s', i, batch)
-        r =  self.model(batch)
+      for i, (batch, kwargs) in enumerate(iter(data)):
+        logger.info('inference: i=%d, batch=%s, kwargs=%s', i, batch, kwargs)
+        r =  self.model(batch, **kwargs)
         logger.info(r)
         results.append((i, batch, ReturnValues(**r)))
 

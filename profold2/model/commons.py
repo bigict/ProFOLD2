@@ -7,6 +7,7 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
+from profold2.model import functional
 from profold2.utils import default, exists
 
 # helpers
@@ -128,8 +129,8 @@ class Attention(nn.Module):
 
         # attention
 
-        dots = dots - dots.max(dim = -1, keepdims = True).values
-        attn = dots.softmax(dim = -1)
+        dots = dots - dots.max(dim=-1, keepdim=True).values
+        attn = dots.softmax(dim=-1)
         attn = self.dropout(attn)
 
         # aggregate
@@ -176,42 +177,47 @@ class AxialAttention(nn.Module):
             Rearrange('b i j h -> b h i j')
         ) if accept_edges else None
 
-    def forward(self, x, edges = None, mask = None):
+    def forward(self, x, edges=None, mask=None, shard_size=None):
         assert self.row_attn ^ self.col_attn, 'has to be either row or column attention, but not both'
-
-        b, h, w, d = x.shape
 
         x = self.norm(x)
 
         # axial attention
         if self.col_attn:
-            axial_dim = w
+            axial_dim = 2
             mask_fold_axial_eq = 'b h w -> (b w) h'
             input_fold_eq = 'b h w d -> (b w) h d'
             output_fold_eq = '(b w) h d -> b h w d'
 
         elif self.row_attn:
-            axial_dim = h
+            axial_dim = 1
             mask_fold_axial_eq = 'b h w -> (b h) w'
             input_fold_eq = 'b h w d -> (b h) w d'
             output_fold_eq = '(b h) w d -> b h w d'
 
-        x = rearrange(x, input_fold_eq)
+        def run_attn(x, mask, attn_bias):
+            b, h, w, d = x.shape
 
-        if exists(mask):
-            mask = rearrange(mask, mask_fold_axial_eq)
+            if exists(attn_bias):
+                attn_bias = repeat(attn_bias, 'b h i j -> (b x) h i j', x = x.shape[axial_dim])
+            tie_dim = x.shape[axial_dim] if self.global_query_attn else None
+
+            x = rearrange(x, input_fold_eq)
+            if exists(mask):
+                mask = rearrange(mask, mask_fold_axial_eq)
+            out = self.attn(x, mask = mask, attn_bias = attn_bias, tie_dim = tie_dim)
+            out = rearrange(out, output_fold_eq, h = h, w = w)
+            return out
 
         attn_bias = None
         if exists(self.edges_to_attn_bias) and exists(edges):
             attn_bias = self.edges_to_attn_bias(edges)
-            attn_bias = repeat(attn_bias, 'b h i j -> (b x) h i j', x = axial_dim)
 
-        tie_dim = axial_dim if self.global_query_attn else None
+        return functional.sharded_apply(run_attn, [x, mask], attn_bias,
+                shard_size=None if self.training else shard_size,
+                shard_dim=axial_dim,
+                cat_dim=axial_dim)
 
-        out = self.attn(x, mask = mask, attn_bias = attn_bias, tie_dim = tie_dim)
-        out = rearrange(out, output_fold_eq, h = h, w = w)
-
-        return out
 
 class TriangleMultiplicativeModule(nn.Module):
     def __init__(
@@ -295,19 +301,41 @@ class OuterMean(nn.Module):
         self.right_proj = nn.Linear(dim_single, dim_hidden)
         self.proj_out = nn.Linear(dim_hidden, dim_pairwise)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask=None, shard_size=None):
         x = self.norm(x)
         left = self.left_proj(x)
         right = self.right_proj(x)
-        outer = rearrange(left, 'b m i d -> b m i () d') * rearrange(right, 'b m j d -> b m () j d')
 
-        if exists(mask):
+        def run_outer_sum(left, right, mask):
+            outer = rearrange(left, 'b m i d -> b m i () d') * rearrange(right, 'b m j d -> b m () j d')
+            if exists(mask):
+                # masked mean, if there are padding in the rows of the MSA
+                mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()') > 0
+                outer = outer.masked_fill(~mask, 0.)
+            return outer.sum(dim=1, keepdim=True)
+        def run_mask_sum(mask):
             # masked mean, if there are padding in the rows of the MSA
             mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()') > 0
-            outer = outer.masked_fill(~mask, 0.)
-            outer = outer.mean(dim = 1) / (mask.sum(dim = 1) + self.eps)
+            return mask.sum(dim=1, keepdim=True)
+
+        outer = functional.sharded_apply(run_outer_sum, [left, right, mask],
+                shard_size=None if self.training else shard_size, shard_dim=1, cat_dim=1)
+        if exists(mask):
+            mask = functional.sharded_apply(run_mask_sum, [mask],
+                    shard_size=None if self.training else shard_size, shard_dim=1, cat_dim=1)
+            outer = outer.sum(dim=1)/(mask.sum(dim=1) + self.eps)
         else:
-            outer = outer.mean(dim = 1)
+            outer = outer.mean(dim=1)
+
+        # outer = rearrange(left, 'b m i d -> b m i () d') * rearrange(right, 'b m j d -> b m () j d')
+
+        # if exists(mask):
+        #     # masked mean, if there are padding in the rows of the MSA
+        #     mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(mask, 'b m j -> b m () j ()') > 0
+        #     outer = outer.masked_fill(~mask, 0.)
+        #     outer = outer.sum(dim = 1) / (mask.sum(dim = 1) + self.eps)
+        # else:
+        #     outer = outer.mean(dim = 1)
 
         return self.proj_out(outer)
 
@@ -318,7 +346,7 @@ class PairwiseAttentionBlock(nn.Module):
         heads,
         dim_head,
         dropout = 0.,
-        global_column_attn = False
+        global_column_attn = False,
     ):
         super().__init__()
 
@@ -337,15 +365,16 @@ class PairwiseAttentionBlock(nn.Module):
         x,
         mask = None,
         msa_repr = None,
-        msa_mask = None
+        msa_mask = None,
+        shard_size = None
     ):
         if exists(msa_repr):
-            x = x + self.outer_mean(msa_repr, mask = msa_mask)
+            x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
-        x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask = mask))
-        x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask = mask))
-        x = x + self.dropout_fn(self.triangle_attention_outgoing(x, edges = x, mask = mask))
-        x = x + self.dropout_fn(self.triangle_attention_ingoing(x, edges = x, mask = mask))
+        x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask=mask))
+        x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask=mask))
+        x = x + self.dropout_fn(self.triangle_attention_outgoing(x, edges=x, mask=mask, shard_size=shard_size))
+        x = x + self.dropout_fn(self.triangle_attention_ingoing(x, edges=x, mask=mask, shard_size=shard_size))
         return x
 
 class MsaAttentionBlock(nn.Module):
@@ -412,13 +441,13 @@ class PairwiseEmbedding(nn.Module):
 def checkpoint_sequential_nargs(functions, segments, input, **kwargs):
     # Hack for keyword-only parameter in a python 2.7-compliant way
     preserve = kwargs.pop('preserve_rng_state', True)
-    if kwargs:
-        raise ValueError("Unexpected keyword arguments: " + ",".join(arg for arg in kwargs))
+    # if kwargs:
+    #     raise ValueError("Unexpected keyword arguments: " + ",".join(arg for arg in kwargs))
 
     def run_function(start, end, functions):
         def forward(*input):
             for j in range(start, end + 1):
-                input = functions[j](input)
+                input = functions[j](input, **kwargs)
             return input
         return forward
 

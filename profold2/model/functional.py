@@ -25,6 +25,29 @@ def batched_gather(params, indices):
     ext = ' '.join(ext)
     return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
 
+def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0, **kwargs):
+    """Sharded apply.
+
+    Applies `fn` over shards to sharded_args
+    """
+    def run_fn(*sharded_args):
+        return fn(*(sharded_args + args), **kwargs)
+
+    def run_chunk(*sharded_args):
+        assert len(sharded_args) > 0 and exists(sharded_args[0])
+        batched_dim = sharded_args[0].shape[shard_dim]
+        assert all(map(lambda x: not exists(x) or x.shape[shard_dim] == batched_dim, sharded_args))
+        for slice_args in zip(*map(
+                lambda x: torch.split(x, shard_size, dim=shard_dim) if exists(x) else [None]*shard_size,
+                sharded_args)):
+            yield run_fn(*slice_args)
+
+    # shard size None denotes no sharding
+    if not exists(shard_size):
+        return run_fn(*sharded_args)
+
+    return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
+
 """
 The transformation matrices returned from the functions in this file assume
 the points on which the transformation will be applied are column vectors.
@@ -511,7 +534,7 @@ def fape(pred_frames, true_frames, frames_mask, pred_points, true_points, points
     dij = torch.sqrt(
             torch.sum((pred_xij - true_xij)**2, dim=-1) + epsilon)
     if clamp_distance:
-        dij = torch.clip(dij, 0, clamp_distance)
+        dij = torch.clamp(dij, 0, clamp_distance)
     dij_mask = rearrange(frames_mask, '... i -> ... i ()') * rearrange(points_mask, '... j -> ... () j')
 
     dij_weight = default(dij_weight, 1.0)

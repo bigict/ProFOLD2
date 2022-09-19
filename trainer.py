@@ -180,8 +180,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   model = worker_model(rank, Alphafold2(dim=args.model_dim,
                      depth=args.model_evoformer_depth,
-                     heads=8,
-                     dim_head=64,
+                     heads=args.model_evoformer_head_num,
+                     dim_head=args.model_evoformer_head_dim,
                      embedd_dim=args.model_embedd_dim,
                      attn_dropout=args.model_dropout,
                      headers=headers), args)
@@ -231,7 +231,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     model.train()
 
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
-    optim.zero_grad()
+    optim.zero_grad(set_to_none=True)
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
@@ -244,7 +244,9 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # sequence embedding (msa / esm / attn / or nothing)
-      r = ReturnValues(**model(batch=batch, num_recycle=args.model_recycles))
+      r = ReturnValues(**model(batch=batch,
+                               num_recycle=args.model_recycles,
+                               shard_size=args.model_shard_size))
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -481,6 +483,12 @@ if __name__ == '__main__':
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
       help='depth of evoformer in model, default=1')
+  parser.add_argument('--model_evoformer_head_num', type=int, default=8,
+      help='number of heads in evoformer model, default=8')
+  parser.add_argument('--model_evoformer_head_dim', type=int, default=64,
+      help='dimensions of each head in evoformer model, default=64')
+  parser.add_argument('--model_shard_size', type=int, default=None,
+      help='shard size in evoformer model, default=None')
   parser.add_argument('--model_dropout', type=float, default=0,
       help='dropout of evoformer in model, default=0')
 

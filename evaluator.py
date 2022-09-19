@@ -121,7 +121,8 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with torch.no_grad():
       r = ReturnValues(**model(batch=batch,
-                               num_recycle=args.model_recycles))
+                               num_recycle=args.model_recycles,
+                               shard_size=args.model_shard_size))
 
     if 'confidence' in r.headers:
       logging.info('%d pid: %s Confidence: %s',
@@ -264,6 +265,8 @@ if __name__ == '__main__':
 
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in profold2, default=0')
+  parser.add_argument('--model_shard_size', type=int, default=None,
+      help='shard size in evoformer model, default=None')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')

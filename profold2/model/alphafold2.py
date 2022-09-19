@@ -152,7 +152,8 @@ class Alphafold2(nn.Module):
         templates_mask = None,
         templates_angles = None,
         return_recyclables = False,
-        compute_loss = True
+        compute_loss = True,
+        shard_size = None
     ):
         seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
         msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
@@ -272,7 +273,8 @@ class Alphafold2(nn.Module):
             x,
             m,
             mask = x_mask,
-            msa_mask = msa_mask)
+            msa_mask = msa_mask,
+            shard_size = shard_size)
 
         # ready output container
         ret = ReturnValues()

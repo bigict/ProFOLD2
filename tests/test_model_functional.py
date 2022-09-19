@@ -14,6 +14,16 @@ class TestFunctional(unittest.TestCase):
     def setUp(self):
         self.data_dir = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), 'data/relax')
+    def test_sharded_apply(self):
+        def fn(A, c, d, b):
+            return torch.einsum('b i k,k j->b i j', A, b) + c
+        A = torch.rand(3, 10, 5)
+        b = torch.rand(5, 3)
+        c = torch.rand(3, 10, 3)
+        d = torch.rand(3, 10)
+        x1 = fn(A, c, d, b)
+        x2 = F.sharded_apply(fn, [A, c, d], b, shard_size=2)
+        self.assertTrue(torch.allclose(x1, x2))
 
     def test_lddt(self):
         params = [

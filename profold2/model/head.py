@@ -154,7 +154,7 @@ class CoevolutionHead(nn.Module):
 
         Returns:
          Dictionary containing:
-           * logits: logits for distogram, shape [N_res, N_res, N_bins].
+           * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
         """
         if self.training or 'msa' in batch:
             assert 'msa' in batch
@@ -177,7 +177,7 @@ class CoevolutionHead(nn.Module):
         return None
 
     def loss(self, value, batch):
-        """Log loss of a distogram."""
+        """Log loss of a msa rebuilding."""
         num_class = len(residue_constants.restypes_with_x_and_gap)
 
         logits = value['logits']
