@@ -5,13 +5,16 @@ import random
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data import esm
+from profold2.model.commons import embedd_dim_get
 from profold2.model.evoformer import *
 from profold2.model.head import HeaderBuilder
 from profold2.model.mlm import MLM
+from profold2.model.sequence import ESMEmbedding
 from profold2.utils import *
 
 @dataclass
@@ -75,9 +78,10 @@ class Alphafold2(nn.Module):
         super().__init__()
 
         self.dim = dim
+        dim_single, dim_pairwise = embedd_dim_get(dim)
 
         # token embedding
-        self.token_emb = nn.Embedding(num_tokens + 1, dim) if not disable_token_embed else Always(0)
+        self.token_emb = nn.Embedding(num_tokens + 1, dim_single) if not disable_token_embed else Always(0)
         self.disable_token_embed = disable_token_embed
         self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
@@ -94,7 +98,7 @@ class Alphafold2(nn.Module):
 
         # template embedding
         self.template_embedding = TemplateEmbedding(
-                dim = dim,
+                dim = dim_single,
                 dim_head = dim_head,
                 heads = heads,
                 attn_dropout = attn_dropout,
@@ -103,7 +107,9 @@ class Alphafold2(nn.Module):
                 templates_angles_feats_dim = templates_angles_feats_dim)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(embedd_dim, dim)
+        self.embedd_project = nn.Linear(embedd_dim, dim_single)
+
+        self.sequence = ESMEmbedding(*esm.ESM_MODEL_PATH)
 
         # main trunk modules
         self.evoformer = Evoformer(
@@ -118,7 +124,7 @@ class Alphafold2(nn.Module):
         # MSA SSL MLM
 
         self.mlm = MLM(
-            dim = dim,
+            dim = dim_single,
             num_tokens = num_tokens,
             mask_id = num_tokens, # last token of embedding is used for masking
             mask_prob = mlm_mask_prob,
@@ -128,8 +134,8 @@ class Alphafold2(nn.Module):
         )
 
         # recycling params
-        self.recycling_msa_norm = nn.LayerNorm(dim)
-        self.recycling_pairwise_norm = nn.LayerNorm(dim)
+        self.recycling_msa_norm = nn.LayerNorm(dim_single)
+        self.recycling_pairwise_norm = nn.LayerNorm(dim_pairwise)
 
         self.headers = HeaderBuilder.build(dim, headers, parent=self)
 
@@ -146,15 +152,51 @@ class Alphafold2(nn.Module):
         templates_mask = None,
         templates_angles = None,
         return_recyclables = False,
-        compute_loss = True
+        compute_loss = True,
+        shard_size = None
     ):
         seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
         msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
+        msa, msa_mask, msa_embed = None, None, None
         embedds, = map(batch.get, ('embedds',))
         recyclables, = map(batch.get, ('recyclables',))
 
+        # variables
+        b, n, device = *seq.shape[:2], seq.device
+
         assert not (self.disable_token_embed and not exists(seq_embed)), 'sequence embedding must be supplied if one has disabled token embedding'
         assert not (self.disable_token_embed and not exists(msa_embed)), 'msa embedding must be supplied if one has disabled token embedding'
+
+        representations = {}
+
+        # embed multiple sequence alignment (msa)
+        if not self.training and n > self.sequence.max_input_len:
+            embedds, contacts = [], torch.zeros((b, n, n), device=device)
+            for k in range(0, n, self.sequence.max_step_len):
+                i, j = k, min(k + self.sequence.max_input_len, n)
+                delta = 0 if i == 0 else self.sequence.max_input_len - self.sequence.max_step_len
+                if i > 0 and j < i + self.sequence.max_input_len:
+                    delta += i + self.sequence.max_input_len - n
+                    i = n - self.sequence.max_input_len
+                labels = self.sequence.batch_convert(
+                        [s[i:j] for s in batch['str_seq']], device=device)
+                x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=True)
+                embedds.append(x[...,delta:j-i,:])
+                contacts[...,i:j,i:j] = y
+                if j < k + self.sequence.max_input_len:
+                    break
+            embedds = torch.cat(embedds, dim=-2)
+        else:
+            labels = self.sequence.batch_convert(batch['str_seq'], device=device)
+            embedds, contacts = self.sequence(
+                        labels,
+                        repr_layer=esm.ESM_EMBED_LAYER,
+                        return_contacts=True)
+
+        representations['mlm'] = dict(representations=embedds,
+                contacts=contacts, labels=labels)
+
+        embedds = rearrange(embedds, 'b l c -> b () l c')
 
         # if MSA is not passed in, just use the sequence itself
         if not exists(embedds) and not exists(msa):
@@ -163,9 +205,6 @@ class Alphafold2(nn.Module):
 
         # assert on sequence length
         assert not exists(msa) or msa.shape[-1] == seq.shape[-1], 'sequence length of MSA and primary sequence must be the same'
-
-        # variables
-        b, n, device = *seq.shape[:2], seq.device
 
         # embed main sequence
         x = self.token_emb(seq)
@@ -234,12 +273,14 @@ class Alphafold2(nn.Module):
             x,
             m,
             mask = x_mask,
-            msa_mask = msa_mask)
+            msa_mask = msa_mask,
+            shard_size = shard_size)
 
         # ready output container
         ret = ReturnValues()
 
-        representations = {'pair': x, 'single': m[:, 0], 'single_init': m[:, 0]}
+        representations.update(pair=x, single=m[:, 0], single_init=m[:, 0])
+
         ret.headers = {}
         for name, module, options in self.headers:
             value = module(ret.headers, representations, batch)
@@ -250,11 +291,12 @@ class Alphafold2(nn.Module):
                 representations.update(value['representations'])
             if self.training and compute_loss and hasattr(module, 'loss'):
                 loss = module.loss(ret.headers[name], batch)
-                ret.headers[name].update(loss)
-                if exists(ret.loss):
-                    ret.loss += loss['loss'] * options.get('weight', 1.0)
-                else:
-                    ret.loss = loss['loss'] * options.get('weight', 1.0)
+                if exists(loss):
+                    ret.headers[name].update(loss)
+                    if exists(ret.loss):
+                        ret.loss += loss['loss'] * options.get('weight', 1.0)
+                    else:
+                        ret.loss = loss['loss'] * options.get('weight', 1.0)
 
         # calculate mlm loss, if training
         if self.training and exists(msa):
@@ -285,8 +327,9 @@ class Alphafold2WithRecycling(nn.Module):
         b, n, device = *seq.shape[:2], seq.device
         # FIXME: fake recyclables
         if 'recyclables' not in batch:
-            batch['recyclables'] = Recyclables(single_msa_repr_row=torch.zeros(b, n, self.impl.dim, device=device),
-                        pairwise_repr=torch.zeros(b, n, n, self.impl.dim, device=device))
+            dim_single, dim_pairwise = embedd_dim_get(self.impl.dim)
+            batch['recyclables'] = Recyclables(single_msa_repr_row=torch.zeros(b, n, dim_single, device=device),
+                        pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device))
 
         ret = ReturnValues()
         if self.training:

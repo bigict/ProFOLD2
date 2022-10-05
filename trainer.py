@@ -5,7 +5,7 @@
      for further help.
 """
 import os
-import argparse
+import copy
 import functools
 import json
 import logging
@@ -60,6 +60,7 @@ def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
             init_method=f'file://{args.ipc_file}',
             rank=rank,
             world_size=len(args.gpu_list))
+    torch.cuda.set_device(args.gpu_list[rank])
 
 def worker_cleanup(args):  # pylint: disable=redefined-outer-name
   if args.gpu_list:
@@ -109,6 +110,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   train_loader = dataset.load(
       data_dir=args.train_data,
+      data_idx=args.train_idx,
+      max_msa_size=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -119,10 +122,26 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       batch_size=args.batch_size,
       weights=list(weights_from_file(args.sampling_by_weights)),
       shuffle=True,
+      prefetch_factor=args.prefetch_factor,
       num_workers=args.num_workers)
+  if args.tuning_data:
+    tuning_loader = dataset.load(
+        data_dir=args.tuning_data,
+        max_msa_size=args.max_msa_size,
+        min_crop_len=args.min_crop_len,
+        max_crop_len=args.max_crop_len,
+        crop_algorithm=args.crop_algorithm,
+        feats=feats,
+        batch_size=args.batch_size,
+        is_training=True,
+        shuffle=True,
+        prefetch_factor=args.prefetch_factor,
+        num_workers=args.num_workers)
+
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
+        max_msa_size=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
@@ -131,8 +150,26 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         is_training=False,
         num_workers=0)
 
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
-  dl = cycling(train_loader, data_cond)
+  if args.fake_data:
+    fake_loader = dataset.load(
+        data_dir=args.eval_data,
+        max_msa_size=args.max_msa_size,
+        min_crop_len=args.min_crop_len,
+        max_crop_len=args.max_crop_len,
+        crop_algorithm=args.crop_algorithm,
+        feats=feats,
+        batch_size=args.batch_size,
+        is_training=True,
+        shuffle=True,
+        num_workers=0)
+
+  def data_cond(batch):
+    return (args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len)
+
+  train_data = cycling(train_loader, data_cond)
+  if args.tuning_data:
+    tuning_data = cycling(tuning_loader, data_cond)
 
   # model
   with open(args.model_headers, 'r', encoding='utf-8') as f:
@@ -143,9 +180,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   model = worker_model(rank, Alphafold2(dim=args.model_dim,
                      depth=args.model_evoformer_depth,
-                     heads=8,
-                     dim_head=64,
+                     heads=args.model_evoformer_head_num,
+                     dim_head=args.model_evoformer_head_dim,
                      embedd_dim=args.model_embedd_dim,
+                     attn_dropout=args.model_dropout,
                      headers=headers), args)
 
   # optimizer
@@ -178,7 +216,8 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       if isinstance(loss, torch.Tensor):
         loss = loss.item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
-      writer.add_scalar(prefix, loss, it)
+      if writer:
+        writer.add_scalar(prefix, loss, it)
 
   global_step = 0
   # CheckpointManager
@@ -191,24 +230,23 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     global_step = checkpoint_manager.restore_or_initialize() + 1
     model.train()
 
-  # training loop
-  for it in range(global_step, args.num_batches):
-    optim.zero_grad()
+  def _step(data_loader, it, writer, stage='train', batch_callback=None):
+    optim.zero_grad(set_to_none=True)
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
-      epoch, batch = next(dl)
+      epoch, batch = next(data_loader)
+      if batch_callback:
+        batch = batch_callback(batch)
 
       seq = batch['seq']
       logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # sequence embedding (msa / esm / attn / or nothing)
-      r = ReturnValues(**model(batch=batch, num_recycle=args.model_recycles))
-
-      if it == 0 and jt == 0 and args.tensorboard_add_graph:
-        with SummaryWriter(os.path.join(args.prefix, 'runs', 'network')) as w:
-          w.add_graph(model, (batch, ), verbose=True)
+      r = ReturnValues(**model(batch=batch,
+                               num_recycle=args.model_recycles,
+                               shard_size=args.model_shard_size))
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -224,10 +262,29 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
-      writer_add_scalars(writer, v, it, prefix=f'Loss/train@{k}')
+      writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       #writer.add_scalar(f'Loss/train@{k}', v, it)
 
     optim.step()
+
+  def batch_seq_only(batch):
+    batch = copy.copy(batch)
+    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'coord_plddt', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
+      if field in batch:
+        del batch[field]
+    return batch
+  # def batch_with_pseudo_beta(batch):
+  #   batch = copy.copy(batch)
+  #   for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
+  #     if field in batch:
+  #       del batch[field]
+  #   return batch
+  def batch_with_coords(batch):
+    return batch
+
+  # training loop
+  for it in range(global_step, args.num_batches):
+    _step(train_data, it, writer, stage='train')
 
     if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
         (not args.gpu_list or rank == 0)):
@@ -237,10 +294,22 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       # Add embeddings
       writer_add_embeddings(writer, model, it)
 
+    if (args.tuning_data and
+        args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
+      _step(tuning_data, it, writer, stage='tuning',
+          batch_callback=(batch_with_coords
+              if args.tuning_with_coords else batch_seq_only))
+
+    if (args.fake_data and
+        args.eval_every > 0 and (it + 1) % args.eval_every == 0):
+      _step(cycling(fake_loader), it, writer, stage='fake',
+          batch_callback=(batch_with_coords
+              if args.fake_with_coords else batch_seq_only))
+
     if (args.eval_data and (not args.gpu_list or rank == 0) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      model.eval()
 
+      model.eval()
       with torch.no_grad():
         # eval loss
         n, eval_loss = 0, MetricDict()
@@ -333,6 +402,8 @@ def main(args):  # pylint: disable=redefined-outer-name
   listener.stop()
 
 if __name__ == '__main__':
+  import argparse
+
   parser = argparse.ArgumentParser()
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
@@ -341,17 +412,29 @@ if __name__ == '__main__':
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-t', '--train_data', type=str, default='train',
-      help='train dataset, default=\'train\'')
+      help='train dataset dir, default=\'train\'')
+  parser.add_argument('--train_idx', type=str, default='name.idx',
+      help='train dataset idx, default=\'name.idx\'')
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
-      help='eval dataset, default=None')
+      help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_data', type=str, default=None,
+      help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_with_coords', action='store_true',
+      help='use `coord` when tuning')
+  parser.add_argument('--fake_data', type=str, default=None,
+      help='fake dataset dir, default=None')
+  parser.add_argument('--fake_with_coords', action='store_true',
+      help='use `coord` when faking')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
       help='sample train data by weights, default=None')
   parser.add_argument('--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('--max_msa_size', type=int, default=128,
+      help='filter out msas whose size>SIZE, default=128')
   parser.add_argument('--min_crop_len', type=int, default=80,
       help='filter out proteins whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
@@ -369,6 +452,8 @@ if __name__ == '__main__':
       help='the maximum number of checkpoints to keep, default=5')
   parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
+  parser.add_argument('--tuning_every', type=int, default=10,
+      help='eval model every K times, default=1000')
   parser.add_argument('--eval_every', type=int, default=1000,
       help='eval model every K times, default=1000')
   parser.add_argument(
@@ -378,6 +463,8 @@ if __name__ == '__main__':
       help='batch size, default=1')
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers, default=1')
+  parser.add_argument('--prefetch_factor', type=int, default=1,
+      help='number of batches loaded in advance by each worker, default=1')
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 
@@ -389,18 +476,24 @@ if __name__ == '__main__':
       help='json format headers of model, default=model_headers_main.json')
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in model, default=0')
-  parser.add_argument('--model_dim', type=int, default=256,
-      help='dimension of model, default=256')
+  parser.add_argument('--model_dim', type=int, nargs=2, default=(256, 256),
+      help='dimension of model, default=(256, 256)')
   parser.add_argument('--model_embedd_dim', type=int,
       default=esm.ESM_EMBED_DIM,
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
       help='depth of evoformer in model, default=1')
+  parser.add_argument('--model_evoformer_head_num', type=int, default=8,
+      help='number of heads in evoformer model, default=8')
+  parser.add_argument('--model_evoformer_head_dim', type=int, default=64,
+      help='dimensions of each head in evoformer model, default=64')
+  parser.add_argument('--model_shard_size', type=int, default=None,
+      help='shard size in evoformer model, default=None')
+  parser.add_argument('--model_dropout', type=float, default=0,
+      help='dropout of evoformer in model, default=0')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
-  parser.add_argument('--tensorboard_add_graph', action='store_true',
-      help='call tensorboard.add_graph')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

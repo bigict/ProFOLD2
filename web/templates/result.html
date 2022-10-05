@@ -1,0 +1,158 @@
+{% extends "layout.html" %}
+
+{% block title %}server - {{ app.name }} result {% endblock %}
+{% block javascript %}
+{{ super() }}
+<script src="{{ module }}/js/3Dmol-min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="zerif_full_site_wrap"><div class="fadein-slider"><div class="slide-item" style="background:#fff"></div></div><div class="zerif_full_site">
+<section id="home"  style="color:rgba(0,0,0,0.8); text-align:justify">
+    <div class="overlay" style="background:#fff;padding-top: 8px;padding-bottom: 3px;">
+        <div class="container" style="background:#fff;" >
+            <div class="row">
+                <div class="col-md-14 wow fadeIn" data-wow-delay="0.3s" >
+
+
+        <div class="bargraph"> <!-- bar start -->
+                <h2>FALCON<big>2</big>/{{ app.name }} - Results</h2>
+                    <table>
+                        <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Job information</font></h4></th></tr>
+                    </table>
+                    <table border=0>
+                        <tr><td>Job ID: </td>
+                            <td>
+                            <div id="job_list" style="display:inline"></div>
+{% if job.status == "Done" %}
+                            &nbsp;&nbsp;<a href="{{ module }}/resource/{{ job.job_id }}/zip">Download Zip</a>
+{% endif %}
+                            &nbsp;&nbsp;<a href="{{ module }}/submit/{{ job.job_id }}/">Resubmit</a>
+                        </td></tr>
+                        <tr><td>#Proteins: </td>
+                            <td>{{ job.tasks | length }}</td></tr>
+                        <tr><td>Protein ID: </td>
+                            <td><select id="task_select" style="font-size:100%">
+{% for t in job.tasks %}
+                                <option {% if t.id == task.id %}selected{%endif%} {% if t.status != "Done" %}disabled{% endif %} value="{{ t.id }}">{{ t.description }}</option>
+{% endfor %}
+                            </select>
+{% if task.status == "Done" %}
+                            &nbsp;&nbsp;<a href="{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/zip">Download</a>
+{% endif %}
+                            </td><tr>
+                        <tr><td>Submission time: </td>
+                            <td>{{ task.time_create }}</td></tr>
+                        <tr><td>Finished time: </td>
+                            <td>{{ task.time_done }}</td></tr>
+{% if task.metrics %}
+    {% if task.metrics.pLDDT %}
+                        <tr><td>pLDDT: </td>
+                            <td>{{ task.metrics.pLDDT | join(',') | float | round(3)}}</td></tr>
+    {% endif %}
+{% endif %}
+                </table>
+                <script>
+                    $(function() {
+                        var job_ids = window.localStorage.getItem('job_id')
+                        if (job_ids) {
+                            job_ids = JSON.parse(job_ids);
+                        } else {
+                            job_ids = {};
+                        }
+
+                        job_ids["{{job.job_id}}"] = 1;
+                        window.localStorage.setItem('job_id', JSON.stringify(job_ids));
+
+                        if (Object.keys(job_ids).length > 1) {
+                            var job_select = "<select id=\"job_select\" style=\"font-size:100%\">";
+                            job_select += "<option selected>{{ job.job_id }}</option>";
+                            $.each(job_ids, function(key, value) {
+                                if ($.trim(key) != "" && key != "{{ job.job_id }}") {
+                                    job_select += "<option>" + key + "</option>";
+                                }
+                            });
+                            job_select += "</select>";
+                            $("#job_list").html(job_select);
+                        } else {
+                            var job_select = "<a href=\"{{ module }}/checking/{{ job.job_id }}/?app={{ app.id }}\">{{ job.job_id }}</a>";
+                            $("#job_list").html(job_select);
+                        }
+
+                        if (Object.keys(job_ids).length > 1) {
+                            $("#job_select").on('change', function(e) {
+                                var s = e.target;
+                                var id = s.options[s.selectedIndex].text;
+                                if (id != "") {
+                                    window.location.href="{{ module }}/checking/" + id + "/?app={{ app.id }}";
+                                }
+                            });
+                        }
+
+                        $("#task_select").on('change', function(e) {
+                            var s = e.target;
+                            var id = s.options[s.selectedIndex].value;
+                            if (id != "") {
+                                window.location.href="{{ module }}/result/{{ job.job_id }}/" + id + "/?app={{ app.id }}";
+                            }
+                        });
+                    });
+                </script>
+                <!--
+                <form action="<?php print "WorkDir/$jobid.tar.gz";?>">
+                    <div id="check_">
+                        <center> <input type="submit" name="check" style="align:center; background-color:#00cc99; padding:8px 10px 8px 10px; font-size:12px; color:white" value="Download Results"> </center> </input>
+                    </div>
+                </form>
+                <br>
+                -->
+                <table>
+                    <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Predicted Structure Models</font></h4></th></tr> 
+                </table>
+
+                <div id ="results_div">
+                <table> <tr style="height:15px"><td>
+                <div id ="pdb_div" style="float: top; height:280px; width: 280px; position: relative;">
+                <script>
+                    $(function() {
+                      glviewer = $3Dmol.createViewer("pdb_div", {});
+                      $.ajax({
+                        url: "{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/relaxed_pdb",
+                        dataType: 'text',
+                        success: function(data) {
+                          glviewer.setBackgroundColor(0xf8f8f8);
+                          glviewer.addModel(data, 'pdb');
+                          glviewer.setStyle({cartoon:{color:'spectrum'}})
+                          glviewer.zoomTo();
+                          glviewer.render();
+                        }
+                      });
+                    });
+                </script>
+                </div>
+                </td></tr>
+                <tr><td text-align:'center';><a href="{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/relaxed_pdb">Final predicted result by {{ job_task }} </a></td></tr>
+                </table>
+        </div> <!-- bar end -->
+
+        <div class="alignment"> <!-- pairwise query-templates alignment begin -->
+            <table>
+            <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp Predicted Distance Matrix</font></h4></th></tr>
+            <div style='position:relative;left:30px;'>
+                <table>
+                <tr>
+                <td align="middle"><a href="{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/svg"><img src="{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/svg" style="display:block; width:300px"></a>
+                    <a href="{{ module }}/resource/{{ task.job_id }}/{{ task.id }}/svg">&nbsp;&nbsp;&nbsp;&nbsp;Predicted contact matrix</a></td>
+                </tr>
+                </table>
+            </div>
+        </div> <!-- pairwise query-templates alignment end -->
+
+
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+</div></div>
+{% endblock %}

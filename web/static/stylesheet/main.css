@@ -1,0 +1,121 @@
+html { height: 100%; }
+body {
+	font-size: 10px;
+	margin-left: 0px;
+	font-family: Verdana, Arial, Helvetica, sans-serif;
+/*	margin-left: 50px; */
+	width: 710px;
+	display: block;
+}
+#org { margin: 4px, 10px, 0px, 10px; text-align: left; font-family: "Courier New", Courier, monospace; }
+#header { padding-bottom: 25px; text-align: center; }
+#content { margin-top: 25px; margin-bottom: 25px;}
+.block { padding-bottom: 10px; }
+#footer {
+	clear: both;
+	padding-top: 50px;
+	padding-bottom: 100px;
+	padding-left: 8px;
+	padding-right: 8px;
+	margin-bottom: 20px;margin-left:160px;
+	text-align: left;
+	font-style: italic;
+	font-size: 10px;
+}
+#error { color: red; }
+div.row {
+	clear: both;
+	padding: 10px 0px 5px 5px;
+	margin-left: 0px;
+	
+	display: block;
+}
+div div.label {
+	padding: 0;
+	margin-left:10px;
+	float: left;
+	width: 200px;
+	font-weight: normal;
+	text-align: right;
+	color: blue;
+}
+div div.formw {
+	margin: 0;
+	padding: 0;
+	float: right;
+	width: 490px;
+	text-align: left;
+}
+div.help {
+	padding: 5px 0px 0px 5px;
+	margin-bottom: 10px;
+	float: right;
+	text-align: right;
+	display: block;
+}
+div div.label2 {
+	padding: 0;
+	margin-left:90px;
+	float: left;
+	width: 200px;
+	font-weight: normal;
+	text-align: right;
+	color: blue;
+}
+div div.label3 {
+	padding: 0;
+	margin-left:40px;
+	float: left;
+	width: 200px;
+	font-weight: normal;
+	text-align: right;
+	color: blue;
+}
+h2 {
+  padding-top: 25px;
+  padding-bottom: 5px;
+  padding-left: 5px; 
+  margin-top: 10px;
+  margin-bottom: 5px;
+  font-size: 18px;
+  font-weight: normal;
+}
+h2 span { font-size: 15px; font-weight: bold; }
+h3 {
+  clear: both;
+  display: block;
+  font-weight: bold;
+  background-color: #E6F2F2;
+  font-size: 11px;
+  color: #000;
+  margin-top: 25px;
+  margin-left:160px;
+  padding: 2px 0px 4px 8px;
+  font-weight: normal;
+}
+
+h4 {
+  clear: both;
+  display: block;
+  font-weight: bold;
+  background-color: #E6F2F2;
+  font-size: 11px;
+  color: #000;
+  margin-top: 25px;
+  margin-left:0px;
+  padding: 2px 0px 4px 8px;
+  font-weight: normal;
+}
+textarea {
+  font-size: 10px;
+  font-family: "Courier New", Courier, monospace;
+  background-color: #F7F7F7;
+  border: 1px solid #CCC;
+  border-bottom-color: #D5DDDD;
+  width: 100%;
+}
+textarea:focus { background-color: #FFF; border: 1px solid #AEDF9A; border-top-color: #6AB94B; }
+a:link { text-decoration: none; }
+a:visited { text-decoration: none; }
+a:hover { text-decoration: underline; }
+input#email_input{ width: 100%; }

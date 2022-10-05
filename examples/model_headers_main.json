@@ -1,16 +1,11 @@
 [
+  ["contact", {
+    "cutoff":8.0}, {"weight":1.0}],
+  ["mlm", {}, {"weight":1.0}],
+  ["profile", {"input_dim":1280, "single_repr":"mlm"}, {"weight":1.0}],
   ["distogram", {
     "buckets_first_break": 2.3125,
     "buckets_last_break": 21.6875,
     "buckets_num":37}, {"weight":1.0}],
-  ["folding", {
-    "structure_module_depth":6,
-    "structure_module_heads":4,
-    "fape_min":1e-4,
-    "fape_max":15.0,
-    "fape_z":15.0,
-    "fape_weight":1.0,
-    "fape_reduction":0}, {"weight":0.1}],
-  ["metric", {}, {}],
-  ["tmscore", {}, {}]
+  ["metric", {"cutoff":8}, {}]
 ]

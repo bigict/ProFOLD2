@@ -2,6 +2,7 @@
 import contextlib
 from functools import wraps
 from inspect import isfunction
+import time
 import uuid
 
 import numpy as np
@@ -20,6 +21,14 @@ def unique_id():
     """Generate a unique ID as specified in RFC 4122."""
     # See https://docs.python.org/3/library/uuid.html
     return str(uuid.uuid4())
+
+@contextlib.contextmanager
+def timing(msg, print_func, prefix=''):
+    print_func(f'{prefix}Started {msg}')
+    tic = time.time()
+    yield
+    toc = time.time()
+    print_func(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
 
 # decorators
 
@@ -574,53 +583,6 @@ def mdscaling_numpy(pre_dist_mat, weights=None, iters=10, tol=1e-5,
                 print("Corrected mirror in struct no.", i)
 
     return preds, stresses
-
-
-def lddt_ca_torch(true_coords, pred_coords, cloud_mask, r_0=15.):
-    """ Computes the lddt score for each C_alpha.
-        https://academic.oup.com/bioinformatics/article/29/21/2722/195896
-        Inputs: 
-        * true_coords: (b, l, c, d) in sidechainnet format.
-        * pred_coords: (b, l, c, d) in sidechainnet format.
-        * cloud_mask : (b, l, c) adapted for scn format.
-        * r_0: float. maximum inclusion radius in reference struct.
-        Outputs:
-        * (b, l) lddt for c_alpha scores (ranging between 0 and 1)
-        See wrapper below.
-    """
-    device, dtype = true_coords.device, true_coords.type()
-    thresholds = torch.tensor([0.5, 1, 2, 4], device=device).type(dtype)
-    # adapt masks
-    cloud_mask = cloud_mask.bool().cpu()
-    c_alpha_mask  = torch.zeros(cloud_mask.shape[1:], device=device).bool() # doesn't have batch dim
-    c_alpha_mask[..., 1] = True
-    # container for c_alpha scores (between 0,1)
-    wrapper = torch.zeros(true_coords.shape[:2], device=device).type(dtype)
-
-    for bi, seq in enumerate(true_coords):
-        # select atoms for study
-        c_alphas = cloud_mask[bi]*c_alpha_mask # only pick c_alpha positions
-        selected_pred = pred_coords[bi, c_alphas, :] 
-        selected_target = true_coords[bi, c_alphas, :]
-        # get number under distance
-        dist_mat_pred = torch.cdist(selected_pred, selected_pred, p=2)
-        dist_mat_target = torch.cdist(selected_target, selected_target, p=2) 
-        under_r0_target = dist_mat_target < r_0
-        compare_dists = torch.abs(dist_mat_pred - dist_mat_target)[under_r0_target]
-        # measure diff below threshold
-        score = torch.zeros_like(under_r0_target).float()
-        max_score = torch.zeros_like(under_r0_target).float()
-        max_score[under_r0_target] = 4.
-        # measure under how many thresholds
-        score[under_r0_target] = thresholds.shape[0] - \
-                                 torch.bucketize( compare_dists, boundaries=thresholds ).float()
-        # dont include diagonal
-        l_mask = c_alphas.float().sum(dim=-1).bool()
-        wrapper[bi, l_mask] = ( score.sum(dim=-1) - thresholds.shape[0] ) / \
-                              ( max_score.sum(dim=-1) - thresholds.shape[0] )
-
-    return wrapper
-
 
 ################
 ### WRAPPERS ###

@@ -5,10 +5,11 @@ import logging
 import torch
 from torch import nn
 from torch.nn import functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import functional, folding, sidechain
+from profold2.model import functional, folding
+from profold2.model.commons import embedd_dim_get
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,39 @@ def softmax_cross_entropy(logits, labels, mask=None):
         mask = 1.0
     loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
     return loss
+
+def softmax_cross_entropy_with_probability(probs, labels, mask=None):
+    """Computes softmax cross entropy given logits and one-hot class labels."""
+    if not exists(mask):
+        mask = 1.0
+    loss = -torch.sum(labels * torch.log(probs) * mask, dim=-1)
+    return loss
+
+def softmax_kl_diversity(logits, labels, mask=None):
+    if not exists(mask):
+        mask = 1.0
+    loss = torch.sum(
+            F.kl_div(F.log_softmax(logits, dim=-1), labels, reduction='none') * mask,
+            dim=-1)
+    return loss
+
+def softmax_cosine_similarity(logits, labels, mask=None):
+    if not exists(mask):
+        mask = 1.0
+    pred = F.softmax(logits, dim=-1)
+    return F.cosine_similarity(pred*mask, labels*mask, dim=-1)
+
+def make_mask(restypes, mask, device=None):
+    num_class = len(restypes)
+    if exists(mask) and mask:
+        m = [restypes.index(i) for i in mask]
+        # Shape (k, c)
+        m = F.one_hot(torch.as_tensor(m, device=device),
+                num_class)
+        # Shape (c)
+        m = ~(torch.sum(m, dim=0) > 0)
+        return m.float()
+    return torch.as_tensor([1.0]*num_class, device=device)
 
 class ConfidenceHead(nn.Module):
     """Head to predict confidence.
@@ -32,7 +66,225 @@ class ConfidenceHead(nn.Module):
             metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
         if 'plddt' in metrics:
             metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
+            logger.debug('ConfidenceHead.loss: %s', metrics['loss'].item())
         return metrics
+
+class ContactHead(nn.Module):
+    """Head to predict a contact.
+    """
+    def __init__(self, dim, diagonal=1, cutoff=8., loss_min=None, loss_max=None):
+        super().__init__()
+ 
+        self.diagonal = diagonal
+        self.cutoff = cutoff
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        assert 'mlm' in representations and 'contacts' in representations['mlm']
+        return dict(logits=representations['mlm']['contacts'])
+
+    def loss(self, value, batch):
+        assert 'logits' in value
+        logits = value['logits']
+        assert len(logits.shape) == 3
+        if 'pseudo_beta' in batch:
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
+
+            assert positions.shape[-1] == 3
+
+            dist2 = torch.cdist(positions, positions, p=2)
+
+            targets = (dist2 <= self.cutoff).float()
+
+            errors = F.binary_cross_entropy(logits, targets,
+                    reduction='none')
+
+            square_mask, square_weight = (
+                    rearrange(mask, '... i -> ... i ()')*rearrange(mask, '... j -> ... () j'), 1.0)
+            square_mask = torch.triu(square_mask, diagonal=self.diagonal) + torch.tril(square_mask, diagonal=-self.diagonal)
+            if 'coord_plddt' in batch:
+                ca_idx = residue_constants.atom_order['CA']
+                plddt_weight = torch.minimum(
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
+                if batch.get('coord_plddt_use_weighted_mask', True):
+                    square_mask *= plddt_weight
+                else:
+                    square_weight = plddt_weight
+
+            avg_error = functional.masked_mean(
+                    value=errors*square_weight, mask=square_mask, epsilon=1e-6)
+            logger.debug('ContactHead.loss: %s', avg_error.item())
+            if self.loss_min or self.loss_max:
+                avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+            return dict(loss=avg_error)
+        return None
+
+class CoevolutionHead(nn.Module):
+    """Head to predict Co-evolution.
+    """
+    def __init__(self, dim, mask='-', gammar=0.0, loss_min=None, loss_max=None):
+        super().__init__()
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+        self.single= nn.Sequential(
+                nn.Linear(dim_single, dim_single),
+                nn.GELU(),
+                nn.LayerNorm(dim_single),
+                nn.Linear(dim_single, num_class))
+        self.pairwize = nn.Sequential(
+                nn.LayerNorm(dim_pairwise),
+                nn.Linear(dim_pairwise, num_class**2))
+        self.mask = mask
+
+        self.gammar = gammar
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        """Builds CoevolutionHead module.
+
+        Arguments:
+         representations: Dictionary of representations, must contain:
+           * 'pair': pair representation, shape [N_res, N_res, c_z].
+         batch: Batch, unused.
+
+        Returns:
+         Dictionary containing:
+           * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
+        """
+        if self.training or 'msa' in batch:
+            assert 'msa' in batch
+            num_class = len(residue_constants.restypes_with_x_and_gap)
+
+            si, zij = representations['single'], representations['pair']
+            m = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=si.device)
+
+            ei = self.single(si)
+            eij = self.pairwize((zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+
+            eij = eij * rearrange(1-torch.eye(zij.shape[-2], device=zij.device),
+                    'i j -> i j ()')  # eii = 0
+            hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                    F.one_hot(batch['msa'], num_class).float(),
+                    rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
+                    m)
+            logits = rearrange(ei, 'b i c -> b () i c') + hi
+            return dict(logits=logits, wij=eij)
+        return None
+
+    def loss(self, value, batch):
+        """Log loss of a msa rebuilding."""
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+
+        logits = value['logits']
+        labels = F.one_hot(batch['msa'], num_class)
+        logger.debug('CoevolutionHead.loss.logits: %s', logits.shape)
+
+        assert len(logits.shape) == 4
+        assert 'msa' in batch
+        label_mask = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=logits.device)
+
+        errors = softmax_cross_entropy(
+                labels=labels,
+                logits=logits, mask=label_mask)
+        mask = torch.einsum('b i,b m i c,c -> b m i',
+                batch['mask'].float(),
+                labels.float(),
+                label_mask)
+
+        avg_error = functional.masked_mean(
+                value=errors, mask=mask, epsilon=1e-6)
+        logger.debug('CoevolutionHead.loss: %s', avg_error.item())
+        if self.gammar > 0 and 'wij' in value:
+            epsilon = 1e-10
+            M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
+            p = torch.sum(M, dim=-1)
+            rlh = torch.sum(torch.square(
+                    torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon)))
+            logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
+            avg_error += 0.5 * self.gammar * rlh
+
+        if self.loss_min or self.loss_max:
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+        return dict(loss=avg_error)
+
+class DistillationHead(nn.Module):
+    """Head to predict Co-evolution.
+    """
+    def __init__(self, dim, pij_model_dir, loss_fn=None, loss_min=None, loss_max=None):
+        super().__init__()
+
+        pij_model = np.load(pij_model_dir)
+        self.pij = torch.from_numpy(pij_model['model'])
+
+        if not exists(loss_fn):
+            loss_fn = 'evoformer_module'
+        assert loss_fn in ('evoformer_module', 'struct_module')
+        self.loss_fn = loss_fn
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        assert 'distogram' in headers and 'breaks' in headers['distogram']
+        if not 'coord' in batch and not 'coord_mask' in batch:
+            if self.loss_fn == 'evoformer_module':
+                assert 'logits' in headers['distogram']
+                return dict(logits=headers['distogram']['logits'], breaks=headers['distogram']['breaks'])
+            else:
+                assert 'folding' in headers and 'coords' in headers['folding']
+                return dict(coords=headers['folding']['coords'], breaks=headers['distogram']['breaks'])
+        return None
+
+    def loss(self, value, batch):
+        sq_breaks = (value['breaks'] ** 2)
+        b, seq_len, device = *batch['seq'].shape, batch['seq'].device
+
+        pij, pij_mask = self.pij_from_ref(seq_len, device=device)
+        assert sq_breaks.shape[-1] + 1 == pij.shape[-1]
+        if self.loss_fn == 'evoformer_module':
+            logits = value['logits']
+            errors = softmax_kl_diversity(labels=pij, logits=logits)
+        else:
+            ca_idx = residue_constants.atom_order['CA']
+            # is_gly = torch.eq(batch['seq'], residue_constants.restype_order['G'])
+            # cb_idx = residue_constants.atom_order['CB']
+            # cb_coord = torch.where(
+            #     repeat(is_gly, '... i -> ... i d', d=3),
+            #     coords[..., ca_idx, :],
+            #     coords[..., cb_idx, :])
+            # cb_dist2 = torch.sum((rearrange(cb_coord, '... i d -> ... i () d') -
+            #     rearrange(cb_coord, '... j d -> ... () j d'))**2, dim=-1, keepdims=True)
+            # cb_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
+            coords = value['coords']
+            ca_coord = coords[..., ca_idx, :]
+            ca_dist2 = torch.sum((rearrange(ca_coord, '... i d -> ... i () d') -
+                    rearrange(ca_coord, '... j d -> ... () j d'))**2, dim=-1, keepdims=True)
+            ca_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
+            errors = softmax_cross_entropy_with_probability(
+                    labels=F.one_hot(ca_bins, num_classes=pij.shape[-1]),
+                    probs=repeat(pij, '... -> b ...', b=b))
+
+        avg_error = functional.masked_mean(value=errors, mask=pij_mask, epsilon=1e-6)
+        logger.debug('DistillationHead.loss(%s): %s', self.loss_fn, avg_error.item())
+        if self.loss_min or self.loss_max:
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+        return dict(loss=avg_error)
+
+    def pij_from_ref(self, seq_len, device=None, epsilon=1e-10):
+        max_sep_len, num_buckets = self.pij.shape
+        value = torch.zeros((seq_len, seq_len, num_buckets), device=device) + epsilon
+        mask = torch.zeros((seq_len, seq_len), dtype=torch.bool, device=device)
+        for i in range(seq_len):
+            for j in range(i + 1, min(seq_len, i + max_sep_len)):
+                value[i, j] = self.pij[j-i].to(device=device)
+                value[j, i] = value[i, j]
+                mask[i, j] = True
+                mask[j, i] = mask[i, j]
+        return value, mask
 
 class DistogramHead(nn.Module):
     """Head to predict a distogram.
@@ -40,6 +292,7 @@ class DistogramHead(nn.Module):
     def __init__(self, dim,
             buckets_first_break, buckets_last_break, buckets_num):
         super().__init__()
+        _, dim = embedd_dim_get(dim)
 
         self.num_buckets = buckets_num
         self.buckets = torch.linspace(buckets_first_break, buckets_last_break, steps=buckets_num-1)
@@ -50,12 +303,12 @@ class DistogramHead(nn.Module):
     def forward(self, headers, representations, batch):
         """Builds DistogramHead module.
 
-       Arguments:
+        Arguments:
          representations: Dictionary of representations, must contain:
            * 'pair': pair representation, shape [N_res, N_res, c_z].
          batch: Batch, unused.
 
-       Returns:
+        Returns:
          Dictionary containing:
            * logits: logits for distogram, shape [N_res, N_res, N_bins].
         """
@@ -68,109 +321,266 @@ class DistogramHead(nn.Module):
         """Log loss of a distogram."""
         logits, breaks = value['logits'], value['breaks']
         assert len(logits.shape) == 4
-        positions = batch['pseudo_beta']
-        mask = batch['pseudo_beta_mask']
+        if 'pseudo_beta' in batch:
+            positions = batch['pseudo_beta']
+            mask = batch['pseudo_beta_mask']
 
-        assert positions.shape[-1] == 3
+            assert positions.shape[-1] == 3
 
-        sq_breaks = torch.square(breaks)
+            sq_breaks = torch.square(breaks)
 
-        dist2 = torch.sum(
-            torch.square(
-                rearrange(positions, 'b l c -> b l () c') -
-                rearrange(positions, 'b l c -> b () l c')),
-            dim=-1,
-            keepdims=True)
+            dist2 = torch.sum(
+                torch.square(
+                    rearrange(positions, 'b i c -> b i () c') -
+                    rearrange(positions, 'b j c -> b () j c')),
+                dim=-1,
+                keepdims=True)
 
-        true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
+            true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
+            errors = softmax_cross_entropy(
+                labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
+        else:
+            b, l, device = *batch['seq'].shape, batch['seq'].device
+            mask = torch.ones((b, l), device=device, dtype=torch.bool)
 
-        errors = softmax_cross_entropy(
-            labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
+            with torch.no_grad():
+                labels = torch.zeros(logits.shape, device=logits.device) #F.softmax(logits, dim=-1)
+
+            errors = softmax_kl_diversity(
+                labels=labels, logits=logits)
 
 
-        square_mask = rearrange(mask, 'b l -> b () l') * rearrange(mask, 'b l -> b l ()')
+        square_mask, square_weight = (
+                rearrange(mask, '... i -> ... i ()')*rearrange(mask, '... j -> ... () j'), 1.0)
+        if 'coord_plddt' in batch:
+            ca_idx = residue_constants.atom_order['CA']
+            plddt_weight = torch.minimum(
+                    rearrange(batch['coord_plddt'][...,ca_idx], '... i->... i ()'),
+                    rearrange(batch['coord_plddt'][...,ca_idx], '... j->... () j'))
+            if batch.get('coord_plddt_use_weighted_mask', True):
+                square_mask *= plddt_weight
+            else:
+                square_weight = plddt_weight
 
-        avg_error = (
-            torch.sum(errors * square_mask) /
-            (1e-6 + torch.sum(square_mask)))
-        return dict(loss=avg_error, true_dist=torch.sqrt(dist2+1e-6))
+        avg_error = functional.masked_mean(
+                value=errors*square_weight, mask=square_mask, epsilon=1e-6)
+        logger.debug('DistogramHead.loss: %s', avg_error.item())
+        return dict(loss=avg_error)
 
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, num_atoms=3, fape_min=1e-6, fape_max=15, fape_z=15, fape_weight=1., fape_reduction=None):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, fape_min=1e-6, fape_max=15, fape_z=15, **params):
         super().__init__()
         self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
-        self.num_atoms = num_atoms
-        assert self.num_atoms in [3, 14]
 
         self.fape_min = fape_min
         self.fape_max = fape_max
         self.fape_z = fape_z
-        self.fape_weight = fape_weight
 
-        self.fape_reduction = fape_reduction
+        self.params = params
 
     def forward(self, headers, representations, batch):
         #(rotations, translations), act = self.struct_module(representations, batch)
         outputs = self.struct_module(representations, batch)
-        (rotations, translations), act, backbones = map(lambda key: outputs[-1][key], ('frames', 'act', 'backbones'))
+        (rotations, translations), act, atoms = map(lambda key: outputs[-1][key], ('frames', 'act', 'atoms'))
 
-        if self.num_atoms > 3:
-            atom_mask = torch.zeros(self.num_atoms).to(batch['seq'].device)
-            atom_mask[..., 0] = 1
-            atom_mask[..., 1] = 1
-            atom_mask[..., 2] = 1
-
-            # build SC container. set SC points to CA and optionally place carbonyl O
-            coords = sidechain.fold(batch['str_seq'], backbones=backbones, atom_mask=atom_mask,
-                                                  cloud_mask=batch.get('coord_mask'), num_coords_per_res=self.num_atoms)
-        else:
-            coords = backbones
-
-        return dict(frames=(rotations, translations), backbones=backbones, coords=coords, representations=dict(single=act), traj=outputs)
+        return dict(frames=(rotations, translations),
+                coords=atoms['coords'],
+                representations=dict(single=act),
+                traj=outputs)
 
     def loss(self, value, batch):
-        coords, labels = value['coords'][...,:self.num_atoms,:], batch['coord'][...,:self.num_atoms,:]
-        coord_mask = batch['coord_mask'][...,:self.num_atoms]
-        flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
+        def backbone_fape_loss(pred_frames_list, gt_frames, frames_mask):
+            assert pred_frames_list and exists(frames_mask)
 
-        # rotate / align
-        coords_aligned, labels_aligned = Kabsch(
-                rearrange(rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'),
-                rearrange(rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'))
+            dij_weight = None
+            if 'coord_plddt' in batch:
+                ca_idx = residue_constants.atom_order['CA']
+                dij_weight = torch.minimum(
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... i -> ... i ()'),
+                        rearrange(batch['coord_plddt'][...,ca_idx], '... j -> ... () j'))
 
+            for i, pred_frames in enumerate(pred_frames_list):
+                with torch.no_grad():
+                    true_frames = default(gt_frames, pred_frames)
+
+                _, pred_points = pred_frames
+                _, true_points = true_frames
+                r = functional.fape(
+                        pred_frames, true_frames, frames_mask,
+                        pred_points, true_points, frames_mask,
+                        self.fape_max, dij_weight=dij_weight,
+                        use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False))/self.fape_z
+                logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r.item())
+                yield r
+
+        def sidechain_fape_loss(pred_frames, true_frames, frames_mask,
+                pred_points, true_points, point_mask):
+
+            def frames_to_fape_shape(frames):
+                rotations, translations = frames
+                return (rearrange(rotations, '... i c h w -> ... (i c) h w'),
+                        rearrange(translations, '... i c h -> ... (i c) h'))
+
+            def points_to_fape_shape(points):
+                return rearrange(points, '... i c d -> ... (i c) d')
+
+            def mask_to_fape_shape(masks):
+                return rearrange(masks, '... i c -> ... (i c)')
+
+            dij_weight = None
+            if 'coord_plddt' in batch:
+                # (N, 8, 3, 14)
+                group_atom14_idx = F.one_hot(
+                        functional.batched_gather(residue_constants.restype_rigid_group_atom14_idx, batch['seq']),
+                        residue_constants.atom14_type_num)
+                # (N, 8)
+                group_atom14_plddt = torch.amin(
+                        torch.einsum('... g m n, ... n -> ... g m', group_atom14_idx.float(), batch['coord_plddt']),
+                        dim=-1)
+                dij_weight = torch.minimum(
+                        rearrange(mask_to_fape_shape(group_atom14_plddt), '... i -> ... i ()'),
+                        rearrange(mask_to_fape_shape(batch['coord_plddt']), '... j -> ... () j'))
+            with torch.no_grad():
+                true_frames = default(true_frames, pred_frames)
+                true_points = default(true_points, pred_points)
+
+            r = functional.fape(
+                    frames_to_fape_shape(pred_frames),
+                    frames_to_fape_shape(true_frames),
+                    mask_to_fape_shape(frames_mask),
+                    points_to_fape_shape(pred_points),
+                    points_to_fape_shape(true_points),
+                    mask_to_fape_shape(point_mask),
+                    self.fape_max, dij_weight=dij_weight,
+                    use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False))/self.fape_z
+            logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r.item())
+            return r
+
+        def fape_loss(traj, gt):
+            coords = gt.get('coord')
+            if 'coord_mask' in gt:
+                coord_mask = gt['coord_mask']
+            else:
+                assert 'coord_exists' in gt
+                coord_mask = gt['coord_exists']
+            backbone_affine, backbone_affine_mask = (
+                    gt.get('backbone_affine'), gt.get('backbone_affine_mask'))
+            if not exists(backbone_affine_mask):
+                n_idx = residue_constants.atom_order['N']
+                ca_idx = residue_constants.atom_order['CA']
+                c_idx = residue_constants.atom_order['C']
+                backbone_affine_mask = torch.all(
+                        torch.stack((
+                                coord_mask[...,c_idx],
+                                coord_mask[...,ca_idx],
+                                coord_mask[...,n_idx]), dim=-1) != 0,
+                        dim=-1)
+            # backbone loss
+            backbone_loss = sum(backbone_fape_loss(
+                    [x['frames'] for x in traj],
+                    backbone_affine, backbone_affine_mask)) / len(traj)
+            # sidechine loss
+            atoms = traj[-1]['atoms']
+            atom_affine, atom_affine_mask = (
+                    gt.get('atom_affine'), gt.get('atom_affine_mask'))
+            if not exists(atom_affine_mask):
+                assert 'atom_affine_exists' in gt, gt.keys()
+                atom_affine_mask = gt['atom_affine_exists']
+
+            if exists(atom_affine):
+                assert exists(coords), gt.keys()
+                # Renamed frames
+                alt_is_better = functional.symmetric_ground_truth_find_optimal(atoms['coords'], gt['coord_exists'],
+                        coords, coord_mask, gt['coord_alt'], gt['coord_alt_mask'], gt['coord_is_symmetric'])
+                def to_renamed(x, x_alt):
+                    if isinstance(x, tuple):
+                        assert isinstance(x_alt, tuple) and len(x) == 2
+                        return to_renamed(x[0], x_alt[0]), to_renamed(x[1], x_alt[1])
+
+                    shape = len(x.shape) - len(alt_is_better.shape)
+                    assert shape >= 0
+                    if shape > 0:
+                        ext = ' '.join(['()']*shape)
+                        m = rearrange(alt_is_better, f'... i -> ... i {ext}')
+                    else:
+                        m = alt_is_better
+                    return (~m)*x + m*x_alt
+
+                atom_affine = to_renamed(atom_affine, gt['atom_affine_alt'])
+                coords = to_renamed(coords, gt['coord_alt'])
+                coord_mask = to_renamed(coord_mask, gt['coord_alt_mask'])
+
+            sidechain_loss = sidechain_fape_loss(
+                    atoms['frames'], atom_affine, atom_affine_mask,
+                    atoms['coords'], coords, coord_mask)
+
+            sidechain_w = self.params.get('sidechain_w', 0.5)
+            assert 0 <= sidechain_w <= 1
+            return ((1.-sidechain_w)*backbone_loss +
+                    sidechain_w*sidechain_loss)
+
+        def torsion_angle_loss(traj, gt, epsilon=1e-6):
+            def yield_norm_angle_loss(pred_angles_list):
+                for i, pred_angles in enumerate(pred_angles_list):
+                    angle_norm = torch.sqrt(epsilon +
+                            torch.sum(pred_angles**2, dim=-1))
+                    errors = torch.abs(angle_norm - 1.)
+                    avg_error = torch.mean(errors)
+                    logger.debug('FoldingHead.loss(norm_angle_loss: %d): %s', i, avg_error.item())
+                    yield avg_error
+                
+            def yield_pred_angle_loss(pred_angles_list, true_angles):
+                for i, pred_angles in enumerate(pred_angles_list):
+                    pred_angles = functional.l2_norm(pred_angles)
+                    errors = torch.sum((pred_angles - true_angles)**2, dim=-1)
+                    yield errors
+
+            pred_angles_list = [x['atoms']['angles'] for x in traj]
+            # angle norm loss
+            norm_loss = sum(yield_norm_angle_loss(pred_angles_list)) / len(traj)
+
+            # angle pred loss
+            pred_loss = []
+            if 'torsion_angles_mask' in gt:
+                if 'torsion_angles' in gt:
+                    pred_loss.append(sum(yield_pred_angle_loss(
+                            pred_angles_list, gt.get('torsion_angles'))) / len(traj))
+                if 'torsion_angles_alt' in gt:
+                    pred_loss.append(sum(yield_pred_angle_loss(
+                        pred_angles_list, gt.get('torsion_angles_alt'))) / len(traj))
+            angles_mask = gt.get('torsion_angles_mask')
+            if exists(angles_mask):
+                angles_mask[...,:3] = 0  # chi angle only
+            if pred_loss:
+                if len(pred_loss) == 2:
+                    pred_loss = functional.masked_mean(
+                            value=torch.minimum(*pred_loss), mask=angles_mask)
+                elif len(pred_loss) == 1:
+                    pred_loss = functional.masked_mean(
+                            value=pred_loss[0], mask=angles_mask)
+                logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss.item())
+            else:
+                pred_loss = .0
+                logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss)
+
+            return (self.params.get('angle_norm_w', 0.01)*norm_loss +
+                    self.params.get('angle_pred_w', 0.5)*pred_loss)
+
+        assert 'traj' in value
         # loss
-        loss = .0
-        if 1.0 - self.fape_weight > 0:
-            loss += (1.0 - self.fape_weight) * torch.clamp(
-                    torch.sqrt(F.mse_loss(
-                        rearrange(coords_aligned, 'd l -> l d'),
-                        rearrange(labels_aligned, 'd l -> l d'))),
-                    self.fape_min, self.fape_max) / self.fape_z
-        if self.fape_weight > 0:
-            assert self.num_atoms >= 3 and 'backbone_affine' in batch and 'backbone_affine_mask' in batch
+        loss = (fape_loss(value['traj'], batch) +
+                torsion_angle_loss(value['traj'], batch))
 
-            true_frames, true_points = batch['backbone_affine'], labels
-            frames_mask, points_mask = batch['backbone_affine_mask'], coord_mask
-
-            def yield_fape_loss(outputs):
-                for i, traj in enumerate(outputs):
-                    pred_frames, pred_points = map(lambda key: traj[key], ('frames', 'backbones'))
-                    r = functional.fape(
-                            pred_frames, true_frames, frames_mask, pred_points, true_points, points_mask, self.fape_max)/self.fape_z
-                    logger.debug('FoldingHead.loss(%d): %s', i, r.item())
-                    yield r
-
-            loss += self.fape_weight*sum(yield_fape_loss(value['traj'][self.fape_reduction:])) / len(value['traj'][self.fape_reduction:])
-
-        return dict(loss=loss, coords_aligned=coords_aligned, labels_aligned=labels_aligned)
+        return dict(loss=loss)
 
 class LDDTHead(nn.Module):
     """Head to predict the pLDDT to be used as a per-residue configence score.
     """
     def __init__(self, dim, buckets_num=50, min_resolution=.0, max_resolution=sys.float_info.max):
         super().__init__()
+        dim, _ = embedd_dim_get(dim)
 
         self.net = nn.Sequential(
                 nn.LayerNorm(dim),
@@ -196,13 +606,19 @@ class LDDTHead(nn.Module):
         assert 'coords' in value and 'logits' in value
 
         ca_idx = residue_constants.atom_order['CA']
-
         # Shape (b, l, d)
         pred_points = value['coords'][...,ca_idx,:]
-        # Shape (b, l, d)
-        true_points = batch['coord'][...,ca_idx,:]
-        # Shape (b, l)
-        points_mask = batch['coord_mask'][...,ca_idx]
+
+        if 'coord' in batch:
+            # Shape (b, l, d)
+            true_points = batch['coord'][...,ca_idx,:]
+            # Shape (b, l)
+            points_mask = batch['coord_mask'][...,ca_idx]
+        else:
+            with torch.no_grad():
+                true_points = pred_points
+            points_mask = torch.ones(pred_points.shape[:-1], device=pred_points.device, dtype=torch.bool)
+
         with torch.no_grad():
             # Shape (b, l)
             lddt_ca = functional.lddt(pred_points, true_points, points_mask)
@@ -226,6 +642,34 @@ class LDDTHead(nn.Module):
         loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
         logger.debug('LDDTHead.loss: %s', loss.item())
         return dict(loss=loss)
+
+class MaskedLMHead(nn.Module):
+    """Head to predict Masked Language Model
+    """
+    def __init__(self, dim):
+        super().__init__()
+        del dim
+
+    def forward(self, headers, representations, batch):
+        assert 'mlm' in representations
+        assert 'logits' in representations['mlm'] and 'labels' in representations['mlm']
+        return dict(logits=representations['mlm']['logits'],
+                labels=representations['mlm']['labels'])
+
+    def loss(self, value, batch):
+        assert 'bert_mask' in batch
+        assert 'logits' in value and 'labels' in value
+
+        logits, labels = value['logits'], value['labels']
+        #mask = rearrange(batch['bert_mask'], 'b l -> b l ()')
+        mask = batch['bert_mask']
+
+        errors = softmax_cross_entropy(
+                labels=F.one_hot(labels, logits.shape[-1]), logits=logits)
+
+        avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+        logger.debug('MaskedLMHead.loss: %s', avg_error.item())
+        return dict(loss=avg_error)
 
 class MetricDict(dict):
     def __add__(self, o):
@@ -254,12 +698,13 @@ class MetricDictHead(nn.Module):
     """
     def __init__(self, dim, **kwargs):
         super().__init__()
+        del dim
 
         self.params = kwargs
 
     def forward(self, headers, representations, batch):
         metrics = MetricDict()
-        if 'distogram' in headers:
+        if 'distogram' in headers and 'pseudo_beta' in batch:
             assert 'logits' in headers['distogram'] and 'breaks' in headers['distogram']
             logits, breaks = headers['distogram']['logits'], headers['distogram']['breaks']
             positions = batch['pseudo_beta']
@@ -279,14 +724,112 @@ class MetricDictHead(nn.Module):
             for (i, j), ratio, precision in precision_list:
                 i, j = default(i, 0), default(j, 'inf')
                 metrics['contact'][f'[{i},{j})_{ratio}'] = precision
+            if '[24,inf)_1' in metrics['contact']:
+                logger.debug('MetricDictHead.contact.[24,inf]@L: %s', metrics['contact']['[24,inf)_1'].item())
+        if ('profile' in headers or 'coevolution' in headers) and 'sequence_profile' in batch:
+            labels, label_mask = batch['sequence_profile'], 1.0
+            if 'sequence_profile_mask' in batch:
+                label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+
+            mask = batch['mask']
+            if 'profile' in headers:
+                assert 'logits' in headers['profile']
+                logits = headers['profile']['logits']
+                sim = softmax_cosine_similarity(
+                        logits=logits, labels=labels, mask=label_mask)
+                avg_sim = functional.masked_mean(value=sim, mask=mask)
+                logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
+                metrics['profile'] = MetricDict()
+                metrics['profile']['cosine'] = avg_sim
+            if 'coevolution' in headers:
+                metrics['coevolution'] = MetricDict()
+
+                assert 'logits' in headers['coevolution']
+                prob = F.softmax(headers['coevolution']['logits'], dim=-1)
+
+                pred = torch.sum(prob, dim=-3)
+                pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
+                sim = F.cosine_similarity(pred*label_mask, labels*label_mask, dim=-1)
+                avg_sim = functional.masked_mean(value=sim, mask=mask)
+                logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
+                metrics['coevolution']['cosine'] = avg_sim
+
+                if 'msa' in batch:
+                    num_class = prob.shape[-1]
+
+                    pred = torch.argmax(prob, dim=-1)
+                    mask = F.one_hot(batch['msa'], num_classes=num_class) * label_mask
+                    avg_sim = functional.masked_mean(
+                            value=F.one_hot(pred, num_classes=num_class),
+                            mask=mask)
+                    logger.debug('MetricDictHead.coevolution.identity: %s', avg_sim.item())
+                    metrics['coevolution']['identity'] = avg_sim
 
         return dict(loss=metrics) if metrics else None
+
+class SequenceProfileHead(nn.Module):
+    """Head to predict sequence profile.
+    """
+    def __init__(self, dim, input_dim=None, single_repr=None, loss_func='CrossEntropy'):
+        super().__init__()
+        dim, _ = embedd_dim_get(dim)
+
+        if not exists(input_dim):
+            input_dim = dim
+        if not exists(single_repr):
+            single_repr = 'struct_module'
+        assert single_repr in ('struct_module', 'mlm')
+        self.single_repr = single_repr
+        
+        self.project = nn.Sequential(
+                nn.Linear(input_dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Linear(dim, len(residue_constants.restypes_with_x_and_gap)))
+
+        assert loss_func in ('CrossEntropy', 'KLDiv')
+        self.loss_func = loss_func
+
+    def forward(self, headers, representations, batch):
+        assert 'sequence_profile' in batch
+
+        if self.single_repr == 'mlm':
+            assert 'mlm' in representations and 'representations' in representations['mlm']
+            x = representations['mlm']['representations']
+        else:
+            x = representations['single']
+
+        logits = self.project(x)
+        return dict(logits=logits)
+
+    def loss(self, value, batch):
+        assert 'mask' in batch
+        assert 'sequence_profile' in batch
+        assert 'logits' in value
+
+        logits, labels = value['logits'], batch['sequence_profile']
+        mask = batch['mask']
+        label_mask = None
+        if 'sequence_profile_mask' in batch:
+            label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+
+        if self.loss_func == 'CrossEntropy':
+            errors = softmax_cross_entropy(
+                    labels=labels, logits=logits, mask=label_mask)
+        else:
+            errors = softmax_kl_diversity(
+                    labels=labels, logits=logits, mask=label_mask)
+
+        avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+        logger.debug('SequenceProfileHead.loss(%s): %s', self.loss_func, avg_error.item())
+        return dict(loss=avg_error)
 
 class TMscoreHead(nn.Module):
     """Head to predict TM-score.
     """
     def __init__(self, dim, num_atoms=3):
         super().__init__()
+        del dim
 
         self.num_atoms = num_atoms
         assert self.num_atoms in [3, 14]
@@ -314,14 +857,59 @@ class TMscoreHead(nn.Module):
                     L=torch.sum(batch['mask'], dim=-1).item()))
         return None
 
+class ViolationHead(nn.Module):
+    """Head to structure violations.
+    """
+    def __init__(self, dim):
+        super().__init__()
+        del dim
+
+    def forward(self, headers, representations, batch):
+        assert 'folding' in headers and 'coords' in headers['folding']
+        return dict(coords=headers['folding']['coords'])
+
+    def loss(self, value, batch):
+        assert 'coords' in  value
+        seq, mask = batch['seq'], batch['mask']
+        seq_index = batch.get('seq_index')
+        if not exists(seq_index):
+            b, n = seq.shape[:2]
+            seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
+        if 'coord_mask' in batch or 'coord_exists' in batch:
+            points, point_mask = value['coords'], batch.get('coord_mask', batch.get('coord_exists'))
+            assert exists(point_mask)
+            
+            # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
+            #         points, point_mask, seq_index))
+            loss_dict = {}
+
+            loss_dict.update(functional.between_residue_bond_loss(
+                    points, point_mask, seq_index, seq, loss_only=True))
+            loss_dict.update(functional.between_residue_clash_loss(
+                    points, point_mask, seq_index, seq, loss_only=True))
+            loss_dict.update(functional.within_residue_clash_loss(
+                    points, point_mask, seq_index, seq, loss_only=True))
+
+            for k, v in loss_dict.items():
+                logger.debug('ViolationHead.%s: %s', k, v.item())
+            return dict(loss=sum(loss_dict.values()))
+        return None
+
 class HeaderBuilder:
     _headers = dict(
+            coevolution = CoevolutionHead,
             confidence = ConfidenceHead,
+            contact = ContactHead,
+            distillation = DistillationHead,
             distogram = DistogramHead, 
             folding = FoldingHead,
             lddt = LDDTHead,
             metric = MetricDictHead,
-            tmscore = TMscoreHead)
+            mlm = MaskedLMHead,
+            profile = SequenceProfileHead,
+            tmscore = TMscoreHead,
+            violation = ViolationHead)
+
     @staticmethod
     def build(dim, config, parent=None):
         def gen():

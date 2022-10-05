@@ -91,19 +91,22 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   test_loader = dataset.load(
       data_dir=args.casp_data,
+      max_msa_size=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
-      feat_flags=~dataset.ProteinStructureDataset.FEAT_PDB
-              if args.casp_without_pdb
-              else dataset.ProteinStructureDataset.FEAT_ALL,
+      feat_flags=(~dataset.ProteinStructureDataset.FEAT_PDB
+                  if args.casp_without_pdb
+                  else dataset.ProteinStructureDataset.FEAT_ALL),
       batch_size=args.batch_size,
       feats=feats,
       is_training=False,
       num_workers=args.num_workers)
 
-  data_cond = lambda x: args.min_protein_len <= x['seq'].shape[1] and x['seq'].shape[1] < args.max_protein_len  # pylint: disable=line-too-long
+  def data_cond(batch):
+    return (args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len)
 
   tmscore, n = 0, 0
   # eval loop
@@ -118,11 +121,12 @@ def evaluate(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with torch.no_grad():
       r = ReturnValues(**model(batch=batch,
-                               num_recycle=args.model_recycles))
+                               num_recycle=args.model_recycles,
+                               shard_size=args.model_shard_size))
 
     if 'confidence' in r.headers:
       logging.info('%d pid: %s Confidence: %s',
-            i, ','.join(batch['pid']), r.headers['confidence'])
+            i, ','.join(batch['pid']), r.headers['confidence']['loss'].item())
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']
       if 'coord' in batch:
@@ -239,6 +243,8 @@ if __name__ == '__main__':
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
+  parser.add_argument('--max_msa_size', type=int, default=128,
+      help='filter out msas whose size>SIZE, default=128')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN, default=None')
   parser.add_argument('--max_crop_len', type=int, default=None,
@@ -259,6 +265,8 @@ if __name__ == '__main__':
 
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in profold2, default=0')
+  parser.add_argument('--model_shard_size', type=int, default=None,
+      help='shard size in evoformer model, default=None')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')

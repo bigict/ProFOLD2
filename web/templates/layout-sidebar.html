@@ -1,0 +1,78 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="zerif_full_site_wrap"><div class="fadein-slider"><div class="slide-item" style="background:#fff"></div></div><div class="zerif_full_site">
+<section id="home"  style="color:rgba(0,0,0,0.8); text-align:justify">
+    <div class="overlay" style="background:#fff;padding-top: 8px;padding-bottom: 3px;">
+        <div class="container" style="background:#fff;" >
+            <div class="row">
+
+        <div class="col-md-8 wow fadeIn"  data-wow-delay="0.3s">
+            {% block form %}
+            {% endblock %}
+        </div>
+<!-- first end-->
+
+        <div class="col-md-4 wow fadeIn"  align="center" data-wow-delay="0.3s" >
+            {% block sidebar %}
+        <br>
+        <h4 align="left"><b> SERVER STATUS</b></h4>
+
+        <table id="jobtable" style="width:94%;line-height:1.5;">
+            <tbody><tr class="{{ status_css('Queuing') }}">
+            <td class="q"></td>
+            <td style="width: 50px; border-right-width: 0px; background-color: pink;" > </td>
+            <td style="text-align: justify; "><font size="2px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Queuing</font></td>
+            <td style="text-align: justify; "><font size="2px">{% if job_status.Queuing %}{{ job_status.Queuing }}{% else %} 0 {% endif %}</font></td>
+            </tr>
+            <tr class="{{ status_css('Running') }}">
+            <td class="r"></td>
+             <td style="width: 10px; border-right-width: 0px; background-color: yellow;" > </td>
+            <td style="text-align: justify; "><font size="2px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Running</font></td>
+            <td style="text-align: justify; "><font size="2px">{% if job_status.Running %}{{ job_status.Running }}{% else %}0{% endif %}</font></td>
+            </tr>
+            <tr class="{{ status_css('Done') }}">
+            <td class="d"></td>
+               <td style="width: 5px; border-right-width: 0px; background-color: green;" > </td>
+            <td style="text-align: justify; "><font size="2px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Done</font></td>
+            <td style="text-align: justify; "><font size="2px">{% if job_status.Done %}{{ job_status.Done }}{% else %}0{% endif %}</font></td>
+            </tr>
+            <tr class="{{ status_css('Error') }}">
+            <td class="e"></td>
+            <td style="width: 5px; border-right-width: 0px; background-color: red;" > </td>
+            <td style="text-align: justify; "><font size="2px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Error</font></td>
+            <td style="text-align: justify; "><font size="2px">{% if job_status.Error %}{{ job_status.Error }}{% else %}0{% endif %}</font></td>
+            </tr>
+            </tbody>
+        </table>
+        <br>
+        <h4 align="left"><b>COOPERATIVE PARTNERS</b></h4>
+        <ul class="sponsors" style="margin:0; list-style-type:none">
+            <a href="http://www.itp.cas.cn/"><img src="{{ module }}/images/lw.jpeg" style="margin-top:5px" lt="img" width="250px" height="34" /></a>
+            <li class="sponsors"><a href="http://www.itp.cas.cn/" title="ITP"> Institute of Theoretical Physics </a></li>
+            <a href="http://www.ihep.cas.cn/"><img src="{{ module }}/images/gw.jpeg" style="margin-top:5px" alt="img" width="200px" height="34" /></a>
+            <li class="sponsors"><a href="http://www.ihep.cas.cn/" title="IHEP">Institue of High Energy Physics</a></li>
+            <a href="http://casathome.ihep.ac.cn/"><img src="{{ module }}/images/cas.jpeg" style="margin-top:5px" alt="img" width="200px" height="34" /></a>
+            <li class="sponsors"><a href="http://casathome.ihep.ac.cn/" title="CAS@home">CAS@home</a></li>
+            <a href="http://www.cityu.edu.hk/"><img src="{{ module }}/images/chk.jpeg" style="margin-top:5px"  alt="img" width="150px" height="30" /></a>
+            <li class="sponsors"><a href="http://www.cityu.edu.hk/" title="CUHK">City University of Hong Kong</a></li>
+            <a href="http://missouri.edu/"><img src="{{ module }}/images/msl.png" style="margin-top:5px"  align="middle" alt="img" width="57" height="34" /></a>
+            <li class="sponsors"><a href="http://missouri.edu/" title="UM">University of Missouri</a></li></a>
+        </ul>
+        <br>
+        <h4 align="left"><b>SPONSORS</b></h4>
+        <ul class="sponsors" style="margin:0; list-style-type:none">
+            <a href="http://www.nsfc.gov.cn/"><img src="{{ module }}/images/nsfc.jpeg" style="margin-top:5px"  alt="img" width="200" height="34" /></a>
+            <li class="sponsors"><a href="http://www.nsfc.gov.cn/" title="NSFC">National Natural Science Foundation of China</a></li>
+            <a href="http://www.973.gov.cn/AreaAppl.aspx"><img src="{{ module }}/images/973.jpeg" style="margin-top:5px"  alt="img" width="80" height="40" align="middle" /></a>
+            <li class="sponsors"><a href="http://www.973.gov.cn/AreaAppl.aspx" title="973">The National Basic Research Program (973 Program) </a></li>
+        </ul>
+    </div>
+            {% endblock %}
+
+            </div>
+        </div>
+    </div>
+</section>
+</div></div>
+{% endblock %}

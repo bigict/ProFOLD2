@@ -1,0 +1,36 @@
+{% extends "layout-sidebar.html" %}
+
+{% block title %}server - {{ app.name }} search {% endblock %}
+
+{% block form %}
+        <h2>FALCON<big>2</big>/{{ app.name }} - Search</h2>
+
+        <div class="block"> <!-- List all jobs begin -->
+            <table>
+                <tr><th bgcolor="#33ccff"><h4><font color="white">&nbsp List of jobs</font></h4></th></tr>
+            </table>
+
+            <table>
+            <tr>
+                <td> Index </td>
+                <td> Job ID </td>
+                <td> Submission Time </td>
+                <td> Start Time </td>
+                <td> End Time </td>
+                <td> Status </td>
+            </tr>
+{% if job_list  %}
+    {% for job in job_list  %}
+            <tr>
+                <td> {{ loop.index }} </td>
+                <td><a href="{{ module }}/checking/{{ job.job_id }}/" title="{{ job.job_id }}">{{ job.job_id }}</a></td>
+                <td> {% if job.time_create %} {{ job.time_create }} {% else %} -- {% endif %}</td>
+                <td> {% if job.time_run %} {{ job.time_run }} {% else %} -- {% endif %}</td>
+                <td> {% if job.time_done %} {{ job.time_done }} {% else %} -- {% endif %}</td>
+                <td class="{{ status_css(job.status) }}"> {{ job.status }} </td>
+            </tr>
+    {% endfor %}
+{% endif %}
+            </table>
+        </div> <!-- List all jobs end -->      
+{% endblock %}

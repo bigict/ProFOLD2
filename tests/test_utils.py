@@ -142,9 +142,6 @@ class TestUtils(unittest.TestCase):
         for k, ((i, j), ratio, precision) in enumerate(contact_precision(a, b)):
             i, j = default(i, 0), default(j, 'inf')
             print(k, f'[{i},{j})_{ratio}', precision)
-        for k, ((i, j), ratio, precision) in enumerate(contact_precision(a, a)):
-            i, j = default(i, 0), default(j, 'inf')
-            print(k, f'[{i},{j})_{ratio}', precision)
         self.assertTrue(True)
 
 if __name__ == '__main__':

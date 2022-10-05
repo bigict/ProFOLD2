@@ -100,15 +100,18 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
     res_shortname = residue_constants.restype_3to1.get(res.resname, 'X')
     restype_idx = residue_constants.restype_order.get(
         res_shortname, residue_constants.restype_num)
-    pos = np.zeros((residue_constants.atom_type_num, 3))
-    mask = np.zeros((residue_constants.atom_type_num,))
-    res_b_factors = np.zeros((residue_constants.atom_type_num,))
+    pos = np.zeros((residue_constants.atom14_type_num, 3)) # atom14
+    mask = np.zeros((residue_constants.atom14_type_num,))
+    res_b_factors = np.zeros((residue_constants.atom14_type_num,))
+    atom_types = residue_constants.restype_name_to_atom14_names.get(res.resname,
+        residue_constants.restype_name_to_atom14_names.get('UNK'))
     for atom in res:
-      if atom.name not in residue_constants.atom_types:
+      if atom.name not in atom_types:
         continue
-      pos[residue_constants.atom_order[atom.name]] = atom.coord
-      mask[residue_constants.atom_order[atom.name]] = 1.
-      res_b_factors[residue_constants.atom_order[atom.name]] = atom.bfactor
+      idx = atom_types.index(atom.name)
+      pos[idx] = atom.coord
+      mask[idx] = 1.
+      res_b_factors[idx] = atom.bfactor
     if np.sum(mask) < 0.5:
       # If no known atom positions are reported for the residue then skip it.
       continue
@@ -126,7 +129,7 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
       b_factors=np.array(b_factors))
 
 
-def to_pdb(prot: Protein) -> str:
+def to_pdb(prot: Protein, model: str='1', parent: str='N/A') -> str:
   """Converts a `Protein` instance to a PDB string.
 
   Args:
@@ -150,13 +153,15 @@ def to_pdb(prot: Protein) -> str:
   if np.any(aatype > residue_constants.restype_num):
     raise ValueError('Invalid aatypes.')
 
-  pdb_lines.append('MODEL     1')
+  pdb_lines.append(f'MODEL     {model}')
+  pdb_lines.append(f'PARENT {parent}')
   atom_index = 1
   chain_id = 'A'
   # Add all atom sites.
   for i in range(aatype.shape[0]):
     res_name_3 = res_1to3(aatype[i])
-    atom_types = residue_constants.restype_name_to_atom14_names.get(res_name_3, 'UNK')
+    atom_types = residue_constants.restype_name_to_atom14_names.get(res_name_3,
+        residue_constants.restype_name_to_atom14_names.get('UNK'))
     for atom_name, pos, mask, b_factor in zip(
         atom_types, atom_positions[i], atom_mask[i], b_factors[i]):
       if mask < 0.5:

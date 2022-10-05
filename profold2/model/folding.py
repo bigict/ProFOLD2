@@ -7,8 +7,13 @@ from torch.cuda.amp import autocast
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
-from profold2.model.commons import init_zero_
-from profold2.model.functional import l2_norm, quaternion_multiply, quaternion_to_matrix
+from profold2.model.commons import init_zero_, embedd_dim_get
+from profold2.model.functional import (
+        l2_norm,
+        quaternion_multiply,
+        quaternion_to_matrix,
+        rigids_from_angles,
+        rigids_to_positions)
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -192,12 +197,13 @@ class IPABlock(nn.Module):
         **kwargs
     ):
         super().__init__()
+        dim_single, _ = embedd_dim_get(dim)
 
-        self.attn_norm = nn.LayerNorm(dim)
+        self.attn_norm = nn.LayerNorm(dim_single)
         self.attn = InvariantPointAttention(dim = dim, **kwargs)
 
-        self.ff_norm = nn.LayerNorm(dim)
-        self.ff = Transition(dim, mult = ff_mult, num_layers = ff_num_layers)
+        self.ff_norm = nn.LayerNorm(dim_single)
+        self.ff = Transition(dim_single, mult = ff_mult, num_layers = ff_num_layers)
 
     def forward(self, x, **kwargs):
         x = self.attn(x, **kwargs) + x
@@ -224,20 +230,23 @@ class AngleNet(nn.Module):
     def __init__(self, dim, channel=128, num_blocks=2):
         super().__init__()
 
+        self.projection = nn.Linear(dim, dim)
+
         self.blocks = nn.Sequential(
                 *[AngleNetBlock(dim, channel) for _ in range(num_blocks)])
 
-        self.projection = nn.Linear(dim, 14)
+        self.to_groups = nn.Linear(dim, 14)
 
-    def forward(self, representation):
-        act = representation['single']
+    def forward(self, single_repr, single_repr_init=None):
+        act = self.projection(single_repr)
+        if exists(single_repr_init):
+            act += self.projection(single_repr_init)
 
         # Mapping with some angle residual blocks
         act = self.blocks(act)
 
         # Map activations to torsion angles. (b l n 7 2)
-        angles = rearrange(self.projection(F.relu(act)), '... (n d)->... n d', d=2)
-        angles = l2_norm(angles)
+        angles = rearrange(self.to_groups(F.relu(act)), '... (n d)->... n d', d=2)
 
         return angles
 
@@ -248,34 +257,38 @@ class AngleNet(nn.Module):
 class StructureModule(nn.Module):
     def __init__(self, dim, structure_module_depth, structure_module_heads):
         super().__init__()
+        dim_single, dim_pairwise = embedd_dim_get(dim)
 
         assert structure_module_depth >= 1
         self.structure_module_depth = structure_module_depth
         with torch_default_dtype(torch.float32):
             self.ipa_block = IPABlock(
-                dim = dim,
+                dim = dim_single,
+                pairwise_repr_dim = dim_pairwise,
                 heads = structure_module_heads,
             )
 
-            self.to_affine_update = nn.Linear(dim, 6)
+            self.to_affine_update = nn.Linear(dim_single, 6)
 
         init_zero_(self.ipa_block.attn.to_out)
 
-        self.msa_to_single_repr_dim = nn.Sequential(
-                nn.LayerNorm(dim),
-                nn.Linear(dim, dim))
-        self.trunk_to_pairwise_repr_dim = nn.Sequential(
-                nn.LayerNorm(dim))
+        self.single_repr_norm = nn.LayerNorm(dim_single)
+        self.pairwise_repr_norm = nn.LayerNorm(dim_pairwise)
+        self.single_repr_dim = nn.Sequential(
+                nn.Linear(dim_single, dim_single))
 
-        self.to_points = nn.Linear(dim, 6)
+        self.to_angles = AngleNet(dim_single)
 
     def forward(self, representations, batch):
         b, n, device = *batch['seq'].shape[:2], batch['seq'].device
 
         single_repr, pairwise_repr = representations['single'], representations['pair']
 
-        single_repr = self.msa_to_single_repr_dim(single_repr)
-        pairwise_repr = self.trunk_to_pairwise_repr_dim(pairwise_repr)
+        single_repr = self.single_repr_norm(single_repr)
+        pairwise_repr = self.pairwise_repr_norm(pairwise_repr)
+
+        single_repr_init = single_repr
+        single_repr = self.single_repr_dim(single_repr)
 
         # prepare float32 precision for equivariance
         original_dtype = single_repr.dtype
@@ -316,10 +329,10 @@ class StructureModule(nn.Module):
                 translations = torch.einsum('b n c, b n r c -> b n r', translation_update, rotations) + translations
 
                 if self.training or is_last:
-                    n_point_global, c_point_global = map(lambda point_local: torch.einsum('b n c, b n r c -> b n r', point_local, rotations) + translations,
-                            self.to_points(single_repr).chunk(2, dim=-1))
-                    backbones = torch.stack((n_point_global, translations, c_point_global), dim=-2)
-                    backbones.type(original_dtype)
-                    outputs.append(dict(frames=(rotations, translations), act=single_repr, backbones=backbones))
+                    angles = self.to_angles(single_repr, single_repr_init=single_repr_init)
+                    frames = rigids_from_angles(batch['seq'], (rotations, translations), l2_norm(angles))
+                    coords = rigids_to_positions(frames, batch['seq'])
+                    coords.type(original_dtype)
+                    outputs.append(dict(frames=(rotations, translations), act=single_repr, atoms=dict(frames=frames, coords=coords, angles=angles)))
 
         return outputs

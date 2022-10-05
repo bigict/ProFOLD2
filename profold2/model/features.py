@@ -1,19 +1,26 @@
 import functools
 from inspect import isfunction
 
+import numpy as np
 import torch
+from torch.nn import functional as F
 from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
-from profold2.model.functional import rigids_from_3x3
-from profold2.utils import default,exists
+from profold2.model.functional import (
+        angles_from_positions,
+        batched_gather,
+        rigids_from_3x3,
+        rigids_from_positions,
+        symmetric_ground_truth_create_alt)
+from profold2.utils import default, exists
 
 _feats_fn = {}
 
+
 def take1st(fn):
     """Supply all arguments but the first."""
-
     @functools.wraps(fn)
     def fc(*args, **kwargs):
         return lambda x: fn(x, *args, **kwargs)
@@ -30,7 +37,146 @@ def make_seq_mask(protein, padd_id=20, is_training=True):
     return protein
 
 @take1st
+def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
+    if exists(includes) or exists(excludes):
+        restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
+        if exists(includes):
+            includes = set(includes)
+            for i in range(residue_constants.restype_num):
+                resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+                atom_list = residue_constants.restype_name_to_atom14_names[resname]
+                for j in range(restype_atom14_mask.shape[1]):
+                    if restype_atom14_mask[i,j] > 0 and atom_list[j] not in includes:
+                        restype_atom14_mask[i,j] = 0
+        if exists(excludes):
+            excludes = set(excludes)
+            for i in range(residue_constants.restype_num):
+                resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+                atom_list = residue_constants.restype_name_to_atom14_names[resname]
+                for j in range(restype_atom14_mask.shape[1]):
+                    if restype_atom14_mask[i,j] > 0 and atom_list[j] in excludes:
+                        restype_atom14_mask[i,j] = 0
+        coord_exists = batched_gather(restype_atom14_mask,
+                protein['seq'])
+    else:
+        coord_exists = batched_gather(residue_constants.restype_atom14_mask,
+                protein['seq'])
+    protein['coord_exists'] = coord_exists
+    return protein
+
+@take1st
+def make_coord_plddt(protein, threshold=0, gamma=None, use_weighted_mask=True, is_training=True):
+    if is_training and 'coord_plddt' in protein:
+        plddt_mask = (protein['coord_plddt'] >= threshold)
+        if exists(gamma):
+            protein['coord_plddt'] = torch.exp(gamma * (protein['coord_plddt'] - 1.0))
+        protein['coord_plddt'] *= plddt_mask
+        protein['coord_plddt_use_weighted_mask'] = use_weighted_mask
+    return protein
+
+@take1st
+def make_coord_alt(protein, is_training=True):
+    if is_training:
+        protein.update(
+                symmetric_ground_truth_create_alt(protein['seq'], protein.get('coord'), protein.get('coord_mask')))
+    return protein
+
+@take1st
 def make_msa_mask(protein):
+    return protein
+
+@take1st
+def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_training=True):
+    assert not is_training or 'msa' in protein
+    # Shape (b, m, l, c)
+    if 'msa' in protein:
+        msa = protein['msa']
+        if hasattr(protein['seq'], 'device'):
+            msa = msa.to(device=protein['seq'].device)
+        p = F.one_hot(
+                msa,
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        del msa
+        # Shape (b, l, c)
+        p = torch.sum(p, dim=1)
+    else:
+        p = F.one_hot(
+                protein['seq'],
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+    if exists(mask) and len(mask) > 0:
+        m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
+        m = F.one_hot(torch.as_tensor(m, device=p.device),
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        # Shape (k, c)
+        m = ~(torch.sum(m, dim=0) > 0)
+        protein['sequence_profile_mask'] = m
+        # Shape (c)
+        p = p * rearrange(m, 'c -> () () c')
+    # Shape (b, l, c)
+    if density:
+        p = p / (torch.sum(p, dim=-1, keepdim=True) + epsilon)
+    protein['sequence_profile'] = p
+    return protein
+
+@take1st
+def make_seq_profile_pairwise(protein, mask=None, density=False, epsilon=1e-8, is_training=True, chunk=8):
+    assert 'seq' in protein
+    assert not is_training or 'msa' in protein
+    # Shape (b, m, l, c)
+    if 'msa' in protein:
+        msa = protein['msa']
+        if hasattr(protein['seq'], 'device'):
+            msa = msa.to(device=protein['seq'].device)
+        q = F.one_hot(
+                msa,
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        del msa
+    else:
+        q = F.one_hot(
+                rearrange(protein['seq'], 'b ... -> b () ...'),
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+    # Shape (b, m, l, l, c, c)
+    # p = rearrange(p, '... i c -> ... i () c ()') * rearrange(p, '... j d -> ... () j () d')
+    # Shape (b, l, l, c, c)
+    # p = torch.sum(p, dim=1)
+    b, m, l, c = q.shape
+    p = torch.zeros((b, l, l, c, c), device=q.device)
+    for i in range(0, m, chunk):
+        p += torch.sum(
+                rearrange(q[:,i:i+chunk,...], 'b m i c -> b m i () c ()') * rearrange(q[:,i:i+chunk,...], 'b m j d -> b m () j () d'),
+                dim=1)
+    if exists(mask) and len(mask) > 0:
+        m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
+        m = F.one_hot(torch.as_tensor(m, device=p.device),
+                num_classes=len(residue_constants.restypes_with_x_and_gap))
+        # Shape (k, c)
+        m = ~(torch.sum(m, dim=0) > 0)
+        m = rearrange(m, 'c -> c ()') * rearrange(m, 'd -> () d')
+        protein['sequence_profile_pairwise_mask'] = rearrange(m, 'c d -> (c d)')
+        p = p * rearrange(m, 'c d -> () () () c d')
+    # Shape (b, l, l, c, c)
+    if density:
+        p = p / (torch.sum(p, dim=(-2, -1), keepdim=True) + epsilon)
+    # Shape (b, l, l, c^2)
+    protein['sequence_profile_pairwise'] = rearrange(p, '... c d -> ... (c d)')
+    return protein
+
+@take1st
+def make_bert_mask(protein,
+                   fraction=0.12,
+                   prepend_bos=True,
+                   append_eos=True,
+                   is_training=True):
+    masked_shape = protein['seq'].shape
+    mask = protein['mask']
+    if prepend_bos:
+        masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
+        mask = torch.cat((torch.ones((*masked_shape[:-1], 1), device=mask.device), mask), dim=-1)
+    if append_eos:
+        masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
+        mask = torch.cat((mask, torch.ones((*masked_shape[:-1], 1), device=mask.device)), dim=-1)
+    masked_position = torch.rand(masked_shape) < fraction
+    protein['bert_mask'] = masked_position * mask
     return protein
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
@@ -61,11 +207,35 @@ def make_pseudo_beta(protein, prefix='', is_training=True):
 
 @take1st
 def make_backbone_affine(protein, is_training=True):
-    assert (not is_training) or ('coord' in protein and 'coord_mask' in protein)
-    if is_training or ('coord' in protein and 'coord_mask' in protein):
-        assert protein['coord'].shape[-2] >= 3
-        protein['backbone_affine'] = rigids_from_3x3(protein['coord'][...,:3,:])
-        protein['backbone_affine_mask'] = torch.any(protein['coord_mask'][...,:3] != 0, dim=-1)
+    #assert (not is_training) or ('coord' in protein and 'coord_mask' in protein)
+    if is_training and ('coord' in protein and 'coord_mask' in protein):
+        n_idx = residue_constants.atom_order['N']
+        ca_idx = residue_constants.atom_order['CA']
+        c_idx = residue_constants.atom_order['C']
+
+        assert protein['coord'].shape[-2] > min(n_idx, ca_idx, c_idx)
+        protein['backbone_affine'] = rigids_from_3x3(protein['coord'], indices=(c_idx, ca_idx, n_idx))
+        coord_mask = protein['coord_mask']
+        coord_mask = torch.stack(
+                (coord_mask[...,c_idx], coord_mask[...,ca_idx], coord_mask[...,n_idx]),
+                dim=-1)
+        protein['backbone_affine_mask'] = torch.all(coord_mask != 0, dim=-1)
+    return protein
+
+@take1st
+def make_affine(protein, is_training=True):
+    if is_training:
+        feats = rigids_from_positions(protein['seq'], protein.get('coord'), protein.get('coord_mask'))
+        protein.update(feats)
+    return protein
+
+@take1st
+def make_torsion_angles(protein, is_training=True):
+    if is_training and ('coord' in protein and 'coord_mask' in protein):
+        feats = angles_from_positions(protein['seq'], protein['coord'], protein['coord_mask'])
+        protein.update(feats)
+        #protein['torsion_chi_angles'] = feats['torsion_angles'][...,3:,:]  # (B, N, 7, 2) -> (B, N, 4, 2)
+        #protein['torsion_chi_mask'] = feats['torsion_angles_mask'][...,3:]  # (B, N, 7) -> (B, N, 4)
     return protein
 
 @take1st
@@ -73,7 +243,7 @@ def make_random_seed_to_crop(protein, is_training=True):
     return protein
 
 @take1st
-def make_esm_embedd(protein, model, repr_layer=None, max_seq_len=None, device=None, field='embedds', is_training=True):
+def make_esm_embedd(protein, model, repr_layer, max_seq_len=None, device=None, field='embedds', is_training=True):
     esm_extractor = ESMEmbeddingExtractor.get(*model, device=device)
     data_in = list(zip(protein['pid'], map(lambda x: x[:max_seq_len], protein['str_seq'])))
     data_out = esm_extractor.extract(data_in, repr_layer=repr_layer, device=device)
@@ -92,6 +262,13 @@ def make_to_device(protein, fields, device, is_training=True):
     for k in fields:
         if k in protein:
             protein[k] = protein[k].to(device)
+    return protein
+
+@take1st
+def make_delete_fields(protein, fields, is_training=True):
+    for k in fields:
+        if k in protein:
+            del protein[k]
     return protein
 
 @take1st
