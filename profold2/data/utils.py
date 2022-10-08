@@ -117,7 +117,7 @@ def pdb_save(step, batch, headers, prefix='/tmp', return_pdb = False):
         coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
         b_factors = None
         if 'confidence' in headers and 'plddt' in headers['confidence']:
-            plddt = headers['confidence']['plddt'].numpy() # (b l)
+            plddt = headers['confidence']['plddt'].detach().cpu().numpy() # (b l)
             b_factors = coord_mask * plddt[b][...,None]
 
         result = dict(structure_module=dict(
