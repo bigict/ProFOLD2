@@ -19,7 +19,9 @@ ESM_EMBED_LAYER = 33
 ESM_EMBED_DIM = 1280
 ESM_MODEL_PATH = ["facebookresearch/esm:main", "esm1b_t33_650M_UR50S"]
 
-def _esm_lookup(self, tokens):
+logger = logging.getLogger(__name__)
+
+def _esm_lookup(self, alphabet, tokens, clips=None):
     padding_mask = tokens.eq(self.padding_idx)  # B, T
 
     x = self.embed_scale * self.embed_tokens(tokens)
@@ -32,7 +34,28 @@ def _esm_lookup(self, tokens):
         mask_ratio_observed = (tokens == self.mask_idx).sum(-1).float() / src_lengths
         x = x * (1 - mask_ratio_train) / (1 - mask_ratio_observed)[:, None, None]
     
-    x = x + self.embed_positions(tokens)
+    def faked_embed_positions(b):
+        pos_idx = 0
+        if b in clips:
+            pos_idx = clips[b].get('i', 0)
+
+        if pos_idx > 0:
+            logger.debug('_esm_lookup: batch=%d, pos_idx=%d, l=%d', b, pos_idx, l)
+            pos_idx = min(pos_idx, self.embed_positions.max_positions - l)
+            unks = torch.full((1, pos_idx) + tokens.shape[2:],
+                    alphabet.unk_idx, dtype=tokens.dtype, device=tokens.device)
+            faked_tokens = toch.cat((tokens[b:b+1,:1,...], unks, tokens[b:b+1,1:,...]), dim=1)
+            faked_pos_embed = self.embed_positions(faked_tokens)
+            return torch.cat((
+                faked_pos_embed[:,:1,...],
+                faked_pos_embed[:,pos_idx+1:,...]), dim=1)
+        return self.embed_positions(tokens[b:b+1,...])
+
+    if exists(clips) and len(clips) > 0:
+        x = x + torch.cat(
+                [faked_embed_positions(b) for b in range(tokens.shape[0])], dim=0)
+    else:
+        x = x + self.embed_positions(tokens)
     return x
 
 def _esm_forward(self, x, tokens, repr_layers=[], need_head_weights=False, return_contacts=False):
@@ -135,7 +158,7 @@ class ESMEmbedding(nn.Module):
             batch_tokens = batch_tokens.to(device)
         return batch_tokens
 
-    def forward(self, batch, repr_layer=ESM_EMBED_LAYER, return_contacts=False):
+    def forward(self, batch, clips=None, repr_layer=ESM_EMBED_LAYER, return_contacts=False):
         """ Returns the ESM embeddings for a protein.
             Inputs:
             * seq: ( (b,) L,) tensor of ints (in sidechainnet int-char convention)
@@ -158,7 +181,7 @@ class ESMEmbedding(nn.Module):
             return forward
 
         # Extract per-residue representations
-        x = _esm_lookup(self.model, batch)
+        x = _esm_lookup(self.model, self.alphabet, batch, clips=clips)
         if torch.is_grad_enabled():
             return checkpoint(run_function(repr_layer, return_contacts), x, batch)
         return run_function(repr_layer, return_contacts)(x, batch)

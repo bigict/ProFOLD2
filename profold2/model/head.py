@@ -81,8 +81,10 @@ class ContactHead(nn.Module):
         self.loss_max = loss_max
 
     def forward(self, headers, representations, batch):
-        assert 'mlm' in representations and 'contacts' in representations['mlm']
-        return dict(logits=representations['mlm']['contacts'])
+        assert not self.training or ('mlm' in representations and 'contacts' in representations['mlm'])
+        if 'mlm' in representations and 'contacts' in representations['mlm'] and exists(representations['mlm']['contacts']):
+            return dict(logits=representations['mlm']['contacts'])
+        return None
 
     def loss(self, value, batch):
         assert 'logits' in value

@@ -170,8 +170,8 @@ class Alphafold2(nn.Module):
         representations = {}
 
         # embed multiple sequence alignment (msa)
-        if not self.training and n > self.sequence.max_input_len:
-            embedds, contacts = [], torch.zeros((b, n, n), device=device)
+        if not self.training:  # and n > self.sequence.max_input_len:
+            embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
             for k in range(0, n, self.sequence.max_step_len):
                 i, j = k, min(k + self.sequence.max_input_len, n)
                 delta = 0 if i == 0 else self.sequence.max_input_len - self.sequence.max_step_len
@@ -180,9 +180,10 @@ class Alphafold2(nn.Module):
                     i = n - self.sequence.max_input_len
                 labels = self.sequence.batch_convert(
                         [s[i:j] for s in batch['str_seq']], device=device)
-                x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=True)
+                # x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=False)
+                x = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=False)
                 embedds.append(x[...,delta:j-i,:])
-                contacts[...,i:j,i:j] = y
+                # contacts[...,i:j,i:j] = y
                 if j < k + self.sequence.max_input_len:
                     break
             embedds = torch.cat(embedds, dim=-2)
@@ -191,10 +192,11 @@ class Alphafold2(nn.Module):
             embedds, contacts = self.sequence(
                         labels,
                         repr_layer=esm.ESM_EMBED_LAYER,
+                        clips = batch.get('clips'),
                         return_contacts=True)
 
         representations['mlm'] = dict(representations=embedds,
-                contacts=contacts, labels=labels)
+                contacts=contacts)
 
         embedds = rearrange(embedds, 'b l c -> b () l c')
 

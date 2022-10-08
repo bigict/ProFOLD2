@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from torch.utils.data import WeightedRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 
 from profold2.common import protein, residue_constants
 from profold2.data.parsers import parse_a3m, parse_fasta
@@ -485,4 +486,7 @@ def load(data_dir, data_idx='name.idx', min_crop_len=None, max_crop_len=None, cr
             kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=len(weights))
             if 'shuffle' in kwargs:
                 kwargs.pop('shuffle')
+    elif 'num_replicas' in kwargs and 'rank' in kwargs:
+        num_replicas, rank = kwargs.pop('num_replicas'), kwargs.pop('rank')
+        kwargs['sampler'] = DistributedSampler(dataset, num_replicas=num_replicas, rank=rank)
     return torch.utils.data.DataLoader(dataset, **kwargs)
