@@ -17,6 +17,8 @@ from profold2.model.mlm import MLM
 from profold2.model.sequence import ESMEmbedding
 from profold2.utils import *
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class Recyclables:
     single_msa_repr_row: torch.Tensor
@@ -27,9 +29,6 @@ class Recyclables:
 
 @dataclass
 class _ReturnValues:
-    theta: torch.Tensor = None
-    phi: torch.Tensor = None
-    omega: torch.Tensor = None
     msa_mlm_loss: torch.Tensor = None
     recyclables: Recyclables = None
     headers: dict = None
@@ -42,9 +41,7 @@ class ReturnValues(_ReturnValues):
         super().__init__(**kwargs)
     
     def asdict(self):
-        return dict(theta=self.theta,
-                phi=self.phi,
-                omega=self.omega,
+        return dict(
                 msa_mlm_loss=self.msa_mlm_loss,
                 recyclables=self.recyclables.asdict() if exists(self.recyclables) else self.recyclables,
                 headers=self.headers,
@@ -72,7 +69,6 @@ class Alphafold2(nn.Module):
         mlm_random_replace_token_prob = 0.1,
         mlm_keep_token_same_prob = 0.1,
         mlm_exclude_token_ids = (0,),
-        feats = None,
         headers = None
     ):
         super().__init__()
@@ -151,9 +147,11 @@ class Alphafold2(nn.Module):
         templates_feats = None,
         templates_mask = None,
         templates_angles = None,
-        return_recyclables = False,
-        compute_loss = True,
-        shard_size = None
+        sequence_max_input_len=None,
+        sequence_max_step_len=None,
+        return_recyclables=False,
+        compute_loss=True,
+        shard_size=None
     ):
         seq, mask, seq_embed, seq_index = map(batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
         msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
@@ -172,19 +170,30 @@ class Alphafold2(nn.Module):
         # embed multiple sequence alignment (msa)
         if not self.training:  # and n > self.sequence.max_input_len:
             embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
-            for k in range(0, n, self.sequence.max_step_len):
-                i, j = k, min(k + self.sequence.max_input_len, n)
-                delta = 0 if i == 0 else self.sequence.max_input_len - self.sequence.max_step_len
-                if i > 0 and j < i + self.sequence.max_input_len:
-                    delta += i + self.sequence.max_input_len - n
-                    i = n - self.sequence.max_input_len
+            max_input_len = sequence_max_input_len if exists(sequence_max_input_len) else self.sequence.max_input_len
+            max_step_len = sequence_max_step_len if exists(sequence_max_step_len) else self.sequence.max_step_len
+            for k in range(0, n, max_step_len):
+                i, j = k, min(k + max_input_len, n)
+                delta = 0 if i == 0 else max_input_len - max_step_len
+                if i > 0 and j < i + max_input_len:
+                    delta += i + max_input_len - n
+                    i = n - max_input_len
                 labels = self.sequence.batch_convert(
                         [s[i:j] for s in batch['str_seq']], device=device)
+                clips = dict([(s, dict(i=i, j=j, l=n)) for s in range(len(batch['str_seq']))])
                 # x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=False)
-                x = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=False)
-                embedds.append(x[...,delta:j-i,:])
+                x = self.sequence(labels,
+                        repr_layer=esm.ESM_EMBED_LAYER,
+                        clips=clips,
+                        return_contacts=False)
+                p = delta // 2
+                if embedds and p > 0:
+                    l = embedds[-1].shape[-2]
+                    assert l > p
+                    embedds[-1] = embedds[-1][...,:l-p,:]
+                embedds.append(x[...,delta-p:j-i,:])
                 # contacts[...,i:j,i:j] = y
-                if j < k + self.sequence.max_input_len:
+                if j < k + max_input_len:
                     break
             embedds = torch.cat(embedds, dim=-2)
         else:
@@ -316,7 +325,7 @@ class Alphafold2WithRecycling(nn.Module):
         super().__init__()
 
         self.impl = Alphafold2(**kwargs)
-        logging.debug('{}'.format(self))
+        logger.debug('{}'.format(self))
 
     def embeddings(self):
         return self.impl.embeddings()
@@ -342,11 +351,11 @@ class Alphafold2WithRecycling(nn.Module):
             for i in range(num_recycle):
                 ret = ReturnValues(**cycling_function(batch))
                 if 'tmscore' in ret.headers:
-                    logging.debug('{}/{} pid:{} tmscore: {}'.format(i, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
+                    logger.debug('{}/{} pid:{} tmscore: {}'.format(i, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
                 batch['recyclables'] = ret.recyclables
 
         ret = ReturnValues(**self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs))
         if 'tmscore' in ret.headers:
-            logging.debug('{}/{} pid:{} tmscore: {}'.format(num_recycle, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
+            logger.debug('{}/{} pid:{} tmscore: {}'.format(num_recycle, num_recycle, ','.join(batch['pid']), ret.headers['tmscore']['loss'].item()))
 
         return ret.asdict()

@@ -23,12 +23,14 @@ def unique_id():
     return str(uuid.uuid4())
 
 @contextlib.contextmanager
-def timing(msg, print_func, prefix=''):
-    print_func(f'{prefix}Started {msg}')
+def timing(msg, print_fn, prefix='', callback_fn=None):
+    print_fn(f'{prefix}Started {msg}')
     tic = time.time()
     yield
     toc = time.time()
-    print_func(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
+    if exists(callback_fn):
+      callback_fn(tic, toc)
+    print_fn(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
 
 # decorators
 

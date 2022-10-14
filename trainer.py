@@ -6,17 +6,13 @@
 """
 import os
 import copy
-import functools
 import json
 import logging
-from logging.handlers import QueueHandler, QueueListener
 import random
-import resource
 
 import numpy as np
 import torch
 from torch import nn
-import torch.multiprocessing as mp
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
@@ -26,87 +22,27 @@ from profold2.data.utils import (
     embedding_get_labels,
     pdb_save,
     weights_from_file)
-from profold2.model import Alphafold2, MetricDict, ReturnValues
+from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
+from worker import main, WorkerModel
 
-class WorkerLogFilter(logging.Filter):
-  def __init__(self, rank=-1):
-    super().__init__()
-    self._rank = rank
+def preprocess(args):  # pylint: disable=redefined-outer-name
+  if args.checkpoint_every > 0:
+    os.makedirs(os.path.join(args.prefix, 'checkpoints'),
+                exist_ok=True)
+  if args.save_pdb <= 1.0:
+    os.makedirs(os.path.join(args.prefix, 'pdbs'),
+                exist_ok=True)
 
-  def filter(self, record):
-    if self._rank != -1:
-      record.msg = f'Rank {self._rank} | {record.msg}'
-    return True
-
-def worker_setup(rank, log_queue, args):  # pylint: disable=redefined-outer-name
-  # logging
-  logger = logging.getLogger()
-  ctx_handler = QueueHandler(log_queue)
-  if args.gpu_list:
-    ctx_filter = WorkerLogFilter(args.gpu_list[rank])
-    ctx_handler.addFilter(ctx_filter)
-  logger.addHandler(ctx_handler)
-
-  level=logging.DEBUG if args.verbose else logging.INFO
-  logger.setLevel(level)
-
-  if args.gpu_list:
-    logging.info(
-            'torch.distributed.init_process_group: rank=%d@%d, world_size=%d',
-            rank, args.gpu_list[rank], len(args.gpu_list))
-    torch.distributed.init_process_group(
-            backend='nccl',
-            init_method=f'file://{args.ipc_file}',
-            rank=rank,
-            world_size=len(args.gpu_list))
-    torch.cuda.set_device(args.gpu_list[rank])
-
-def worker_cleanup(args):  # pylint: disable=redefined-outer-name
-  if args.gpu_list:
-    torch.distributed.destroy_process_group()
-
-def worker_device(rank, args):  # pylint: disable=redefined-outer-name
-  if args.gpu_list and rank < len(args.gpu_list):
-    assert args.gpu_list[rank] < torch.cuda.device_count()
-    #torch.cuda.set_device(args.gpu_list[rank])
-    return args.gpu_list[rank]
-  return torch.device('cpu')
-
-def worker_model(rank, model, args):  # pylint: disable=redefined-outer-name
-  if args.gpu_list and rank < len(args.gpu_list):
-    device = worker_device(rank, args)
-    model.to(device)
-
-    logging.info('wrap model with nn.parallel.DistributedDataParallel class')
-    model = nn.parallel.DistributedDataParallel(
-        model,
-        device_ids=[args.gpu_list[rank]], output_device=args.gpu_list[rank],
-        find_unused_parameters=False)
-    model._set_static_graph()  # pylint: disable=protected-access
-  return model
-
-def worker_data_init_fn(rank, args=None):  # pylint: disable=redefined-outer-name
-  del rank
-  if args:
-    random.seed(args.random_seed)
-    np.random.seed(args.random_seed)
-
-def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
+def train(rank, args):  # pylint: disable=redefined-outer-name
   random.seed(args.random_seed)
   np.random.seed(args.random_seed)
 
-  worker_setup(rank, log_queue, args)
-
   # get data
-  device = worker_device(rank, args)
+  worker = WorkerModel(rank, args)
+  device = worker.device()
   with open(args.model_features, 'r', encoding='utf-8') as f:
     feats = json.loads(f.read())
-    for i in range(len(feats)):
-      feat_name, feat_args = feats[i]
-      if 'device' in feat_args and feat_args['device'] == '%(device)s':
-        feat_args['device'] = device
-        feats[i] = (feat_name, feat_args)
 
   train_loader = dataset.load(
       data_dir=args.train_data,
@@ -116,13 +52,11 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
-      feats=feats,
-      worker_init_fn=functools.partial(
-          worker_data_init_fn, args=args),
       batch_size=args.batch_size,
       weights=list(weights_from_file(args.sampling_by_weights)),
       shuffle=True,
       prefetch_factor=args.prefetch_factor,
+      pin_memory=True,
       num_workers=args.num_workers)
   if args.tuning_data:
     tuning_loader = dataset.load(
@@ -131,11 +65,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
-        feats=feats,
         batch_size=args.batch_size,
-        is_training=True,
         shuffle=True,
         prefetch_factor=args.prefetch_factor,
+        pin_memory=True,
         num_workers=args.num_workers)
 
   if args.eval_data:
@@ -145,10 +78,9 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
-        feats=feats,
         batch_size=args.batch_size,
-        is_training=False,
-        num_workers=0)
+        pin_memory=True,
+        num_workers=args.num_workers)
 
   if args.fake_data:
     fake_loader = dataset.load(
@@ -157,11 +89,10 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
-        feats=feats,
         batch_size=args.batch_size,
-        is_training=True,
         shuffle=True,
-        num_workers=0)
+        pin_memory=True,
+        num_workers=args.num_workers)
 
   def data_cond(batch):
     return (args.min_protein_len <= batch['seq'].shape[1] and
@@ -178,13 +109,14 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
   logging.info('Alphafold2.feats: %s', feats)
   logging.info('Alphafold2.headers: %s', headers)
 
-  model = worker_model(rank, Alphafold2(dim=args.model_dim,
+  features = FeatureBuilder(feats).to(device)
+  model = worker.wrap(dim=args.model_dim,
                      depth=args.model_evoformer_depth,
                      heads=args.model_evoformer_head_num,
                      dim_head=args.model_evoformer_head_dim,
                      embedd_dim=args.model_embedd_dim,
                      attn_dropout=args.model_dropout,
-                     headers=headers), args)
+                     headers=headers)
 
   # optimizer
   optim = Adam(model.parameters(), lr=args.learning_rate)
@@ -236,6 +168,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
       epoch, batch = next(data_loader)
+      batch = features(batch, is_training=True)
       if batch_callback:
         batch = batch_callback(batch)
 
@@ -258,7 +191,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
       if ('tmscore' in r.headers and
           r.headers['tmscore']['loss'].item() >= args.save_pdb):
-        pdb_save(it, batch, r.headers, os.path.join(args.prefix, 'pdbs'))
+        pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
     for k, v in running_loss.items():
       v /= (args.batch_size * args.gradient_accumulate_every)
@@ -314,6 +247,7 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
         # eval loss
         n, eval_loss = 0, MetricDict()
         for data in iter(eval_loader):
+          data = features(data, is_training=False)
           r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
           for h, v in r.headers.items():
             if 'loss' in v:
@@ -339,67 +273,19 @@ def train(rank, log_queue, args):  # pylint: disable=redefined-outer-name
 
   # save model
   if not args.gpu_list or rank == 0:
-    torch.save(dict(feats=feats,
-            model=model.module
+    torch.save(dict(dim=args.model_dim,
+            evoformer_depth=args.model_evoformer_depth,
+            evoformer_head_num=args.model_evoformer_head_num,
+            evoformer_head_dim=args.model_evoformer_head_dim,
+            mlm_dim=args.model_embedd_dim,
+            headers=headers,
+            feats=feats,
+            model=model.module.state_dict()
                 if isinstance(model, nn.parallel.DistributedDataParallel)
-                else model),
+                else model.state_dict()),
         os.path.join(args.prefix, 'model.pth'))
 
-  worker_cleanup(args)
-
-def main(args):  # pylint: disable=redefined-outer-name
-  mp.set_start_method('spawn', force=True)
-
-  # logging
-  os.makedirs(os.path.abspath(args.prefix), exist_ok=True)
-  if args.checkpoint_every > 0:
-    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'checkpoints')),
-                exist_ok=True)
-  if args.save_pdb <= 1.0:
-    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')),
-                exist_ok=True)
-  handlers = [
-      logging.StreamHandler(),
-      logging.FileHandler(
-          os.path.join(
-              args.prefix,
-              f'{os.path.splitext(os.path.basename(__file__))[0]}.log'))]
-
-  def handler_apply(h, f, *arg):
-    f(*arg)
-    return h
-  level=logging.DEBUG if args.verbose else logging.INFO
-  handlers = list(map(lambda x: handler_apply(x, x.setLevel, level), handlers))
-  fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
-  handlers = list(map(lambda x: handler_apply(
-      x, x.setFormatter, logging.Formatter(fmt)), handlers))
-
-  logging.basicConfig(
-      format=fmt,
-      level=level,
-      handlers=handlers)
-
-  log_queue = mp.Queue(-1)
-  listener = QueueListener(log_queue, *handlers,
-      respect_handler_level=True)
-  listener.start()
-
-  logging.info('-----------------')
-  logging.info('Arguments: %s', args)
-  logging.info('-----------------')
-
-  mp.spawn(train, args=(log_queue, args),
-          nprocs=len(args.gpu_list) if args.gpu_list else 1,
-          join=True)
-
-  logging.info('-----------------')
-  logging.info('Resources(myself): %s',
-      resource.getrusage(resource.RUSAGE_SELF))
-  logging.info('Resources(children): %s',
-      resource.getrusage(resource.RUSAGE_CHILDREN))
-  logging.info('-----------------')
-
-  listener.stop()
+setattr(train, 'preprocess', preprocess)
 
 if __name__ == '__main__':
   import argparse
@@ -446,7 +332,7 @@ if __name__ == '__main__':
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
   parser.add_argument('--random_seed', type=int, default=None,
-      help='random seed')
+      help='random seed, default=None')
 
   parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
       help='the maximum number of checkpoints to keep, default=5')
@@ -463,8 +349,8 @@ if __name__ == '__main__':
       help='batch size, default=1')
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers, default=1')
-  parser.add_argument('--prefetch_factor', type=int, default=1,
-      help='number of batches loaded in advance by each worker, default=1')
+  parser.add_argument('--prefetch_factor', type=int, default=2,
+      help='number of batches loaded in advance by each worker, default=2')
   parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
       help='learning rate, default=3e-4')
 
@@ -498,4 +384,4 @@ if __name__ == '__main__':
 
   args = parser.parse_args()
 
-  main(args)
+  main(args, train)

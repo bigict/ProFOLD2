@@ -21,14 +21,17 @@ RELAX_STIFFNESS = 10.0
 RELAX_EXCLUDE_RESIDUES = []
 RELAX_MAX_OUTER_ITERATIONS = 3
 
-def main(args):  # pylint: disable=redefined-outer-name
-  amber_relaxer = relax.AmberRelaxation(
+def create(use_gpu_relax=False):
+  return relax.AmberRelaxation(
       max_iterations=RELAX_MAX_ITERATIONS,
       tolerance=RELAX_ENERGY_TOLERANCE,
       stiffness=RELAX_STIFFNESS,
       exclude_residues=RELAX_EXCLUDE_RESIDUES,
       max_outer_iterations=RELAX_MAX_OUTER_ITERATIONS,
-      use_gpu=args.use_gpu_relax)
+      use_gpu=use_gpu_relax)
+
+def main(args):  # pylint: disable=redefined-outer-name
+  amber_relaxer = create(use_gpu_relax=args.use_gpu_relax)
 
   for pdb_files in args.pdb_files:
     for pdb_file in glob.glob(pdb_files):

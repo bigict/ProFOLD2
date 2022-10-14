@@ -65,6 +65,9 @@ def main(args):  # pylint: disable=redefined-outer-name
         with io.BytesIO(base64.b64decode(header)) as f:
           header = torch.load(f, map_location='cpu')
 
+        if args.dump_header:
+          f = filename_get(desc, 'pth')
+          torch.save(header, f)
         plddt = None
         if 'confidence' in header:
           if 'loss' in header['confidence']:
@@ -134,7 +137,7 @@ if __name__ == '__main__':
 
   parser = argparse.ArgumentParser()
   parser.add_argument('--uri', type=str,
-      default='http://127.0.0.1:8080/predictions/profold0_0',
+      default='http://127.0.0.1:8080/predictions/profold0',
       help='ipc file to initialize the process group')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
@@ -153,6 +156,7 @@ if __name__ == '__main__':
   parser.add_argument('--dump_contact', action='store_true',
       help='dump contact images')
   parser.add_argument('--dump_msa', action='store_true', help='dump msa files')
+  parser.add_argument('--dump_header', action='store_true', help='dump headers')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 

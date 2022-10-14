@@ -34,26 +34,27 @@ def _esm_lookup(self, alphabet, tokens, clips=None):
         mask_ratio_observed = (tokens == self.mask_idx).sum(-1).float() / src_lengths
         x = x * (1 - mask_ratio_train) / (1 - mask_ratio_observed)[:, None, None]
     
-    def faked_embed_positions(b):
+    def pseudo_embed_positions(b):
         pos_idx = 0
         if b in clips:
             pos_idx = clips[b].get('i', 0)
 
         if pos_idx > 0:
+            l = tokens.shape[1]
             logger.debug('_esm_lookup: batch=%d, pos_idx=%d, l=%d', b, pos_idx, l)
             pos_idx = min(pos_idx, self.embed_positions.max_positions - l)
             unks = torch.full((1, pos_idx) + tokens.shape[2:],
                     alphabet.unk_idx, dtype=tokens.dtype, device=tokens.device)
-            faked_tokens = toch.cat((tokens[b:b+1,:1,...], unks, tokens[b:b+1,1:,...]), dim=1)
-            faked_pos_embed = self.embed_positions(faked_tokens)
+            pseudo_tokens = torch.cat((tokens[b:b+1,:1,...], unks, tokens[b:b+1,1:,...]), dim=1)
+            pseudo_pos_embed = self.embed_positions(pseudo_tokens)
             return torch.cat((
-                faked_pos_embed[:,:1,...],
-                faked_pos_embed[:,pos_idx+1:,...]), dim=1)
+                pseudo_pos_embed[:,:1,...],
+                pseudo_pos_embed[:,pos_idx+1:,...]), dim=1)
         return self.embed_positions(tokens[b:b+1,...])
 
     if exists(clips) and len(clips) > 0:
         x = x + torch.cat(
-                [faked_embed_positions(b) for b in range(tokens.shape[0])], dim=0)
+                [pseudo_embed_positions(b) for b in range(tokens.shape[0])], dim=0)
     else:
         x = x + self.embed_positions(tokens)
     return x
@@ -145,7 +146,10 @@ class ESMEmbedding(nn.Module):
 
         if (hasattr(self.model, 'args') and
                 hasattr(self.model.args, 'max_positions')):
-            self.max_input_len = self.model.args.max_positions - 2 # HACK: :(
+            if exists(self.model.padding_idx):
+                self.max_input_len = self.model.args.max_positions - self.model.padding_idx - 1 # HACK: :(
+            else:
+                self.max_input_len = self.model.args.max_positions
         else:
             self.max_input_len = 1022
         self.max_step_len = self.max_input_len // 2
