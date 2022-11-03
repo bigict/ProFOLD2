@@ -104,17 +104,28 @@ def filter_from_file(filename):
             for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
                 yield line
 
-def pdb_save(step, batch, headers, prefix='/tmp', return_pdb = False):
-    def to_pdb(b):
+def pdb_from_prediction(batch, headers, idx=None):
+    def to_pdb_str(b):
         str_seq = batch['str_seq'][b]
+        N = len(str_seq)
         #aatype = batch['seq'][b,...].numpy()
         aatype = np.array([residue_constants.restype_order_with_x.get(aa, residue_constants.unk_restype_index) for aa in str_seq])
         features = dict(aatype=aatype, 
                 residue_index=np.arange(N))
 
         coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
-        _, _, num_atoms, _ = coords.shape
-        coord_mask = np.asarray([residue_constants.restype_atom14_mask[restype][:num_atoms] for restype in aatype])
+        restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
+        # includes = ['N', 'CA', 'C', 'CB']
+        includes = []
+        if includes:
+            includes = set(includes)
+            for i in range(residue_constants.restype_num):
+                resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+                atom_list = residue_constants.restype_name_to_atom14_names[resname]
+                for j in range(restype_atom14_mask.shape[1]):
+                    if restype_atom14_mask[i,j] > 0 and atom_list[j] not in includes:
+                        restype_atom14_mask[i,j] = 0
+        coord_mask = np.asarray([restype_atom14_mask[restype] for restype in aatype])
         b_factors = None
         if 'confidence' in headers and 'plddt' in headers['confidence']:
             plddt = headers['confidence']['plddt'].detach().cpu().numpy() # (b l)
@@ -127,20 +138,24 @@ def pdb_save(step, batch, headers, prefix='/tmp', return_pdb = False):
                 features=features, result=result, b_factors=b_factors)
         return protein.to_pdb(prot)
 
-    b, N = batch['seq'].shape
-    if return_pdb:
-        return [to_pdb(i) for i, _ in enumerate(batch['pid'])]
+    if exists(idx):
+        return to_pdb_str(idx)
+    return [to_pdb_str(i) for i in range(len(batch['pid']))]
+    
+def pdb_save(batch, headers, prefix='/tmp', step=None):
+    for idx, pid in enumerate(batch['pid']):
+        pdb_str = pdb_from_prediction(batch, headers, idx=idx)
 
-    for x, pid in enumerate(batch['pid']):
-        pdb_str = to_pdb(x)
-
-        p = os.path.join(prefix, '{}_{}_{}.pdb'.format(pid, step, x))
+        if exists(step):
+            p = os.path.join(prefix, f'{pid}_{step}_{idx}.pdb')
+        else:
+            p = os.path.join(prefix, f'{pid}.pdb')
         with open(p, 'w') as f:
             f.write(pdb_str)
 
-            str_seq = batch['str_seq'][b]
+            str_seq = batch['str_seq'][idx]
             if 'mask' in batch:
-                masked_seq_len = torch.sum(batch['mask'][x,...], dim=-1)
+                masked_seq_len = torch.sum(batch['mask'][idx,...], dim=-1)
             else:
                 masked_seq_len = len(str_seq)
-            logging.debug('step: {}/{} length: {}/{} PDB save: {}'.format(step, x, masked_seq_len, len(str_seq), pid))
+            logging.debug('step: {}/{} length: {}/{} PDB save: {}'.format(step, idx, masked_seq_len, len(str_seq), pid))

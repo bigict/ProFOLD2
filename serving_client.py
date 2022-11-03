@@ -12,9 +12,12 @@ import logging
 
 import matplotlib.pyplot as plt
 import torch
+from torch.nn import functional as F
 import requests
 
+from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
+from profold2.utils import timing
 
 logger = logging.getLogger(__file__)
 
@@ -36,15 +39,15 @@ def main(args):  # pylint: disable=redefined-outer-name
     logger.info('Request: %s begin', fasta_file)
     with open(fasta_file, 'r', encoding='utf-8') as f:
       fasta_str = f.read()
-    r = requests.post(args.uri,
-                      data=dict(body=fasta_str, fmt=args.fasta_fmt,
-                                num_recycle=args.model_recycles,
-                                shard_size=args.model_shard_size),
-                      timeout=7200)
+    with timing(f'Request: {fasta_file}', print):
+      r = requests.post(args.uri,
+                        data=dict(body=fasta_str, fmt=args.fasta_fmt,
+                                  num_recycle=args.model_recycles,
+                                  shard_size=args.model_shard_size),
+                        timeout=7200)
     if r.status_code != 200:
       logger.error('Request: %s error: %s', fasta_file, r.status_code)
     else:
-      logger.info('Request: %s end', fasta_file)
       if args.fasta_fmt == 'a4m':
         sequences = fasta_str.splitlines()
         descriptions = [f'{i}' for i in range(len(sequences))]
@@ -62,6 +65,9 @@ def main(args):  # pylint: disable=redefined-outer-name
         with io.BytesIO(base64.b64decode(header)) as f:
           header = torch.load(f, map_location='cpu')
 
+        if args.dump_header:
+          f = filename_get(desc, 'pth')
+          torch.save(header, f)
         plddt = None
         if 'confidence' in header:
           if 'loss' in header['confidence']:
@@ -86,9 +92,31 @@ def main(args):  # pylint: disable=redefined-outer-name
             print(header['confidence']['plddt'])
         if 'metric' in header:
           print('-------------')
-          print('metric:', header['metric']['loss'])
+          print(f'{desc} metric:', header['metric']['loss'])
+        if 'coevolution' in header and 'logits' in header['coevolution']:
+          print('-------------')
+          logits = torch.squeeze(header['coevolution']['logits'], dim=0)
+          print('.............')
+          def yield_aa(logits_msa):
+            for i, logits_seq in enumerate(logits_msa):
+              for j, logits_aa in enumerate(logits_seq):
+                prob_aa = F.softmax(logits_aa, dim=-1)
+                print(i, j, torch.argmax(logits_aa, dim=-1), prob_aa)
+          yield_aa(logits)
+          pred = torch.argmax(logits, dim=-1)
+          def yield_seq(int_msa):
+            for int_seq in int_msa:
+              yield ''.join(map(
+                  lambda i: residue_constants.restypes_with_x_and_gap[i],
+                  int_seq))
+
+          msa_list = list(yield_seq(pred))
+          if args.dump_msa:
+            with open(filename_get(desc, 'a4m'), 'w', encoding='utf-8') as f:
+              f.write('\n'.join(msa_list))
+          print('\n'.join(msa_list))
         if 'distogram' in header:
-          logits = torch.squeeze(header['distogram']['logits'])
+          logits = torch.squeeze(header['distogram']['logits'], dim=0)
           logits = torch.argmax(logits, dim=-1)
           plt.matshow(-logits)
           # plt.tight_layout()
@@ -109,7 +137,7 @@ if __name__ == '__main__':
 
   parser = argparse.ArgumentParser()
   parser.add_argument('--uri', type=str,
-      default='http://127.0.0.1:8080/predictions/profold0_0',
+      default='http://127.0.0.1:8080/predictions/profold0',
       help='ipc file to initialize the process group')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
@@ -127,6 +155,8 @@ if __name__ == '__main__':
   parser.add_argument('--dump_pdb', action='store_true', help='dump pdb files')
   parser.add_argument('--dump_contact', action='store_true',
       help='dump contact images')
+  parser.add_argument('--dump_msa', action='store_true', help='dump msa files')
+  parser.add_argument('--dump_header', action='store_true', help='dump headers')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 

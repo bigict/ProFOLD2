@@ -91,12 +91,9 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
     # Shape (b, m, l, c)
     if 'msa' in protein:
         msa = protein['msa']
-        if hasattr(protein['seq'], 'device'):
-            msa = msa.to(device=protein['seq'].device)
         p = F.one_hot(
                 msa,
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
-        del msa
         # Shape (b, l, c)
         p = torch.sum(p, dim=1)
     else:
@@ -276,15 +273,22 @@ def make_selection(protein, fields, is_training=True):
     return {k: protein[k] for k in fields}
 
 class FeatureBuilder:
-    def __init__(self, config, is_training=True):
+    def __init__(self, config):
         self.config = config
-        self.training = is_training
 
-    def build(self, protein):
+    def to(self, device):
+        if exists(self.config):
+            for i, (fn, kwargs) in enumerate(self.config):
+                if 'device' in kwargs:
+                    kwargs['device'] = device
+                    self.config[i] = (fn, kwargs)
+        return self
+
+    def build(self, protein, is_training=True):
         for fn, kwargs in default(self.config, []):
-            f = _feats_fn[fn](is_training=self.training, **kwargs)
+            f = _feats_fn[fn](is_training=is_training, **kwargs)
             protein = f(protein)
         return protein
 
-    def __call__(self, protein):
-        return self.build(protein)
+    def __call__(self, protein, is_training=True):
+        return self.build(protein, is_training=is_training)

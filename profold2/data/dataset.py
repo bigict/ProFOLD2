@@ -12,12 +12,12 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from torch.utils.data import WeightedRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 
 from profold2.common import protein, residue_constants
 from profold2.data.parsers import parse_a3m, parse_fasta
 from profold2.data.utils import domain_parser
-from profold2.model.features import FeatureBuilder
-from profold2.utils import default, exists
+from profold2.utils import default, exists, timing
 
 logger = logging.getLogger(__file__)
 
@@ -76,7 +76,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.sequences)
 
-    def collate_fn(self, batch, feat_builder=None):
+    def collate_fn(self, batch):
         fields = ('pid', 'seq', 'mask', 'str_seq')
         pids, seqs, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
         lengths = tuple(len(s) for s in str_seqs)
@@ -99,9 +99,6 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
                 msa=padded_msas,
                 str_msa=str_msas,
                 del_msa=del_msas)
-
-        if feat_builder:
-            ret = feat_builder.build(ret)
 
         return ret
 
@@ -163,23 +160,24 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         self.__dict__ = d
 
     def __getitem__(self, idx):
-        pids = self.pids[idx]
-        pid = pids[np.random.randint(len(pids))]
+        with timing(f'ProteinStructureDataset.__getitem__ {idx}', logger.debug):
+            pids = self.pids[idx]
+            pid = pids[np.random.randint(len(pids))]
 
-        pkey = self.mapping[pid] if pid in self.mapping else pid
-        seq_feats = self.get_seq_features(pkey)
+            pkey = self.mapping[pid] if pid in self.mapping else pid
+            seq_feats = self.get_seq_features(pkey)
 
-        ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
-        if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
-            ret.update(self.get_msa_features_new(pkey))
-        if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
-            assert self.PDB in ('npz', 'coord')
-            if self.PDB == 'npz':
-                ret.update(self.get_structure_label_npz(pid, seq_feats['str_seq']))
-            else:
-                ret.update(self.get_structure_label_numpy(pid, seq_feats['str_seq']))
-        if 'coord_mask' in ret:
-            ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
+            ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
+            if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
+                ret.update(self.get_msa_features_new(pkey))
+            if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+                assert self.PDB in ('npz', 'coord')
+                if self.PDB == 'npz':
+                    ret.update(self.get_structure_label_npz(pid, seq_feats['str_seq']))
+                else:
+                    ret.update(self.get_structure_label_numpy(pid, seq_feats['str_seq']))
+            if 'coord_mask' in ret:
+                ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
         return ret
 
     def __len__(self):
@@ -354,7 +352,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
         return clips
 
-    def collate_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random', feat_builder=None):
+    def collate_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random'):
         if exists(max_crop_len) and exists(min_crop_len):
             assert max_crop_len >= min_crop_len 
 
@@ -419,9 +417,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if clips:
             ret['clips'] = clips
 
-        if feat_builder:
-            ret = feat_builder.build(ret)
-
         return ret
 
 def pad_for_batch(items, batch_length, dtype):
@@ -470,19 +465,21 @@ def pad_for_batch(items, batch_length, dtype):
     batch = torch.stack(batch, dim=0)
     return batch
 
-def load(data_dir, data_idx='name.idx', min_crop_len=None, max_crop_len=None, crop_probability=0, crop_algorithm='random', feats=None, is_training=True, feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
+def load(data_dir, data_idx='name.idx', min_crop_len=None, max_crop_len=None, crop_probability=0, crop_algorithm='random', feat_flags=ProteinStructureDataset.FEAT_ALL, **kwargs):
     max_msa_size = 128
     if 'max_msa_size' in kwargs:
         max_msa_size = kwargs.pop('max_msa_size')
     dataset = ProteinStructureDataset(data_dir, data_idx=data_idx, max_msa_size=max_msa_size, feat_flags=feat_flags)
     if not 'collate_fn' in kwargs:
         kwargs['collate_fn'] = functools.partial(dataset.collate_fn,
-                min_crop_len=min_crop_len, max_crop_len=max_crop_len, crop_probability=crop_probability, crop_algorithm=crop_algorithm,
-                feat_builder=FeatureBuilder(feats, is_training=is_training))
+                min_crop_len=min_crop_len, max_crop_len=max_crop_len, crop_probability=crop_probability, crop_algorithm=crop_algorithm)
     if 'weights' in kwargs:
         weights = kwargs.pop('weights')
         if weights:
             kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=len(weights))
             if 'shuffle' in kwargs:
                 kwargs.pop('shuffle')
+    elif 'num_replicas' in kwargs and 'rank' in kwargs:
+        num_replicas, rank = kwargs.pop('num_replicas'), kwargs.pop('rank')
+        kwargs['sampler'] = DistributedSampler(dataset, num_replicas=num_replicas, rank=rank)
     return torch.utils.data.DataLoader(dataset, **kwargs)
