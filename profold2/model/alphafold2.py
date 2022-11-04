@@ -9,12 +9,14 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.data import esm
 from profold2.model.commons import embedd_dim_get
 from profold2.model.evoformer import *
 from profold2.model.head import HeaderBuilder
-from profold2.model.mlm import MLM
-from profold2.model.sequence import ESMEmbedding
+from profold2.model.sequence import (
+    ESMEmbedding,
+    ESM_EMBED_DIM,
+    ESM_EMBED_LAYER,
+    ESM_MODEL_PATH)
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,6 @@ class Recyclables:
 
 @dataclass
 class _ReturnValues:
-    msa_mlm_loss: torch.Tensor = None
     recyclables: Recyclables = None
     headers: dict = None
     loss: torch.Tensor = None
@@ -42,7 +43,6 @@ class ReturnValues(_ReturnValues):
     
     def asdict(self):
         return dict(
-                msa_mlm_loss=self.msa_mlm_loss,
                 recyclables=self.recyclables.asdict() if exists(self.recyclables) else self.recyclables,
                 headers=self.headers,
                 loss=self.loss)
@@ -52,24 +52,16 @@ class Alphafold2(nn.Module):
         self,
         *,
         dim,
-        depth = 6,
-        heads = 8,
-        dim_head = 64,
-        max_rel_dist = 32,
-        num_tokens = len(residue_constants.restypes_with_x),
-        embedd_dim = esm.ESM_EMBED_DIM,
-        extra_msa_evoformer_layers = 4,
-        attn_dropout = 0.,
-        ff_dropout = 0.,
-        templates_dim = 32,
-        templates_embed_layers = 4,
-        templates_angles_feats_dim = 55,
-        disable_token_embed = False,
-        mlm_mask_prob = 0.15,
-        mlm_random_replace_token_prob = 0.1,
-        mlm_keep_token_same_prob = 0.1,
-        mlm_exclude_token_ids = (0,),
-        headers = None
+        depth=6,
+        heads=8,
+        dim_head=64,
+        max_rel_dist=32,
+        num_tokens=len(residue_constants.restypes_with_x),
+        embedd_dim=ESM_EMBED_DIM,
+        attn_dropout=0.,
+        ff_dropout=0.,
+        disable_token_embed=False,
+        headers=None
     ):
         super().__init__()
 
@@ -81,31 +73,10 @@ class Alphafold2(nn.Module):
         self.disable_token_embed = disable_token_embed
         self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
-        # extra msa embedding
-        self.extra_msa_evoformer = Evoformer(
-            dim = dim,
-            depth = depth,
-            heads = heads,
-            dim_head = dim_head,
-            attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout,
-            global_column_attn = True
-        )
-
-        # template embedding
-        self.template_embedding = TemplateEmbedding(
-                dim = dim_single,
-                dim_head = dim_head,
-                heads = heads,
-                attn_dropout = attn_dropout,
-                templates_dim = templates_dim,
-                templates_embed_layers = templates_embed_layers,
-                templates_angles_feats_dim = templates_angles_feats_dim)
-
         # custom embedding projection
         self.embedd_project = nn.Linear(embedd_dim, dim_single)
 
-        self.sequence = ESMEmbedding(*esm.ESM_MODEL_PATH)
+        self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
 
         # main trunk modules
         self.evoformer = Evoformer(
@@ -115,18 +86,6 @@ class Alphafold2(nn.Module):
             dim_head = dim_head,
             attn_dropout = attn_dropout,
             ff_dropout = ff_dropout
-        )
-
-        # MSA SSL MLM
-
-        self.mlm = MLM(
-            dim = dim_single,
-            num_tokens = num_tokens,
-            mask_id = num_tokens, # last token of embedding is used for masking
-            mask_prob = mlm_mask_prob,
-            keep_token_same_prob = mlm_keep_token_same_prob,
-            random_replace_token_prob = mlm_random_replace_token_prob,
-            exclude_token_ids = mlm_exclude_token_ids
         )
 
         # recycling params
@@ -142,11 +101,6 @@ class Alphafold2(nn.Module):
         self,
         batch,
         *,
-        extra_msa = None,
-        extra_msa_mask = None,
-        templates_feats = None,
-        templates_mask = None,
-        templates_angles = None,
         sequence_max_input_len=None,
         sequence_max_step_len=None,
         return_recyclables=False,
@@ -181,9 +135,9 @@ class Alphafold2(nn.Module):
                 labels = self.sequence.batch_convert(
                         [s[i:j] for s in batch['str_seq']], device=device)
                 clips = dict([(s, dict(i=i, j=j, l=n)) for s in range(len(batch['str_seq']))])
-                # x, y = self.sequence(labels, repr_layer=esm.ESM_EMBED_LAYER, return_contacts=False)
+                # x, y = self.sequence(labels, repr_layer=ESM_EMBED_LAYER, return_contacts=False)
                 x = self.sequence(labels,
-                        repr_layer=esm.ESM_EMBED_LAYER,
+                        repr_layer=ESM_EMBED_LAYER,
                         clips=clips,
                         return_contacts=False)
                 p = delta // 2
@@ -200,7 +154,7 @@ class Alphafold2(nn.Module):
             labels = self.sequence.batch_convert(batch['str_seq'], device=device)
             embedds, contacts = self.sequence(
                         labels,
-                        repr_layer=esm.ESM_EMBED_LAYER,
+                        repr_layer=ESM_EMBED_LAYER,
                         clips = batch.get('clips'),
                         return_contacts=True)
 
@@ -222,14 +176,6 @@ class Alphafold2(nn.Module):
 
         if exists(seq_embed):
             x += seq_embed
-
-        # mlm for MSAs
-        if self.training and exists(msa):
-            original_msa = msa
-            msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
-
-            noised_msa, replaced_msa_mask = self.mlm.noise(msa, msa_mask)
-            msa = noised_msa
 
         # embed multiple sequence alignment (msa)
         if exists(msa):
@@ -260,25 +206,6 @@ class Alphafold2(nn.Module):
             m[:, 0] = m[:, 0] + self.recycling_msa_norm(recyclables.single_msa_repr_row)
             x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
 
-        # embed templates, if present
-        x, x_mask, m, msa_mask = self.template_embedding(
-                x, x_mask, m, msa_mask,
-                templates_feats=templates_feats,
-                templates_angles=templates_angles,
-                templates_mask=templates_mask)
-
-        # embed extra msa, if present
-        if exists(extra_msa):
-            extra_m = self.token_emb(msa)
-            extra_msa_mask = default(extra_msa_mask, torch.ones_like(extra_m).bool())
-
-            x, extra_m = self.extra_msa_evoformer(
-                x,
-                extra_m,
-                mask = x_mask,
-                msa_mask = extra_msa_mask
-            )
-
         # trunk
         x, m = self.evoformer(
             x,
@@ -308,11 +235,6 @@ class Alphafold2(nn.Module):
                         ret.loss += loss['loss'] * options.get('weight', 1.0)
                     else:
                         ret.loss = loss['loss'] * options.get('weight', 1.0)
-
-        # calculate mlm loss, if training
-        if self.training and exists(msa):
-            num_msa = original_msa.shape[1]
-            ret.msa_mlm_loss = self.mlm(m[:, :num_msa], original_msa, replaced_msa_mask)
 
         if return_recyclables:
             single_msa_repr_row, pairwise_repr = map(torch.detach, (representations['single'], representations['pair']))
