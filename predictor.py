@@ -73,7 +73,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = _create_dataloader(rank, args)
   amber_relaxer = (None
       if args.no_relaxer
-      else relaxer.create(use_gpu_relax=args.gpu_list and args.use_gpu_relax))
+      else relaxer.create(
+          use_gpu_relax=args.gpu_list and not args.no_gpu_relax))
 
   def timing_callback(timings, key, tic, toc):
     timings[key] = toc - tic
@@ -200,8 +201,8 @@ if __name__ == '__main__':
       help='number of workers, default=0')
   parser.add_argument('--no_relaxer', action='store_true',
       help='do NOT run relaxer')
-  parser.add_argument('--use_gpu_relax', action='store_true',
-      help='run relax on gpu')
+  parser.add_argument('--no_gpu_relax', action='store_true',
+      help='run relax on cpu')
 
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()

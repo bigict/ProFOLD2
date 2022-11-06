@@ -25,7 +25,7 @@ RUN wget -q -P /tmp \
 ENV PATH="${conda_home}/bin:${PATH}"
 RUN conda update -qy conda \
     && conda install -ky -c conda-forge -c bioconda \
-      openmm=7.5.1 \
+      openmm=7.7.0 \
       pytorch=1.9.1 cudatoolkit=${CUDA_VERSION} \
       pdbfixer \
       pip \
@@ -41,9 +41,9 @@ COPY . ${profold_home}
 RUN pip3 install --upgrade pip \
     && pip3 install -r ${profold_home}/requirements.txt
 
-# Apply OpenMM patch.
-WORKDIR ${conda_home}/lib/python3.7/site-packages
-RUN patch -p0 < ${profold_home}/docker/openmm.patch
+# # Apply OpenMM patch.
+# WORKDIR ${conda_home}/lib/python3.7/site-packages
+# RUN patch -p0 < ${profold_home}/docker/openmm.patch
 
 # Add SETUID bit to the ldconfig binary so that non-root users can run it.
 RUN chmod u+s /sbin/ldconfig.real
