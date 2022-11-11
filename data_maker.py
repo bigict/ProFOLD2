@@ -105,54 +105,131 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
   b_factor_list = mmcif_dict['_atom_site.B_iso_or_equiv']
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
 
-  def seq_id_key_switch(atom_id_list):
-    if not '_atom_site.auth_seq_id' in mmcif_dict:
-      return '_atom_site.label_seq_id'
-    for i, _ in atom_id_list:
-      auth_seq_id = int(mmcif_dict['_atom_site.auth_seq_id'][i])
-      label_seq_id = int(mmcif_dict['_atom_site.label_seq_id'][i])
-      if auth_seq_id == label_seq_id:
-        continue
-      resname = residue_constants.restype_3to1.get(
-          residue_id_list[i], residue_constants.restypes_with_x[-1])
-      if (auth_seq_id < 1 or auth_seq_id > len(str_seqs) or
-          str_seqs[auth_seq_id - 1] != resname):
-        return '_atom_site.label_seq_id'
-      if (label_seq_id < 1 or label_seq_id > len(str_seqs) or
-          str_seqs[label_seq_id - 1] != resname):
-        return '_atom_site.auth_seq_id'
-    return '_atom_site.auth_seq_id'
+  def _is_unmatch(int_resseq, resname):
+    return (int_resseq < 1 or int_resseq > len(str_seqs) or
+        (resname != residue_constants.unk_restype and
+         str_seqs[int_resseq - 1] != 'X' and
+         str_seqs[int_resseq - 1] != resname))
+  def _is_match(int_resseq, resname):
+    return not _is_unmatch(int_resseq, resname)
+  def _get_resseq(seq_id_key, i):
+    if 0 <= i < len(mmcif_dict[seq_id_key]):
+      return int(mmcif_dict[seq_id_key][i])
+    return 0
+  def _running_error(int_resseq, resname):
+    aa = '-'
+    if 1 <= int_resseq <= len(str_seqs):
+      aa = str_seqs[int_resseq - 1]
+    raise PDBConstructionException(f'{int_resseq} str_seqs={aa} resname={resname}')  # pylint: disable=line-too-long
+
+  def seq_id_key_switch(atom_id_list, delta=0):
+    def seq_id_key_match(seq_id_key):
+      if not seq_id_key in mmcif_dict:
+        return False
+      running_state, prev_resseq = 0, None
+
+      for i, _ in atom_id_list:
+        if running_state == 0:
+          running_state = 1
+
+        int_resseq = int(mmcif_dict[seq_id_key][i])
+        resname = residue_constants.restype_3to1.get(
+            residue_id_list[i], residue_constants.unk_restype)
+        if running_state == 1:
+          if prev_resseq == int_resseq:
+            continue
+          elif _is_unmatch(int_resseq + delta, resname):
+            if int_resseq != _get_resseq(seq_id_key, i + 1):
+              return False  #_running_error(int_resseq + delta, resname)
+            running_state = 2
+            prev_resseq = int_resseq
+            continue
+        elif running_state == 2:
+          if prev_resseq != int_resseq:
+            return False #_running_error(int_resseq + delta, resname)
+          elif _is_match(int_resseq + delta, resname):
+            running_state = 1
+          else:
+            continue
+        prev_resseq = int_resseq
+
+      return True
+
+    for seq_id_key in ('_atom_site.auth_seq_id', '_atom_site.label_seq_id'):
+      if seq_id_key_match(seq_id_key):
+        return seq_id_key
+    return None
 
   atom_id_list = list(filter(
       lambda x: (chain is None or chain_id_list[x[0]] == chain
-          and fieldname_list[x[0]] != 'HETATM'),
+          and fieldname_list[x[0]] == 'ATOM'),
       enumerate(atom_id_list)))
-  seq_id_key = seq_id_key_switch(atom_id_list)
+
+  delta = 0
+  if atom_id_list:
+    i, _ = atom_id_list[0]
+    delta = min(map(lambda x: 1-int(mmcif_dict[x][i]),
+        filter(lambda x: x in mmcif_dict,
+            ('_atom_site.auth_seq_id', '_atom_site.label_seq_id'))))
+
+  for delta in range(delta, len(str_seqs)):
+    seq_id_key = seq_id_key_switch(atom_id_list, delta)
+    if seq_id_key is not None:
+      break
+  if seq_id_key is None:
+    seq_id_key, delta = '_atom_site.auth_seq_id', 0
+
   current_resseq = None
   residue_plddt, residue_n, atom_plddt, atom_n = 0.0, 0, 0.0, 0
+
+  running_state, prev_resseq = 0, 0
+
   for i, atom_id in atom_id_list:
+    if running_state == 0:
+      running_state = 1
+
     icode = icode_list[i]
     if icode in _unassigned:
       icode = ' '
-    int_resseq = int(mmcif_dict[seq_id_key][i])
+    int_resseq = _get_resseq(seq_id_key, i)
 
     resname = residue_constants.restype_3to1.get(
-        residue_id_list[i], residue_constants.restypes_with_x[-1])
-    if (int_resseq < 1 or int_resseq > len(str_seqs) or
-        str_seqs[int_resseq - 1] != resname):
-      aa = '-'
-      if 1 <= int_resseq <= len(str_seqs):
-        aa = str_seqs[int_resseq - 1]
-      raise PDBConstructionException(f'{int_resseq} str_seqs={aa} resname={resname}, icode={icode}')  # pylint: disable=line-too-long
+        residue_id_list[i], residue_constants.unk_restype)
+    # if (int_resseq < 1 or int_resseq > len(str_seqs) or
+    #     str_seqs[int_resseq - 1] != resname):
+    if running_state == 1:
+      if prev_resseq == int_resseq:
+        pass
+      elif _is_unmatch(int_resseq + delta, resname):
+        if int_resseq != _get_resseq(seq_id_key, i + 1):
+          _running_error(int_resseq + delta, resname)
+        running_state = 2
+        prev_resseq = int_resseq
+        continue
+      # aa = '-'
+      # if 1 <= int_resseq <= len(str_seqs):
+      #   aa = str_seqs[int_resseq - 1]
+      # raise PDBConstructionException(f'{int_resseq} str_seqs={aa} resname={resname}, icode={icode}')  # pylint: disable=line-too-long
+    elif running_state == 2:
+      if prev_resseq != int_resseq:
+        _running_error(int_resseq + delta, resname)
+      elif _is_match(int_resseq + delta, resname):
+        running_state = 1
+        prev_resseq = int_resseq
+      else:
+        continue
 
-    res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
+    if residue_id_list[i] in residue_constants.restype_name_to_atom14_names:
+      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
+    else:
+      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
     try:
       atom14idx = res_atom14_list.index(atom_id)
       coord = np.asarray((x_list[i], y_list[i], z_list[i]))
       if np.any(np.isnan(coord)):
         continue
-      labels[int_resseq - 1][atom14idx] = coord
-      if np.any(coord):
+      labels[int_resseq - 1 + delta][atom14idx] = coord
+      if np.any(coord != 0):
         # occupancy & B factor
         tempfactor = 0.0
         try:
@@ -162,7 +239,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
         except ValueError as e:
           raise PDBConstructionException('Invalid or missing B factor') from e
         if datasource != 'swissprot' or tempfactor >= 85.0:
-          label_mask[int_resseq-1][atom14idx] = True
+          label_mask[int_resseq - 1 + delta][atom14idx] = True
     except ValueError as e:
       logger.debug(e)
     if current_resseq != int_resseq:
@@ -174,7 +251,10 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
 
   if datasource != 'swissprot' or (
       residue_n > 0 and residue_plddt/residue_n > 85.0):
-    return dict(coord=labels, coord_mask=label_mask)
+    revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
+    if revision:
+      revision = min(revision)
+    return dict(coord=labels, coord_mask=label_mask, revision=revision)
   return None
 
 def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer-name
@@ -212,9 +292,9 @@ def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer
           np.savez(os.path.join(args.output, 'npz', fid), **coords)
       except PDBConstructionException as e:
         logger.warning('mmcif_parse: %s {%s}', mmcif_filename, str(e))
-      except Exception as e:
-        logger.warning('mmcif_parse: %s {%s}', mmcif_filename, str(e))
-        raise Exception('...') from e
+      except Exception as e:  # pylint: disable=broad-except
+        logger.error('mmcif_parse: %s {%s}', mmcif_filename, str(e))
+        # raise Exception('...') from e
   logger.info('result (%s) %d - %d', cid, len(pid_list), len(clu_list))
   return cid, pid_list, clu_list
 
@@ -229,14 +309,17 @@ def main(args):  # pylint: disable=redefined-outer-name
   logger.info('sequences - %s', len(sequences))
 
   with open(os.path.join(args.output, 'name.idx'), 'w', encoding='utf-8') as f:
+    succeed, total = 0, 0
     with mp.Pool(args.processes) as p:
       for cid, pid_list, clu_list in p.imap(
           functools.partial(process, sequences=sequences, args=args),
           parse_cluster(args.clustering_file)):
         del cid
-        del pid_list
+        succeed += len(clu_list)
+        total += len(pid_list)
         if clu_list:
           print('\t'.join(clu_list), file=f, flush=True)
+    logger.info('succeed: %d, total: %d', succeed, total)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
