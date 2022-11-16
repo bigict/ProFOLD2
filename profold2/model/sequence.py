@@ -162,7 +162,46 @@ class ESMEmbedding(nn.Module):
             batch_tokens = batch_tokens.to(device)
         return batch_tokens
 
-    def forward(self, batch, clips=None, repr_layer=ESM_EMBED_LAYER, return_contacts=False):
+    def forward(self, batch, repr_layer=ESM_EMBED_LAYER, **kwargs):
+        if not self.training:  # and n > self.sequence.max_input_len:
+            embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
+            max_input_len = kwargs.get('sequence_max_input_len', self.max_input_len)
+            max_step_len = kwargs.get('sequence_max_step_len', self.max_step_len)
+            for k in range(0, n, max_step_len):
+                i, j = k, min(k + max_input_len, n)
+                delta = 0 if i == 0 else max_input_len - max_step_len
+                if i > 0 and j < i + max_input_len:
+                    delta += i + max_input_len - n
+                    i = n - max_input_len
+                labels = self.batch_convert(
+                        [s[i:j] for s in batch['str_seq']], device=device)
+                clips = dict([(s, dict(i=i, j=j, l=n)) for s in range(len(batch['str_seq']))])
+                # x, y = self.forward_(labels, repr_layer=ESM_EMBED_LAYER, return_contacts=False)
+                x = self.forward_(labels,
+                        repr_layer=ESM_EMBED_LAYER,
+                        clips=clips,
+                        return_contacts=False)
+                p = delta // 2
+                if embedds and p > 0:
+                    l = embedds[-1].shape[-2]
+                    assert l > p
+                    embedds[-1] = embedds[-1][...,:l-p,:]
+                embedds.append(x[...,delta-p:j-i,:])
+                # contacts[...,i:j,i:j] = y
+                if j < k + max_input_len:
+                    break
+            embedds = torch.cat(embedds, dim=-2)
+        else:
+            labels = self.batch_convert(batch['str_seq'], device=device)
+            embedds, contacts = self.forward_(
+                        labels,
+                        repr_layer=ESM_EMBED_LAYER,
+                        clips = batch.get('clips'),
+                        return_contacts=True)
+
+        return embedds, contacts
+
+    def forward_(self, batch, clips=None, repr_layer=ESM_EMBED_LAYER, return_contacts=False):
         """ Returns the ESM embeddings for a protein.
             Inputs:
             * seq: ( (b,) L,) tensor of ints (in sidechainnet int-char convention)
