@@ -33,10 +33,22 @@ def _create_dataloader(rank, args):  # pylint: disable=redefined-outer-name
   for fasta_glob in args.fasta_files:
     for fasta_file in glob.glob(fasta_glob):
       with open(fasta_file, 'r', encoding='utf-8') as f:
-        s, _ = parse_fasta(f.read())
-        sequences += s[:1]
-        descriptions += [filename_get(fasta_file)]
-        msa += [s]
+        fasta_str = f.read()
+
+        if args.fasta_fmt == 'a4m':
+          s = fasta_str.splitlines()
+          d = [None] * len(s)
+        else:
+          s, d = parse_fasta(fasta_str)
+        d[0] = filename_get(fasta_file)
+        if args.fasta_fmt == 'single':
+          sequences += s
+          descriptions += d
+          msa += [None] * len(s)
+        else:
+          sequences += s[:1]
+          descriptions += d[:1]
+          msa += [s]
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
   kwargs = {
       'num_workers': args.num_workers,
@@ -121,7 +133,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           ranking_scores[model_name] = r.headers['confidence']['loss'].item()
 
         # Save the model outputs.
-        torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
+        if not args.no_pth:
+          torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
 
         unrelaxed_pdbs[model_name] = pdb_from_prediction(batch,
                                                          r.headers, idx=0)
@@ -136,8 +149,17 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
               print_fn=logging.info,
               callback_fn=functools.partial(timing_callback,
                   timings, f'relax_{model_name}')):
-            relaxed_pdb_str, _, _ = amber_relaxer.process(
-                prot=protein.from_pdb_string(unrelaxed_pdbs[model_name]))
+            retry = 2
+            while retry > 0:
+              retry -= 1
+              try:
+                relaxed_pdb_str, _, _ = amber_relaxer.process(
+                    prot=protein.from_pdb_string(unrelaxed_pdbs[model_name]))
+                break
+              except ValueError as e:
+                if retry <= 0:
+                  raise e
+                logging.error('Relax throw an exception: %s', e)
 
           relaxed_pdbs[model_name] = relaxed_pdb_str
 
@@ -183,8 +205,11 @@ if __name__ == '__main__':
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
-  parser.add_argument('fasta_files', type=str, nargs='+',
+  parser.add_argument('fasta_files', type=str, nargs='*',
       help='fasta files')
+  parser.add_argument('--fasta_fmt', type=str, default='single',
+      choices=['single', 'a3m', 'a4m'],
+      help='format of fasta files, default=\'single\'')
 
   parser.add_argument('-X', '--models', type=str, nargs='+',
       help=' Models to be loaded using [model_name=]model_location format')
@@ -201,6 +226,8 @@ if __name__ == '__main__':
       help='number of workers, default=0')
   parser.add_argument('--no_relaxer', action='store_true',
       help='do NOT run relaxer')
+  parser.add_argument('--no_pth', action='store_true',
+      help='do NOT save prediction header')
   parser.add_argument('--no_gpu_relax', action='store_true',
       help='run relax on cpu')
 

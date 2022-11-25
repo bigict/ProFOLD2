@@ -42,10 +42,11 @@ def parse_fasta(filename, datasource=None):
     for name, seq in iter_fasta(FastaParser(f)):
       yield name, seq
 
-def decompose_pid(pid):
-  k = pid.find('_')
-  if k != -1:
-    return pid[:k], pid[k+1:]
+def decompose_pid(pid, datasource=None):
+  if datasource != 'norm':
+    k = pid.find('_')
+    if k != -1:
+      return pid[:k], pid[k+1:]
   return pid, None
 
 def compose_pid(pid, chain):
@@ -66,6 +67,7 @@ def mmcif_get_filename(pid, chain, datasource=None):
   elif datasource == 'rcsb':
     return f'{pid.lower()}.cif.gz'
   elif datasource == 'norm':
+    assert chain is None
     return f'{pid}.cif.gz'
   del chain
 
@@ -83,12 +85,14 @@ def mmcif_get_chain(structure, chain_id):
           return chain
   return None
 
-def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
+def mmcif_get_coords(
+    mmcif_dict, chain, str_seqs, datasource=None, add_plddt=False):
   n = len(str_seqs)
   assert n > 0
 
   labels = np.zeros((n, 14, 3), dtype=np.float32)
   label_mask = np.zeros((n, 14), dtype=np.bool)
+  bfactors = np.zeros((n, 14), dtype=np.float32)
 
   # two special chars as placeholders in the mmCIF format
   # for item values that cannot be explicitly assigned
@@ -238,6 +242,7 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
             atom_plddt, atom_n = atom_plddt + tempfactor, atom_n + 1
         except ValueError as e:
           raise PDBConstructionException('Invalid or missing B factor') from e
+        bfactors[int_resseq - 1 + delta][atom14idx] = tempfactor
         if datasource != 'swissprot' or tempfactor >= 85.0:
           label_mask[int_resseq - 1 + delta][atom14idx] = True
     except ValueError as e:
@@ -254,7 +259,10 @@ def mmcif_get_coords(mmcif_dict, chain, str_seqs, datasource=None):
     revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
     if revision:
       revision = min(revision)
-    return dict(coord=labels, coord_mask=label_mask, revision=revision)
+    r = dict(coord=labels, coord_mask=label_mask, revision=revision)
+    if add_plddt:
+      r['bfactor'] = bfactors
+    return r
   return None
 
 def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer-name
@@ -262,7 +270,8 @@ def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer
   clu_list = []
 
   mmcif_fn, mmcif_dict = None, None
-  for i, (pid, chain_id) in enumerate(map(decompose_pid, sorted(pid_list))):
+  for i, (pid, chain_id) in enumerate(
+      map(lambda x: decompose_pid(x, args.datasource), sorted(pid_list))):
     mmcif_filename = os.path.join(
         args.mmcif_dir,
         mmcif_get_filename(pid, chain_id, datasource=args.datasource))
@@ -280,7 +289,8 @@ def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer
             mmcif_dict,
             chain_id,
             sequences[fid],
-            datasource=args.datasource)
+            datasource=args.datasource,
+            add_plddt=args.add_plddt)
         if coords:
           clu_list.append(fid)
 
@@ -338,6 +348,7 @@ if __name__ == '__main__':
   parser.add_argument('-t', '--datasource',
       choices=['swissprot', 'rcsb', 'norm'], default='norm',
       help='data source type: [swissprot, rcsb, norm], default=\'norm\'')
+  parser.add_argument('--add_plddt', action='store_true', help='add plddt')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 
