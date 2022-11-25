@@ -17,8 +17,8 @@ import io
 
 from Bio import PDB
 import numpy as np
-from simtk.openmm import app as openmm_app
-from simtk.openmm.app.internal.pdbstructure import PdbStructure
+from openmm import app as openmm_app
+from openmm.app.internal.pdbstructure import PdbStructure
 
 from profold2.common import residue_constants
 

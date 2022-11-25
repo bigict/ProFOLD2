@@ -21,10 +21,10 @@ import logging
 
 import numpy as np
 import torch
-from simtk import openmm
-from simtk.openmm import unit
-from simtk.openmm import app as openmm_app
-from simtk.openmm.app.internal.pdbstructure import PdbStructure
+import openmm
+from openmm import unit
+from openmm import app as openmm_app
+from openmm.app.internal.pdbstructure import PdbStructure
 
 from profold2.common import protein
 from profold2.common import residue_constants

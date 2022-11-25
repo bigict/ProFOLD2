@@ -34,7 +34,7 @@ def parse_deepscore_output(src, terms):
     titles = lines[title_line].strip('#').split()
     scores = map(float, lines[score_line].split())
     all_scores = dict(zip(titles, scores))
-    all_scores['length'] = lines[length_line].split('length=')[-1].strip()
+    all_scores['length'] = float(lines[length_line].split('length=')[-1].strip())
     return {k: all_scores[key_name[k]] for k in terms}
 
 def run_scorer(predicted_path, gt_path, terms):
@@ -48,7 +48,7 @@ def run_scorer(predicted_path, gt_path, terms):
 
 def read_pairwise_list(f):
     for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
-        pid, model_f, native_f = line.split()
+        pid, model_f, native_f = line.split('\t')
         assert os.path.exists(model_f), model_f
         if os.path.exists(native_f):
             yield pid, model_f, native_f
@@ -66,7 +66,15 @@ def main(args):
                 protein_ids = list(read_pairwise_list(f))
     elif os.path.isdir(args.model_dir):
         assert os.path.isdir(args.native_dir)
+        protein_ids = []
+        for model_file in os.path.listdir(args.model_dir):
+            pdb_file = os.path.basename(model_file)
+            protein_id, pdb_ext = os.path.splitext(pdb_file)
+            native_file = os.path.join(args.native_dir, pdb_file)
+            if pdb_ext == '.pdb' and os.path.exists(native_file):
+                protein_ids.append((protein_id, pdb_file, native_file))
     else:
+        assert not os.path.isdir(args.native_dir)
         protein_ids = [(f'{args.model_dir}->{args.native_dir}', args.model_dir, args.native_dir)]
     df = pd.DataFrame(index=list(map(lambda x: x[0], protein_ids)),
                       columns=name_map.values(), dtype='float')
@@ -90,7 +98,7 @@ if __name__ == '__main__':
 
     parser.add_argument('model_dir', nargs='?', help='The dir holding the predicted protein structures.')
     parser.add_argument('native_dir', nargs='?', help='The dir holding the native protein structures.')
-    parser.add_argument('--pairwise_list', default=None, help='The dir holding the native protein structures.')
+    parser.add_argument('-l', '--pairwise_list', default=None, help='The dir holding the native protein structures.')
     parser.add_argument('-o', '--output', type=str, help='The output file (.csv) of scores of each predicted protein structure.')
     parser.add_argument('--gdt', action='store_true', help='Get GDT-TS score as long as TMscore.')
     parser.add_argument('-e', '--exe_path', type=str, default='TMscore', help='The path of binary `TMscore`')
