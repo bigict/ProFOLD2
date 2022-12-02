@@ -196,11 +196,16 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
+  parser.add_argument('--nnodes', type=int, default=1,
+      help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0,
+      help='rank of the node.')
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
-  parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
-      help='ipc file to initialize the process group, '
-           'default="/tmp/profold2.dist"')
+  parser.add_argument('--init_method', type=str,
+      default='file:///tmp/profold2.dist',
+      help='method to initialize the process group, '
+           'default=\'file:///tmp/profold2.dist\'')
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('-o', '--prefix', type=str, default='.',

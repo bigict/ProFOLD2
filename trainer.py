@@ -160,6 +160,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         model=model,
         optimizer=optim)
     global_step = checkpoint_manager.restore_or_initialize() + 1
+    logging.info('checkpoint_manager.global_step: %d', global_step)
     model.train()
 
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
@@ -265,14 +266,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   # latest checkpoint
   if (global_step < args.num_batches and
       args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every != 0 and
-      (not args.gpu_list or rank == 0)):
+      (not args.gpu_list or (rank == 0 and args.node_rank == 0))):
     checkpoint_manager.save(it)
 
     # Add embeddings
     writer_add_embeddings(writer, model, it)
 
   # save model
-  if not args.gpu_list or rank == 0:
+  if not args.gpu_list or (rank == 0 and args.node_rank):
     torch.save(dict(dim=args.model_dim,
             evoformer_depth=args.model_evoformer_depth,
             evoformer_head_num=args.model_evoformer_head_num,
@@ -291,10 +292,16 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
+  parser.add_argument('--nnodes', type=int, default=1,
+      help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0,
+      help='rank of the node.')
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
-      help='list of GPU IDs')
-  parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
-      help='ipc file to initialize the process group')
+      help='list of GPU IDs.')
+  parser.add_argument('--init_method', type=str,
+      default='file:///tmp/profold2.dist',
+      help='method to initialize the process group, '
+           'default=\'file:///tmp/profold2.dist\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-t', '--train_data', type=str, default='train',

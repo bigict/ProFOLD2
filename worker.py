@@ -1,8 +1,4 @@
-"""for train, run
-     ```bash
-     $python trainer.py -h
-     ```
-     for further help.
+"""wrapper for distributed run profold commands
 """
 import os
 import logging
@@ -37,7 +33,7 @@ class _WorkerLogging(object):
         logging.FileHandler(
             os.path.join(
                 args.prefix,
-                f'{work_fn.__name__}.log'))]
+                f'{work_fn.__name__}_{args.node_rank}.log'))]
 
     def handler_apply(h, f, *arg):
       f(*arg)
@@ -92,13 +88,14 @@ class _WorkerFunction(object):
     if args.gpu_list:
       logger = logging.getLogger(__name__)
       logger.info(
-              'torch.distributed.init_process_group: rank=%d@%d, world_size=%d',
-              rank, args.gpu_list[rank], len(args.gpu_list))
+          'init_process_group: node=%d/%d, rank=%d@%d, world_size=%d',
+          args.nnodes, args.node_rank,
+          rank, args.gpu_list[rank], len(args.gpu_list))
       torch.distributed.init_process_group(
               backend='nccl',
-              init_method=f'file://{args.ipc_file}',
-              rank=rank,
-              world_size=len(args.gpu_list))
+              init_method=args.init_method,
+              rank=rank + len(args.gpu_list) * args.node_rank,
+              world_size=len(args.gpu_list) * args.nnodes)
       torch.cuda.set_device(args.gpu_list[rank])
 
     self.work_fn(rank, args)
@@ -124,12 +121,12 @@ class WorkerModel(object):
     return torch.device('cpu')
 
   def wrap(self, **kwargs):
+    model = Alphafold2(**kwargs)
+    device = self.device()
+    model.to(device)
+
     if self.args.gpu_list and self.rank < len(self.args.gpu_list):
       logger = logging.getLogger(__name__)
-
-      model = Alphafold2(**kwargs)
-      device = self.device()
-      model.to(device)
 
       logger.info('wrap model with nn.parallel.DistributedDataParallel class')
       model = nn.parallel.DistributedDataParallel(
@@ -138,6 +135,7 @@ class WorkerModel(object):
           output_device=self.args.gpu_list[self.rank],
           find_unused_parameters=False)
       model._set_static_graph()  # pylint: disable=protected-access
+
     return model
 
   def load(self, f):
@@ -190,10 +188,16 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
+  parser.add_argument('--nnodes', type=int, default=1,
+      help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0,
+      help='rank of the node.')
   parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
       help='list of GPU IDs')
-  parser.add_argument('--ipc_file', type=str, default='/tmp/profold2.dist',
-      help='ipc file to initialize the process group')
+  parser.add_argument('--init_method', type=str,
+      default='file:///tmp/profold2.dist',
+      help='method to initialize the process group, '
+           'default=\'file:///tmp/profold2.dist\'')
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')

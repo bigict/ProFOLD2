@@ -17,6 +17,7 @@
 from concurrent import futures
 import glob
 import os
+import pathlib
 import subprocess
 from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib import request
@@ -33,7 +34,7 @@ class Jackhmmer:
                *,
                binary_path: str,
                database_path: str,
-               n_cpu: int = os.cpu_count(),
+               n_cpu: int = 4,
                n_iter: int = 1,
                e_value: float = 0.0001,
                z_value: Optional[int] = None,
@@ -88,7 +89,7 @@ class Jackhmmer:
   def _query_chunk(self, input_fasta_path: str, database_path: str
                    ) -> Mapping[str, Any]:
     """Queries the database chunk using Jackhmmer."""
-    with utils.tmpdir_manager(base_dir='/tmp') as query_tmp_dir:
+    with utils.tmpdir_manager(base_dir='./tmp') as query_tmp_dir:
       sto_path = os.path.join(query_tmp_dir, 'output.sto')
 
       # The F1/F2/F3 are the expected proportion to pass each of the filtering
@@ -136,7 +137,8 @@ class Jackhmmer:
 
       if retcode:
         raise RuntimeError(
-            'Jackhmmer failed\nstderr:\n%s\n' % stderr.decode('utf-8'))
+            'Jackhmmer failed\ninput_fasta_path: %s\nstderr:\n%s\n' % (
+                  input_fasta_path, stderr.decode('utf-8')))
 
       # Get e-values for each target name
       tbl = ''
@@ -195,3 +197,74 @@ class Jackhmmer:
         if self.streaming_callback:
           self.streaming_callback(i)
     return chunked_output
+
+def main(args):
+  fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
+  level=logging.DEBUG if args.verbose else logging.INFO
+  handlers = [
+      logging.StreamHandler()]
+  logging.basicConfig(
+      format=fmt,
+      level=level,
+      handlers=handlers)
+
+  for tool_name in (  # pylint: disable=redefined-outer-name
+      'jackhmmer', 'hmmsearch', 'hmmbuild'):
+    if not getattr(args, f'{tool_name}_binary_path'):
+      raise ValueError(f'Could not find path to the "{tool_name}" binary. Make '
+                       'sure it is installed on your system.')
+  # Check for duplicate FASTA file names.
+  fasta_names = [pathlib.Path(p).stem for p in args.fasta_paths]
+  if len(fasta_names) != len(set(fasta_names)):
+    raise ValueError('All FASTA paths must have a unique basename.')
+
+  jackhmmer_uniref90_runner = Jackhmmer(
+      binary_path=args.jackhmmer_binary_path,
+      database_path=args.uniref90_database_path)
+  jackhmmer_mgnify_runner = Jackhmmer(
+      binary_path=args.jackhmmer_binary_path,
+      database_path=args.mgnify_database_path)
+
+  for fasta_path, fasta_name in zip(args.fasta_paths, fasta_names):
+    msa_output_dir = os.path.join(args.output_dir, fasta_name, 'msas')
+    if not os.path.exists(msa_output_dir):
+      os.makedirs(msa_output_dir, exist_ok=True)
+
+    jackhmmer_uniref90_result = jackhmmer_uniref90_runner.query(
+        fasta_path)[0]
+    jackhmmer_mgnify_result = jackhmmer_mgnify_runner.query(
+        fasta_path)[0]
+
+    jackhmmer_uniref90_out_path = os.path.join(msa_output_dir, 'uniref90_hits.sto')
+    with open(jackhmmer_uniref90_out_path, 'w') as f:
+      f.write(jackhmmer_uniref90_result['sto'])
+
+    jackhmmer_mgnify_out_path = os.path.join(msa_output_dir, 'mgnify_hits.sto')
+    with open(jackhmmer_mgnify_out_path, 'w') as f:
+      f.write(jackhmmer_mgnify_result['sto'])
+
+if __name__ == '__main__':
+  import argparse
+  import shutil
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-o', '--output_dir', type=str, default='.',
+      help='Output directory')
+  for tool_name in (
+      'jackhmmer', 'hmmsearch', 'hmmbuild'):
+    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+        default=shutil.which(tool_name),
+        help=f'path to the `{tool_name}` executable.')
+  for database_name in (
+      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'):
+    parser.add_argument(f'--{database_name}_database_path', type=str,
+        default=None,
+        help=f'path to database {database_name}')
+  parser.add_argument('--fasta_paths', type=str, nargs='+',
+      help='list of fasta files')
+  parser.add_argument('--use_small_bfd', action='store_true',
+      help='use small bfd database or not')
+  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+
+  args = parser.parse_args()
+  main(args)
