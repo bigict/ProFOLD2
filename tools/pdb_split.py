@@ -9,6 +9,7 @@ import logging
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.PDB import PDBParser, MMCIFParser, PDBIO, Select
+from Bio.PDB.mmcifio import MMCIFIO
 from Bio import SeqIO
 
 logger = logging.getLogger(__file__)
@@ -89,11 +90,11 @@ def process(input_file, args=None):  # pylint: disable=redefined-outer-name
       protein_structure = parser.get_structure('none', input_file)
     model = list(protein_structure.get_models())[0]
     chains = model.get_chains()
-    io = PDBIO()
+    io = PDBIO() if args.pdb_fmt == 'pdb' else MMCIFIO()
     io.set_structure(protein_structure)
     for chain in chains:
       print(chain.get_full_id())
-      io.save(os.path.join(args.prefix, f'{input_pid}_{chain.id}.pdb'),
+      io.save(os.path.join(args.prefix, f'{input_pid}_{chain.id}.{args.pdb_fmt}'),
               select=CustomSelect(
                   model,
                   chain.id, args.backbone_only, args.skip_het))
@@ -122,6 +123,9 @@ if __name__ == '__main__':
   parser.add_argument('input_files', metavar='file', type=str, nargs='+',
       help='input files')
   parser.add_argument('-o', '--prefix')
+  parser.add_argument('--pdb_fmt', type=str, default='pdb',
+      choices=['pdb', 'cif'],
+      help='type of output format, default=\'pdb\'')
   parser.add_argument('-c', '--chain', nargs='*')
   parser.add_argument('-M', '--backbone_only', action='store_true')
   parser.add_argument('-s', '--skip_het', action='store_true')

@@ -53,7 +53,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
       batch_size=args.batch_size,
-      weights=list(weights_from_file(args.sampling_by_weights)),
+      weights=list(weights_from_file(args.train_data_weights)),
       shuffle=True,
       prefetch_factor=args.prefetch_factor,
       pin_memory=True,
@@ -66,6 +66,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         batch_size=args.batch_size,
+        weights=list(weights_from_file(args.tuning_data_weights)),
         shuffle=True,
         prefetch_factor=args.prefetch_factor,
         pin_memory=True,
@@ -90,6 +91,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         batch_size=args.batch_size,
+        weights=list(weights_from_file(args.fake_data_weights)),
         shuffle=True,
         pin_memory=True,
         num_workers=args.num_workers)
@@ -273,7 +275,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     writer_add_embeddings(writer, model, it)
 
   # save model
-  if not args.gpu_list or (rank == 0 and args.node_rank):
+  if not args.gpu_list or (rank == 0 and args.node_rank == 0):
     torch.save(dict(dim=args.model_dim,
             evoformer_depth=args.model_evoformer_depth,
             evoformer_head_num=args.model_evoformer_head_num,
@@ -308,16 +310,22 @@ if __name__ == '__main__':
       help='train dataset dir, default=\'train\'')
   parser.add_argument('--train_idx', type=str, default='name.idx',
       help='train dataset idx, default=\'name.idx\'')
+  parser.add_argument('--train_data_weights', type=str, default=None,
+      help='sample train data by weights, default=None')
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches, default=10^5')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
       help='eval dataset dir, default=None')
   parser.add_argument('--tuning_data', type=str, default=None,
       help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_data_weights', type=str, default=None,
+      help='sample tuning data by weights, default=None')
   parser.add_argument('--tuning_with_coords', action='store_true',
       help='use `coord` when tuning')
   parser.add_argument('--fake_data', type=str, default=None,
       help='fake dataset dir, default=None')
+  parser.add_argument('--fake_data_weights', type=str, default=None,
+      help='sample fake data by weights, default=None')
   parser.add_argument('--fake_with_coords', action='store_true',
       help='use `coord` when faking')
   parser.add_argument('--sampling_by_weights', type=str, default=None,
