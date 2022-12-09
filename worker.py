@@ -113,6 +113,9 @@ class WorkerModel(object):
     self.rank = rank
     self.args = args
 
+  def is_master(self):
+    return self.args.node_rank == 0 and self.rank == 0
+
   def device(self):
     if self.args.gpu_list and self.rank < len(self.args.gpu_list):
       assert self.args.gpu_list[self.rank] < torch.cuda.device_count()

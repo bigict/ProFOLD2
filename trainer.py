@@ -223,7 +223,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     _step(train_data, it, writer, stage='train')
 
     if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
-        (not args.gpu_list or rank == 0)):
+        (not args.gpu_list or worker.is_master())):
       # Save a checkpoint every N iters.
       checkpoint_manager.save(it)
 
@@ -242,7 +242,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))
 
-    if (args.eval_data and (not args.gpu_list or rank == 0) and
+    if (args.eval_data and (not args.gpu_list or worker.is_master()) and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
 
       model.eval()
@@ -268,14 +268,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   # latest checkpoint
   if (global_step < args.num_batches and
       args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every != 0 and
-      (not args.gpu_list or (rank == 0 and args.node_rank == 0))):
+      (not args.gpu_list or worker.is_master())):
     checkpoint_manager.save(it)
 
     # Add embeddings
     writer_add_embeddings(writer, model, it)
 
   # save model
-  if not args.gpu_list or (rank == 0 and args.node_rank == 0):
+  if not args.gpu_list or worker.is_master():
     torch.save(dict(dim=args.model_dim,
             evoformer_depth=args.model_evoformer_depth,
             evoformer_head_num=args.model_evoformer_head_num,
