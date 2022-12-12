@@ -163,6 +163,9 @@ class ESMEmbedding(nn.Module):
         return batch_tokens
 
     def forward(self, batch, repr_layer=ESM_EMBED_LAYER, **kwargs):
+        seq = batch['seq']
+        _, n, device = *seq.shape[:2], seq.device
+
         if not self.training:  # and n > self.sequence.max_input_len:
             embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
             max_input_len = kwargs.get('sequence_max_input_len', self.max_input_len)

@@ -124,7 +124,7 @@ class Alphafold2(nn.Module):
         # embed multiple sequence alignment (msa)
         if hasattr(self, 'sequence'):
             embedds, contacts = self.sequence(
-                    batch, sequence_max_input_len=self.sequence_max_input_len, sequence_max_step_len=self.sequence_max_step_len)
+                    batch, sequence_max_input_len=sequence_max_input_len, sequence_max_step_len=sequence_max_step_len)
             representations['mlm'] = dict(representations=embedds,
                     contacts=contacts)
 
