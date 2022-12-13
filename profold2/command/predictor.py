@@ -19,7 +19,6 @@ from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import pdb_from_prediction
 from profold2.model import FeatureBuilder, ReturnValues
-from profold2.relax import relax
 from profold2.utils import exists, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
@@ -60,6 +59,8 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   return torch.utils.data.DataLoader(data, **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
+  from profold2.relax import relax  # pylint: disable=import-outside-toplevel
+
   return relax.AmberRelaxation(
       max_iterations=relax.RELAX_MAX_ITERATIONS,
       tolerance=relax.RELAX_ENERGY_TOLERANCE,
@@ -202,7 +203,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     with open(timings_output_path, 'w', encoding='utf-8') as f:
       f.write(json.dumps(timings, indent=4))
 
-def add_arguments(parser):
+def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('fasta_files', type=str, nargs='*',

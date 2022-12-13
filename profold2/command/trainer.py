@@ -14,7 +14,6 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam
-from torch.utils.tensorboard import SummaryWriter
 
 from profold2.data import dataset, esm
 from profold2.data.utils import (
@@ -24,6 +23,7 @@ from profold2.data.utils import (
     weights_from_file)
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
+from profold2.utils import exists
 from profold2.command.worker import main, WorkerModel
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
@@ -35,6 +35,8 @@ def preprocess(args):  # pylint: disable=redefined-outer-name
                 exist_ok=True)
 
 def train(rank, args):  # pylint: disable=redefined-outer-name
+  from torch.utils.tensorboard import SummaryWriter  # pylint: disable=import-outside-toplevel
+
   random.seed(args.random_seed)
   np.random.seed(args.random_seed)
 
@@ -124,13 +126,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   optim = Adam(model.parameters(), lr=args.learning_rate)
 
   # tensorboard
-  writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval'))
+  writer = SummaryWriter(os.path.join(
+      args.prefix, 'runs', 'eval')) if worker.is_master() else None
   def writer_add_embeddings(writer, model, it):
     def add_embeddings(embedds, prefix=''):
       for k, v in embedds.items():
         if isinstance(v, dict):
           add_embeddings(v, prefix=f'{prefix}{k}_')
-        else:
+        elif exists(writer):
           writer.add_embedding(v, metadata=embedding_get_labels(k, v),
               global_step=it, tag=f'{prefix}{k}')
 
@@ -146,12 +149,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         prefix = f'{prefix}.'
       for k, v in loss.items():
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
-    else:
+    elif exists(writer):
       if isinstance(loss, torch.Tensor):
         loss = loss.item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
-      if writer:
-        writer.add_scalar(prefix, loss, it)
+      writer.add_scalar(prefix, loss, it)
 
   global_step = 0
   # CheckpointManager
@@ -290,7 +292,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
 setattr(train, 'preprocess', preprocess)
 
-def add_arguments(parser):
+def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('-t', '--train_data', type=str, default='train',
       help='train dataset dir, default=\'train\'')
   parser.add_argument('--train_idx', type=str, default='name.idx',
@@ -337,9 +339,9 @@ def add_arguments(parser):
   parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
   parser.add_argument('--tuning_every', type=int, default=10,
-      help='eval model every K times, default=1000')
-  parser.add_argument('--eval_every', type=int, default=1000,
-      help='eval model every K times, default=1000')
+      help='eval model every K times, default=10')
+  parser.add_argument('--eval_every', type=int, default=100,
+      help='eval model every K times, default=100')
   parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
       help='accumulate grads every k times, default=16')
@@ -358,19 +360,19 @@ def add_arguments(parser):
   parser.add_argument('--model_headers', type=str,
       default='model_headers_main.json',
       help='json format headers of model, default=model_headers_main.json')
-  parser.add_argument('--model_recycles', type=int, default=0,
-      help='number of recycles in model, default=0')
-  parser.add_argument('--model_dim', type=int, nargs=2, default=(256, 256),
-      help='dimension of model, default=(256, 256)')
+  parser.add_argument('--model_recycles', type=int, default=2,
+      help='number of recycles in model, default=2')
+  parser.add_argument('--model_dim', type=int, nargs=2, default=(256, 128),
+      help='dimension of model, default=(256, 128)')
   parser.add_argument('--model_embedd_dim', type=int,
       default=esm.ESM_EMBED_DIM,
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
       help='depth of evoformer in model, default=1')
-  parser.add_argument('--model_evoformer_head_num', type=int, default=8,
-      help='number of heads in evoformer model, default=8')
-  parser.add_argument('--model_evoformer_head_dim', type=int, default=64,
-      help='dimensions of each head in evoformer model, default=64')
+  parser.add_argument('--model_evoformer_head_num', type=int, default=48,
+      help='number of heads in evoformer model, default=48')
+  parser.add_argument('--model_evoformer_head_dim', type=int, default=32,
+      help='dimensions of each head in evoformer model, default=32')
   parser.add_argument('--model_shard_size', type=int, default=None,
       help='shard size in evoformer model, default=None')
   parser.add_argument('--model_dropout', type=float, default=0,

@@ -1,3 +1,5 @@
+"""Wrap distibuted env
+"""
 import os
 import logging
 from logging.handlers import QueueHandler, QueueListener
@@ -68,6 +70,8 @@ class _WorkerLogging(object):
       self.listener.stop()
 
 class WorkerXPU(object):
+  """Wrap distibuted XPU(GPU,MLU etc)
+  """
   def __init__(self, rank, args):
     self.local_rank = rank
     self.args = args
@@ -79,7 +83,7 @@ class WorkerXPU(object):
 
   def is_master(self):
     if self.is_available():
-      return (self.args.node_rank == 0 and local_rank == 0)
+      return (self.args.node_rank == 0 and self.local_rank == 0)
     return True
 
   @property
@@ -88,18 +92,20 @@ class WorkerXPU(object):
       return self.local_rank
     return torch.device('cpu')
 
+  @staticmethod
   def device_count():
     return torch.cuda.device_count()
 
   @property
   def rank(self):
     if 'RANK' in os.environ:
-      return os.environ['RANK']
+      return int(os.environ['RANK'])
     return WorkerXPU.device_count() * self.args.node_rank + self.local_rank
- 
+
+  @staticmethod
   def world_size(nnodes=None):
     if 'WORLD_SIZE' in os.environ:
-      return os.environ['WORLD_SIZE']
+      return int(os.environ['WORLD_SIZE'])
     return WorkerXPU.device_count() * default(nnodes, 1)
 
   def init_process_group(self):
@@ -109,7 +115,7 @@ class WorkerXPU(object):
               'init_method=%s',
               self.device,
               WorkerXPU.device_count(),
-              self.rank, 
+              self.rank,
               WorkerXPU.world_size(self.args.nnodes),
               self.args.init_method)
       torch.distributed.init_process_group(
@@ -140,7 +146,7 @@ class WorkerModel(object):
     model = Alphafold2(**kwargs)
 
     if self.xpu.is_available():
-      model.to(self.xpu.dvice)
+      model.to(self.xpu.device)
 
       logging.info('wrap model with nn.parallel.DistributedDataParallel class')
       model = nn.parallel.DistributedDataParallel(
@@ -244,7 +250,3 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
   # cleanup logging
   #--------------
   work_log.stop()
-
-def add_arguments(parser):
-  parser.add_argument('-o', '--prefix', type=str, default='.',
-      help='prefix of out directory, default=\'.\'')

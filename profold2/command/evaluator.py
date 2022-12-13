@@ -24,7 +24,7 @@ def preprocess(args):  # pylint: disable=redefined-outer-name
                 exist_ok=True)
 
 def evaluate(rank, args):  # pylint: disable=redefined-outer-name
-  worker = worker.WorkerModel(rank, args)
+  worker = WorkerModel(rank, args)
   feats, model = worker.load(args.model)
   features = FeatureBuilder(feats).to(worker.device())
   logging.info('feats: %s', feats)
@@ -112,7 +112,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
 
 setattr(evaluate, 'preprocess', preprocess)
 
-def add_arguments(parser):
+def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('-X', '--model', type=str, default='model.pth',

@@ -37,11 +37,14 @@ def create_args():
   subparsers = parser.add_subparsers(dest='command')
   for cmd, _, add_arguments in _COMMANDS:
     cmd_parser = subparsers.add_parser(cmd)
-    worker.add_arguments(cmd_parser)
-    add_arguments(cmd_parser)
 
-  # other common args, ex: verbose
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+    # output dir
+    cmd_parser.add_argument('-o', '--prefix', type=str, default='.',
+        help='prefix of out directory, default=\'.\'')
+    add_arguments(cmd_parser)
+    # verbose
+    cmd_parser.add_argument('-v', '--verbose', action='store_true',
+        help='verbose')
 
   return parser.parse_args()
 
