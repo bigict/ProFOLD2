@@ -74,9 +74,9 @@ class Alphafold2(nn.Module):
         self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
 
         # custom embedding projection
-        self.embedd_project = nn.Linear(embedd_dim, dim_single)
-
-        self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
+        if embedd_dim > 0:
+            self.embedd_project = nn.Linear(embedd_dim, dim_single)
+            self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
 
         # main trunk modules
         self.evoformer = Evoformer(
@@ -122,46 +122,13 @@ class Alphafold2(nn.Module):
         representations = {}
 
         # embed multiple sequence alignment (msa)
-        if not self.training:  # and n > self.sequence.max_input_len:
-            embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
-            max_input_len = sequence_max_input_len if exists(sequence_max_input_len) else self.sequence.max_input_len
-            max_step_len = sequence_max_step_len if exists(sequence_max_step_len) else self.sequence.max_step_len
-            for k in range(0, n, max_step_len):
-                i, j = k, min(k + max_input_len, n)
-                delta = 0 if i == 0 else max_input_len - max_step_len
-                if i > 0 and j < i + max_input_len:
-                    delta += i + max_input_len - n
-                    i = n - max_input_len
-                labels = self.sequence.batch_convert(
-                        [s[i:j] for s in batch['str_seq']], device=device)
-                clips = dict([(s, dict(i=i, j=j, l=n)) for s in range(len(batch['str_seq']))])
-                # x, y = self.sequence(labels, repr_layer=ESM_EMBED_LAYER, return_contacts=False)
-                x = self.sequence(labels,
-                        repr_layer=ESM_EMBED_LAYER,
-                        clips=clips,
-                        return_contacts=False)
-                p = delta // 2
-                if embedds and p > 0:
-                    l = embedds[-1].shape[-2]
-                    assert l > p
-                    embedds[-1] = embedds[-1][...,:l-p,:]
-                embedds.append(x[...,delta-p:j-i,:])
-                # contacts[...,i:j,i:j] = y
-                if j < k + max_input_len:
-                    break
-            embedds = torch.cat(embedds, dim=-2)
-        else:
-            labels = self.sequence.batch_convert(batch['str_seq'], device=device)
+        if hasattr(self, 'sequence'):
             embedds, contacts = self.sequence(
-                        labels,
-                        repr_layer=ESM_EMBED_LAYER,
-                        clips = batch.get('clips'),
-                        return_contacts=True)
+                    batch, sequence_max_input_len=sequence_max_input_len, sequence_max_step_len=sequence_max_step_len)
+            representations['mlm'] = dict(representations=embedds,
+                    contacts=contacts)
 
-        representations['mlm'] = dict(representations=embedds,
-                contacts=contacts)
-
-        embedds = rearrange(embedds, 'b l c -> b () l c')
+            embedds = rearrange(embedds, 'b l c -> b () l c')
 
         # if MSA is not passed in, just use the sequence itself
         if not exists(embedds) and not exists(msa):
@@ -196,7 +163,9 @@ class Alphafold2(nn.Module):
             # get msa_mask to all ones if none was passed
             msa_mask = default(msa_mask, lambda: torch.ones_like(embedds[..., -1]).bool())
         else:
-            raise Error('either MSA or embeds must be given')
+            m = rearrange(x, 'b n d -> b () n d')
+            msa_mask = rearrange(mask, 'b n -> b () n')
+            #raise Error('either MSA or embeds must be given')
 
         # derive pairwise representation
         x, x_mask = self.to_pairwise_repr(x, mask, seq_index)

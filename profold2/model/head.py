@@ -645,24 +645,28 @@ class LDDTHead(nn.Module):
         logger.debug('LDDTHead.loss: %s', loss.item())
         return dict(loss=loss)
 
-class MaskedLMHead(nn.Module):
-    """Head to predict Masked Language Model
+class RobertaLMHead(nn.Module):
+    """Head for Masked Language Modeling
     """
     def __init__(self, dim):
         super().__init__()
-        del dim
+
+        dim, _ = embedd_dim_get(dim)
+        self.project = nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Linear(dim, len(residue_constants.restypes_with_x)))
 
     def forward(self, headers, representations, batch):
-        assert 'mlm' in representations
-        assert 'logits' in representations['mlm'] and 'labels' in representations['mlm']
-        return dict(logits=representations['mlm']['logits'],
-                labels=representations['mlm']['labels'])
+        assert 'single' in representations
+        return dict(logits=self.project(representations['single']))
 
     def loss(self, value, batch):
         assert 'bert_mask' in batch
-        assert 'logits' in value and 'labels' in value
+        assert 'logits' in value and 'true_seq' in batch
 
-        logits, labels = value['logits'], value['labels']
+        logits, labels = value['logits'], batch['true_seq']
         #mask = rearrange(batch['bert_mask'], 'b l -> b l ()')
         mask = batch['bert_mask']
 
@@ -670,7 +674,7 @@ class MaskedLMHead(nn.Module):
                 labels=F.one_hot(labels, logits.shape[-1]), logits=logits)
 
         avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-        logger.debug('MaskedLMHead.loss: %s', avg_error.item())
+        logger.debug('RobertaLMHead.loss: %s', avg_error.item())
         return dict(loss=avg_error)
 
 class MetricDict(dict):
@@ -907,7 +911,7 @@ class HeaderBuilder:
             folding = FoldingHead,
             lddt = LDDTHead,
             metric = MetricDictHead,
-            mlm = MaskedLMHead,
+            roberta = RobertaLMHead,
             profile = SequenceProfileHead,
             tmscore = TMscoreHead,
             violation = ViolationHead)

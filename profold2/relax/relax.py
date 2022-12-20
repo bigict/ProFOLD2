@@ -20,6 +20,12 @@ from profold2.common import protein
 from profold2.relax import amber_minimize
 from profold2.relax import utils
 
+MAX_TEMPLATE_HITS = 20
+RELAX_MAX_ITERATIONS = 0
+RELAX_ENERGY_TOLERANCE = 3.39
+RELAX_STIFFNESS = 10.0
+RELAX_EXCLUDE_RESIDUES = []
+RELAX_MAX_OUTER_ITERATIONS = 3
 
 class AmberRelaxation(object):
   """Amber relaxation."""

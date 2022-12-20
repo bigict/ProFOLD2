@@ -164,16 +164,19 @@ def make_bert_mask(protein,
                    prepend_bos=True,
                    append_eos=True,
                    is_training=True):
-    masked_shape = protein['seq'].shape
-    mask = protein['mask']
-    if prepend_bos:
-        masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
-        mask = torch.cat((torch.ones((*masked_shape[:-1], 1), device=mask.device), mask), dim=-1)
-    if append_eos:
-        masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
-        mask = torch.cat((mask, torch.ones((*masked_shape[:-1], 1), device=mask.device)), dim=-1)
-    masked_position = torch.rand(masked_shape) < fraction
-    protein['bert_mask'] = masked_position * mask
+    if is_training:
+        masked_shape = protein['seq'].shape
+        mask = protein['mask']
+        if prepend_bos:
+            masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
+            mask = torch.cat((torch.ones((*masked_shape[:-1], 1), device=mask.device), mask), dim=-1)
+        if append_eos:
+            masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
+            mask = torch.cat((mask, torch.ones((*masked_shape[:-1], 1), device=mask.device)), dim=-1)
+        masked_position = torch.rand(masked_shape, device=mask.device) < fraction
+        protein['bert_mask'] = masked_position * mask
+        protein['true_seq'] = torch.clone(protein['seq'])
+        protein['seq'] = protein['seq'].masked_fill(masked_position, residue_constants.unk_restype_index)
     return protein
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):

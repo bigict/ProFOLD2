@@ -20,10 +20,10 @@ from profold2.data.parsers import parse_fasta
 from profold2.data.utils import pdb_from_prediction
 from profold2.model import FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
-import relaxer
-from worker import main, WorkerModel
 
-def _create_dataloader(rank, args):  # pylint: disable=redefined-outer-name
+from profold2.command.worker import main, WorkerModel, WorkerXPU
+
+def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
     fasta_file = os.path.basename(fasta_file)
     pid, _ = os.path.splitext(fasta_file)
@@ -53,10 +53,21 @@ def _create_dataloader(rank, args):  # pylint: disable=redefined-outer-name
   kwargs = {
       'num_workers': args.num_workers,
       'collate_fn': data.collate_fn}
-  if args.gpu_list and len(args.gpu_list) > 1:
+  if xpu.is_available() and WorkerXPU.world_size() > 1:
     kwargs['sampler'] = DistributedSampler(data,
-        num_replicas=len(args.gpu_list), rank=rank)
+        num_replicas=WorkerXPU.world_size(), rank=xpu.rank)
   return torch.utils.data.DataLoader(data, **kwargs)
+
+def _create_relaxer(use_gpu_relax=False):
+  from profold2.relax import relax  # pylint: disable=import-outside-toplevel
+
+  return relax.AmberRelaxation(
+      max_iterations=relax.RELAX_MAX_ITERATIONS,
+      tolerance=relax.RELAX_ENERGY_TOLERANCE,
+      stiffness=relax.RELAX_STIFFNESS,
+      exclude_residues=relax.RELAX_EXCLUDE_RESIDUES,
+      max_outer_iterations=relax.RELAX_MAX_OUTER_ITERATIONS,
+      use_gpu=use_gpu_relax)
 
 def _load_models(rank, args):  # pylint: disable=redefined-outer-name
   def _location_split(model_location):
@@ -85,8 +96,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = _create_dataloader(rank, args)
   amber_relaxer = (None
       if args.no_relaxer
-      else relaxer.create(
-          use_gpu_relax=args.gpu_list and not args.no_gpu_relax))
+      else _create_relaxer(
+          use_gpu_relax=rank.is_available() and not args.no_gpu_relax))
 
   def timing_callback(timings, key, tic, toc):
     timings[key] = toc - tic
@@ -192,24 +203,9 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     with open(timings_output_path, 'w', encoding='utf-8') as f:
       f.write(json.dumps(timings, indent=4))
 
-if __name__ == '__main__':
-  import argparse
-
-  parser = argparse.ArgumentParser()
-  parser.add_argument('--nnodes', type=int, default=1,
-      help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0,
-      help='rank of the node.')
-  parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
-      help='list of GPU IDs')
-  parser.add_argument('--init_method', type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-           'default=\'file:///tmp/profold2.dist\'')
+def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
-  parser.add_argument('-o', '--prefix', type=str, default='.',
-      help='prefix of out directory, default=\'.\'')
   parser.add_argument('fasta_files', type=str, nargs='*',
       help='fasta files')
   parser.add_argument('--fasta_fmt', type=str, default='single',
@@ -235,6 +231,23 @@ if __name__ == '__main__':
       help='do NOT save prediction header')
   parser.add_argument('--no_gpu_relax', action='store_true',
       help='run relax on cpu')
+
+if __name__ == '__main__':
+  import argparse
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--nnodes', type=int, default=1,
+      help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0,
+      help='rank of the node.')
+  parser.add_argument('--init_method', type=str,
+      default='file:///tmp/profold2.dist',
+      help='method to initialize the process group, '
+           'default=\'file:///tmp/profold2.dist\'')
+  parser.add_argument('-o', '--prefix', type=str, default='.',
+      help='prefix of out directory, default=\'.\'')
+
+  add_arguments(parser)
 
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()

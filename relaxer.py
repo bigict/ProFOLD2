@@ -14,24 +14,14 @@ from profold2.relax import relax
 
 # Internal import (7716).
 
-MAX_TEMPLATE_HITS = 20
-RELAX_MAX_ITERATIONS = 0
-RELAX_ENERGY_TOLERANCE = 3.39
-RELAX_STIFFNESS = 10.0
-RELAX_EXCLUDE_RESIDUES = []
-RELAX_MAX_OUTER_ITERATIONS = 3
-
-def create(use_gpu_relax=False):
-  return relax.AmberRelaxation(
-      max_iterations=RELAX_MAX_ITERATIONS,
-      tolerance=RELAX_ENERGY_TOLERANCE,
-      stiffness=RELAX_STIFFNESS,
-      exclude_residues=RELAX_EXCLUDE_RESIDUES,
-      max_outer_iterations=RELAX_MAX_OUTER_ITERATIONS,
-      use_gpu=use_gpu_relax)
-
 def main(args):  # pylint: disable=redefined-outer-name
-  amber_relaxer = create(use_gpu_relax=args.use_gpu_relax)
+  amber_relaxer = relax.AmberRelaxation(
+      max_iterations=relax.RELAX_MAX_ITERATIONS,
+      tolerance=relax.RELAX_ENERGY_TOLERANCE,
+      stiffness=relax.RELAX_STIFFNESS,
+      exclude_residues=relax.RELAX_EXCLUDE_RESIDUES,
+      max_outer_iterations=relax.RELAX_MAX_OUTER_ITERATIONS,
+      use_gpu=args.use_gpu_relax)
 
   for pdb_files in args.pdb_files:
     for pdb_file in glob.glob(pdb_files):

@@ -15,7 +15,8 @@ from profold2.data import dataset
 from profold2.data.utils import pdb_save
 from profold2.model import FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
-from worker import main, WorkerModel
+
+from profold2.command.worker import main, WorkerModel
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.save_pdb:
@@ -111,26 +112,12 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
 
 setattr(evaluate, 'preprocess', preprocess)
 
-if __name__ == '__main__':
-  import argparse
-
-  parser = argparse.ArgumentParser()
-  parser.add_argument('--nnodes', type=int, default=1,
-      help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0,
-      help='rank of the node.')
-  parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
-      help='list of GPU IDs')
-  parser.add_argument('--init_method', type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-           'default=\'file:///tmp/profold2.dist\'')
+def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('-X', '--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
-  parser.add_argument('-o', '--prefix', type=str, default='.',
-      help='prefix of out directory, default=\'.\'')
+
   parser.add_argument('-k', '--casp_data', type=str, default='test',
       help='CASP dataset, default=\'test\'')
   parser.add_argument('--casp_without_pdb', action='store_true',
@@ -167,6 +154,24 @@ if __name__ == '__main__':
       help='shard size in evoformer model, default=None')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
+
+if __name__ == '__main__':
+  import argparse
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--nnodes', type=int, default=1,
+      help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0,
+      help='rank of the node.')
+  parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
+      help='list of GPU IDs')
+  parser.add_argument('--init_method', type=str,
+      default='file:///tmp/profold2.dist',
+      help='method to initialize the process group, '
+           'default=\'file:///tmp/profold2.dist\'')
+  parser.add_argument('-o', '--prefix', type=str, default='.',
+      help='prefix of out directory, default=\'.\'')
+  add_arguments(parser)
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 
