@@ -22,13 +22,13 @@ ProFOLD2 - A protein 3D structure prediction application
   ```
 3.  Train a model
   ```bash
-  $./env/bin/python trainer.py --prefix=OUTPUT_DIR
+  $./env/bin/python main.py train --prefix=OUTPUT_DIR
   ```
   
   There are a lot of parameters, you can run
     
   ```bash
-  $./env/bin/python trainer.py -h
+  $./env/bin/python main.py train -h
   ```
   
   for further help.
@@ -43,11 +43,11 @@ ProFOLD2 - A protein 3D structure prediction application
   
 4.  Inference
   ```bash
-  $./env/bin/python evaluator.py --model=MODEL_FILE
+  $./env/bin/python main.py predict --models [MODEL_NAME1:]MODEL_FILE1 [MODEL_NAME2:]MODEL_FILE2
   ```
   
-  Just like `trainer.py`, you can run
+  Just like `train`, you can run
   ```bash
-  $./env/bin/python evaluator.py -h
+  $./env/bin/python main.py predict -h
   ```
   
