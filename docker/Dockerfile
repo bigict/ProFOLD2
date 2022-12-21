@@ -58,6 +58,6 @@ WORKDIR ${profold_home}
 RUN echo -e "#!/bin/bash\n\
 cd ${profold_home}\n\
 ldconfig\n\
-python predictor.py \$@"> /app/run_profold.sh \
+python -m torch.distributed.launch --nproc_per_node=auto main.py predict \$@"> /app/run_profold.sh \
     && chmod +x /app/run_profold.sh
 ENTRYPOINT ["/app/run_profold.sh"]
