@@ -161,18 +161,10 @@ def make_seq_profile_pairwise(protein, mask=None, density=False, epsilon=1e-8, i
 @take1st
 def make_bert_mask(protein,
                    fraction=0.12,
-                   prepend_bos=True,
-                   append_eos=True,
                    is_training=True):
     if is_training:
         masked_shape = protein['seq'].shape
         mask = protein['mask']
-        if prepend_bos:
-            masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
-            mask = torch.cat((torch.ones((*masked_shape[:-1], 1), device=mask.device), mask), dim=-1)
-        if append_eos:
-            masked_shape = (*masked_shape[:-1], masked_shape[-1] + 1)
-            mask = torch.cat((mask, torch.ones((*masked_shape[:-1], 1), device=mask.device)), dim=-1)
         masked_position = torch.rand(masked_shape, device=mask.device) < fraction
         protein['bert_mask'] = masked_position * mask
         protein['true_seq'] = torch.clone(protein['seq'])

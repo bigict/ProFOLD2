@@ -1,6 +1,6 @@
 """Tools for inference, run
         ```bash
-        $python evaluator.py -h
+        $python predictor.py -h
         ```
         for further help.
 """
@@ -23,6 +23,17 @@ from profold2.utils import exists, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
 
+def _read_fasta(args):
+  if hasattr(args, 'fasta_data'):
+    for fasta_str in args.fasta_data:
+      yield fasta_str
+  else:
+    for fasta_glob in args.fasta_files:
+      for fasta_file in glob.glob(fasta_glob):
+        with open(fasta_file, 'r', encoding='utf-8') as f:
+          fasta_str = f.read()
+        yield fasta_str
+
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
     fasta_file = os.path.basename(fasta_file)
@@ -30,25 +41,21 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
     return pid
 
   sequences, descriptions, msa = [], [], []
-  for fasta_glob in args.fasta_files:
-    for fasta_file in glob.glob(fasta_glob):
-      with open(fasta_file, 'r', encoding='utf-8') as f:
-        fasta_str = f.read()
-
-        if args.fasta_fmt == 'a4m':
-          s = fasta_str.splitlines()
-          d = [None] * len(s)
-        else:
-          s, d = parse_fasta(fasta_str)
-        d[0] = filename_get(fasta_file)
-        if args.fasta_fmt == 'single':
-          sequences += s
-          descriptions += d
-          msa += [None] * len(s)
-        else:
-          sequences += s[:1]
-          descriptions += d[:1]
-          msa += [s]
+  for fasta_str in _read_fasta(args):
+    if args.fasta_fmt == 'a4m':
+      s = fasta_str.splitlines()
+      d = [None] * len(s)
+    else:
+      s, d = parse_fasta(fasta_str)
+    d[0] = filename_get(fasta_file)
+    if args.fasta_fmt == 'single':
+      sequences += s
+      descriptions += d
+      msa += [None] * len(s)
+    else:
+      sequences += s[:1]
+      descriptions += d[:1]
+      msa += [s]
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
   kwargs = {
       'num_workers': args.num_workers,

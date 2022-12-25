@@ -24,8 +24,7 @@ def _create_mount(mount_name, path, read_only=True):
 
 def main(args):  # pylint: disable=redefined-outer-name
   command_args = []
-  if args.gpu_list:
-    command_args += [f'--gpu_list {" ".join(args.gpu_list)}']
+
   command_args += ['--map_location=cpu']
 
   mounts = []
@@ -78,6 +77,8 @@ def main(args):  # pylint: disable=redefined-outer-name
       mounts=mounts,
       user=f'{os.geteuid()}:{os.getegid()}',
       environment={
+          'NVIDIA_VISIBLE_DEVICES': (','.join(args.gpu_list) if args.gpu_list
+                                                             else 'all'),
           'TORCH_HOME': os.path.join(data_target_path, 'torch'),
       })
 

@@ -21,6 +21,8 @@ from web.utils import (serving_data,
         serving_meta,
         serving_pdb,
         serving_svg)
+
+from profold2.utils import timing
 import relaxer
 
 logger = logging.getLogger(__file__)
@@ -30,14 +32,6 @@ def to_log_file(text, f=sys.stdout):
 
 def to_fasta_str(description, sequence):
     return f'>{description}\n{sequence}'
-
-@contextlib.contextmanager
-def timing(msg, print_func, prefix=''):
-    print_func(f'{prefix}Started {msg}')
-    tic = time.time()
-    yield
-    toc = time.time()
-    print_func(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
 
 def do_task(task, uri, args, log_func=print):
     db.job_set(job_id=task['job_id'], task_id=task['id'], status=db.STATUS_RUNNING, time_run=datetime.now())
