@@ -119,7 +119,7 @@ class ContactHead(nn.Module):
             avg_error = functional.masked_mean(
                     value=errors*square_weight, mask=square_mask, epsilon=1e-6)
             logger.debug('ContactHead.loss: %s', avg_error.item())
-            if self.loss_min or self.loss_max:
+            if exists(self.loss_min) or exists(self.loss_max):
                 avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
             return dict(loss=avg_error)
         return None
@@ -210,7 +210,7 @@ class CoevolutionHead(nn.Module):
             logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
             avg_error += 0.5 * self.gammar * rlh
 
-        if self.loss_min or self.loss_max:
+        if exists(self.loss_min) or exists(self.loss_max):
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
 
@@ -272,7 +272,7 @@ class DistillationHead(nn.Module):
 
         avg_error = functional.masked_mean(value=errors, mask=pij_mask, epsilon=1e-6)
         logger.debug('DistillationHead.loss(%s): %s', self.loss_fn, avg_error.item())
-        if self.loss_min or self.loss_max:
+        if exists(self.loss_min) or exists(self.loss_max):
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
 
@@ -648,7 +648,7 @@ class LDDTHead(nn.Module):
 class RobertaLMHead(nn.Module):
     """Head for Masked Language Modeling
     """
-    def __init__(self, dim):
+    def __init__(self, dim, loss_min=None, loss_max=None):
         super().__init__()
 
         dim, _ = embedd_dim_get(dim)
@@ -657,6 +657,8 @@ class RobertaLMHead(nn.Module):
                 nn.GELU(),
                 nn.LayerNorm(dim),
                 nn.Linear(dim, len(residue_constants.restypes_with_x)))
+        self.loss_min = loss_min
+        self.loss_max = loss_max
 
     def forward(self, headers, representations, batch):
         assert 'single' in representations
@@ -675,6 +677,8 @@ class RobertaLMHead(nn.Module):
 
         avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
         logger.debug('RobertaLMHead.loss: %s', avg_error.item())
+        if exists(self.loss_min) or exists(self.loss_max):
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
         return dict(loss=avg_error)
 
 class MetricDict(dict):

@@ -1,0 +1,18 @@
+models:
+  # global model params
+  batch-size: 1
+  model_1:
+    url: model_1.mar # local or public URI
+    min-workers: 1  # override the global params
+  model_2:
+    url: model_2.mar # local or public URI
+    min-workers: 1  # override the global params
+  model_3:
+    url: model_3.mar # local or public URI
+    min-workers: 1  # override the global params
+
+dag:  
+  preprocess: [model_1, model_2, model_3]
+  model_1: [postprocess]
+  model_2: [postprocess]
+  model_3: [postprocess]

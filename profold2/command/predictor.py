@@ -23,31 +23,32 @@ from profold2.utils import exists, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
 
-def _read_fasta(args):
-  if hasattr(args, 'fasta_data'):
-    for fasta_str in args.fasta_data:
-      yield fasta_str
-  else:
-    for fasta_glob in args.fasta_files:
-      for fasta_file in glob.glob(fasta_glob):
-        with open(fasta_file, 'r', encoding='utf-8') as f:
-          fasta_str = f.read()
-        yield fasta_str
-
-def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
+def _read_fasta(args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
     fasta_file = os.path.basename(fasta_file)
     pid, _ = os.path.splitext(fasta_file)
     return pid
 
+  if hasattr(args, 'fasta_data'):
+    for fasta_name, fasta_str in args.fasta_data:
+      yield fasta_name, fasta_str
+  else:
+    for fasta_glob in args.fasta_files:
+      for fasta_file in glob.glob(fasta_glob):
+        fasta_name = filename_get(fasta_file)
+        with open(fasta_file, 'r', encoding='utf-8') as f:
+          fasta_str = f.read()
+        yield fasta_name, fasta_str
+
+def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   sequences, descriptions, msa = [], [], []
-  for fasta_str in _read_fasta(args):
+  for fasta_name, fasta_str in _read_fasta(args):
     if args.fasta_fmt == 'a4m':
       s = fasta_str.splitlines()
       d = [None] * len(s)
     else:
       s, d = parse_fasta(fasta_str)
-    d[0] = filename_get(fasta_file)
+    d[0] = fasta_name
     if args.fasta_fmt == 'single':
       sequences += s
       descriptions += d
@@ -219,7 +220,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       choices=['single', 'a3m', 'a4m'],
       help='format of fasta files, default=\'single\'')
 
-  parser.add_argument('-X', '--models', type=str, nargs='+',
+  parser.add_argument('--models', type=str, nargs='+',
+      metavar='[MODEL_NAME=]MODEL_PATH',
       help=' Models to be loaded using [model_name=]model_location format')
   parser.add_argument('--model_sequence_max_input_len', type=int, default=None,
       help='predict sequence embedding segment by seqment, default=None')
