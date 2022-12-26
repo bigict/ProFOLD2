@@ -165,7 +165,7 @@ def mmcif_get_coords(
     return None
 
   atom_id_list = list(filter(
-      lambda x: (chain is None or chain_id_list[x[0]] == chain
+      lambda x: ((chain is None or chain_id_list[x[0]] == chain)
           and fieldname_list[x[0]] == 'ATOM'),
       enumerate(atom_id_list)))
 

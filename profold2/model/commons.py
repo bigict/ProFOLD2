@@ -358,7 +358,7 @@ class PairwiseAttentionBlock(nn.Module):
         self.triangle_multiply_outgoing = TriangleMultiplicativeModule(dim = dim_pairwise, mix = 'outgoing')
         self.triangle_multiply_ingoing = TriangleMultiplicativeModule(dim = dim_pairwise, mix = 'ingoing')
 
-        self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
+        self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
     def forward(
         self,
@@ -371,10 +371,10 @@ class PairwiseAttentionBlock(nn.Module):
         if exists(msa_repr):
             x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
-        x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask=mask))
-        x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask=mask))
-        x = x + self.dropout_fn(self.triangle_attention_outgoing(x, edges=x, mask=mask, shard_size=shard_size))
-        x = x + self.dropout_fn(self.triangle_attention_ingoing(x, edges=x, mask=mask, shard_size=shard_size))
+        x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask=mask), training=self.training)
+        x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask=mask), training=self.training)
+        x = x + self.dropout_fn(self.triangle_attention_outgoing(x, edges=x, mask=mask, shard_size=shard_size), training=self.training)
+        x = x + self.dropout_fn(self.triangle_attention_ingoing(x, edges=x, mask=mask, shard_size=shard_size), training=self.training)
         return x
 
 class MsaAttentionBlock(nn.Module):
@@ -391,7 +391,7 @@ class MsaAttentionBlock(nn.Module):
         self.row_attn = AxialAttention(dim = (dim_single, dim_pairwise), heads = heads, dim_head = dim_head, row_attn = True, col_attn = False, accept_edges = True)
         self.col_attn = AxialAttention(dim = (dim_single, dim_pairwise), heads = heads, dim_head = dim_head, row_attn = False, col_attn = True)
 
-        self.dropout_fn = functools.partial(F.dropout, p=dropout, training=self.training)
+        self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
     def forward(
         self,
@@ -399,7 +399,7 @@ class MsaAttentionBlock(nn.Module):
         mask = None,
         pairwise_repr = None
     ):
-        x = x + self.dropout_fn(self.row_attn(x, mask = mask, edges = pairwise_repr))
+        x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr), training=self.training)
         x = x + self.col_attn(x, mask = mask)
         return x
 
