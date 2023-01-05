@@ -5,6 +5,7 @@
      for further help.
 """
 import os
+from contextlib import suppress as nullcontext
 import copy
 import json
 import logging
@@ -46,33 +47,33 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   with open(args.model_features, 'r', encoding='utf-8') as f:
     feats = json.loads(f.read())
 
-  train_loader = dataset.load(
-      data_dir=args.train_data,
-      data_idx=args.train_idx,
-      max_msa_size=args.max_msa_size,
-      min_crop_len=args.min_crop_len,
-      max_crop_len=args.max_crop_len,
-      crop_algorithm=args.crop_algorithm,
-      crop_probability=args.crop_probability,
-      batch_size=args.batch_size,
-      weights=list(weights_from_file(args.train_data_weights)),
-      shuffle=True,
-      prefetch_factor=args.prefetch_factor,
-      pin_memory=True,
-      num_workers=args.num_workers)
-  if args.tuning_data:
-    tuning_loader = dataset.load(
-        data_dir=args.tuning_data,
+  def data_cond(batch):
+    return (args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len)
+
+  def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
+      data_filter=data_cond):
+    data_loader = dataset.load(
+        data_dir=data_dir,
+        data_idx=data_idx,
         max_msa_size=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
+        crop_probability=args.crop_probability,
         batch_size=args.batch_size,
-        weights=list(weights_from_file(args.tuning_data_weights)),
+        weights=list(weights_from_file(weights)),
         shuffle=True,
         prefetch_factor=args.prefetch_factor,
         pin_memory=True,
         num_workers=args.num_workers)
+    return cycling(data_loader, data_filter)
+
+  train_data = create_cycling_data(args.train_data,
+      weights=args.train_data_weights)
+  if args.tuning_data:
+    tuning_data = create_cycling_data(args.tuning_data,
+        weights=args.tuning_data_weights)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -86,25 +87,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         num_workers=args.num_workers)
 
   if args.fake_data:
-    fake_loader = dataset.load(
-        data_dir=args.eval_data,
-        max_msa_size=args.max_msa_size,
-        min_crop_len=args.min_crop_len,
-        max_crop_len=args.max_crop_len,
-        crop_algorithm=args.crop_algorithm,
-        batch_size=args.batch_size,
-        weights=list(weights_from_file(args.fake_data_weights)),
-        shuffle=True,
-        pin_memory=True,
-        num_workers=args.num_workers)
-
-  def data_cond(batch):
-    return (args.min_protein_len <= batch['seq'].shape[1] and
-        batch['seq'].shape[1] < args.max_protein_len)
-
-  train_data = cycling(train_loader, data_cond)
-  if args.tuning_data:
-    tuning_data = cycling(tuning_loader, data_cond)
+    fake_data = create_cycling_data(args.fake_data,
+        weights=args.fake_data_weights)
 
   # model
   with open(args.model_headers, 'r', encoding='utf-8') as f:
@@ -123,7 +107,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                      headers=headers)
 
   # optimizer
-  optim = Adam(model.parameters(), lr=args.learning_rate)
+  optim = Adam(model.parameters(),
+               lr=args.learning_rate/args.gradient_accumulate_every)
 
   # tensorboard
   writer = SummaryWriter(os.path.join(
@@ -181,18 +166,26 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
+      sync_ctx = nullcontext
+      if (args.gradient_accumulate_nosync and
+          isinstance(model, nn.parallel.DistributedDataParallel) and
+          it != global_step and
+          jt + 1 != args.gradient_accumulate_every):
+        sync_ctx = model.no_sync
+        logging.debug('_step without sync: it=%d, jt=%d', it, jt)
+
       # sequence embedding (msa / esm / attn / or nothing)
-      r = ReturnValues(**model(batch=batch,
-                               num_recycle=args.model_recycles,
-                               shard_size=args.model_shard_size))
+      with sync_ctx():
+        r = ReturnValues(**model(batch=batch,
+                                 num_recycle=args.model_recycles,
+                                 shard_size=args.model_shard_size))
+        r.loss.backward()
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
       for h, v in r.headers.items():
         if 'loss' in v:
           running_loss += MetricDict({h:v['loss']})
-
-      r.loss.backward()
 
       if ('tmscore' in r.headers and
           r.headers['tmscore']['loss'].item() >= args.save_pdb):
@@ -240,7 +233,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
     if (args.fake_data and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
-      _step(cycling(fake_loader), it, writer, stage='fake',
+      _step(fake_data, it, writer, stage='fake',
           batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))
 
@@ -251,7 +244,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with torch.no_grad():
         # eval loss
         n, eval_loss = 0, MetricDict()
-        for data in iter(eval_loader):
+        for jt, data in enumerate(iter(eval_loader)):
+          seq = data['seq']
+          logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
+              0, it, jt, seq.shape, ','.join(data['pid']), data.get('clips'))
           data = features(data, is_training=False)
           r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
           for h, v in r.headers.items():
@@ -265,7 +261,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
       model.train()
 
-  writer.close()
+  if exists(writer):
+    writer.close()
 
   # latest checkpoint
   if (global_step < args.num_batches and
@@ -345,14 +342,17 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
       help='accumulate grads every k times, default=16')
+  parser.add_argument(
+      '--gradient_accumulate_nosync', action='store_true',
+      help='accumulate grads without sync')
   parser.add_argument('-b', '--batch_size', type=int, default=1,
       help='batch size, default=1')
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers, default=1')
   parser.add_argument('--prefetch_factor', type=int, default=2,
       help='number of batches loaded in advance by each worker, default=2')
-  parser.add_argument('-l', '--learning_rate', type=float, default='3e-4',
-      help='learning rate, default=3e-4')
+  parser.add_argument('-l', '--learning_rate', type=float, default='1e-3',
+      help='learning rate, default=1e-3')
 
   parser.add_argument('--model_features', type=str,
       default='model_features_main.json',

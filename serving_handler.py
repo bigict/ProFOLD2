@@ -2,9 +2,9 @@
 Module for ProFOLD default handler
 """
 
-import collections
-import io
 import base64
+import io
+import json
 import logging
 
 import torch
@@ -35,15 +35,16 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
     sequences, descriptions, msa, kwargs = [], [], [], []
 
     for row in data:
-      logger.info('%s', row.keys())
-      fasta = _data_to_text(row.get('data') or row.get('body'))
+      logger.info('%s', row)
+      row = json.loads(_data_to_text(row.get('data') or row.get('body')))
+      fasta = row['sequence']
       params = {'num_recycle': 2, 'shard_size': None}
       if 'num_recycle' in row:
         params['num_recycle'] = int(row['num_recycle'])
-      if 'shard_size' in row:
+      if 'shard_size' in row and row['shard_size']:
         params['shard_size'] = int(row['shard_size'])
 
-      fmt = _data_to_text(row['fmt']) if 'fmt' in row else 'single'
+      fmt = row['fmt'] if 'fmt' in row else 'single'
       assert fmt in ('single', 'a3m', 'a4m')
       if fmt == 'a4m':
         s = fasta.splitlines()
@@ -92,11 +93,10 @@ class FastaHandler(BaseHandler):  # pylint: disable=missing-class-docstring
         return t.read()
     def to_dict(result):
       _, b, r = result
-      return pdb_from_prediction(b, r.headers), to_base64(r.headers)
+      return pdb_from_prediction(b, r.headers, idx=0), to_base64(r.headers)
 
-    results = collections.defaultdict(list)
+    results = []
     for r in data:
       pdb, headers = to_dict(r)
-      results['pdb'] += pdb
-      results['headers'] += [headers]
-    return [results]
+      results.append({'pdb': pdb, 'headers': headers})
+    return results

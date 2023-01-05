@@ -37,16 +37,8 @@ class _WorkerLogging(object):
                 args.prefix,
                 f'{work_fn.__name__}_{args.node_rank}{local_rank}.log'))]
 
-    def handler_apply(h, f, *arg):
-      f(*arg)
-      return h
-    level=logging.DEBUG if args.verbose else logging.INFO
-    handlers = list(map(
-        lambda x: handler_apply(x, x.setLevel, level),
-        handlers))
+    level = logging.DEBUG if args.verbose else logging.INFO
     fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
-    handlers = list(map(lambda x: handler_apply(
-        x, x.setFormatter, logging.Formatter(fmt)), handlers))
 
     logging.basicConfig(
         format=fmt,
@@ -192,7 +184,7 @@ class WorkerFunction(object):
         ctx_handler.addFilter(ctx_filter)
       root.addHandler(ctx_handler)
 
-      level=logging.DEBUG if args.verbose else logging.INFO
+      level = logging.DEBUG if args.verbose else logging.INFO
       root.setLevel(level)
 
     #--------------

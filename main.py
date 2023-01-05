@@ -34,7 +34,7 @@ def create_args():
       help='method to initialize the process group, default=None')
 
   # command args
-  subparsers = parser.add_subparsers(dest='command')
+  subparsers = parser.add_subparsers(dest='command', required=True)
   for cmd, _, add_arguments in _COMMANDS:
     cmd_parser = subparsers.add_parser(cmd)
 

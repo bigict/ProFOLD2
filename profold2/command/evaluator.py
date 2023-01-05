@@ -115,7 +115,7 @@ setattr(evaluate, 'preprocess', preprocess)
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
-  parser.add_argument('-X', '--model', type=str, default='model.pth',
+  parser.add_argument('--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
 
   parser.add_argument('-k', '--casp_data', type=str, default='test',
