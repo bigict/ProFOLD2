@@ -259,7 +259,7 @@ def mmcif_get_coords(
     revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
     if revision:
       revision = min(revision)
-    r = dict(coord=labels, coord_mask=label_mask, revision=revision)
+    r = {'coord':labels, 'coord_mask':label_mask, 'revision':revision}
     if add_plddt:
       r['bfactor'] = bfactors
     return r

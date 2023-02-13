@@ -40,9 +40,9 @@ def main(args):  # pylint: disable=redefined-outer-name
       fasta_str = f.read()
     with timing(f'Request: {fasta_file}', print):
       r = requests.post(args.uri,
-                        json=dict(sequence=fasta_str, fmt=args.fasta_fmt,
-                                  num_recycle=args.model_recycles,
-                                  shard_size=args.model_shard_size),
+                        json={'sequence':fasta_str, 'fmt':args.fasta_fmt,
+                                  'num_recycle':args.model_recycles,
+                                  'shard_size':args.model_shard_size},
                         timeout=7200)
     if r.status_code != 200:
       logger.error('Request: %s error: %s', fasta_file, r.status_code)
@@ -58,7 +58,7 @@ def main(args):  # pylint: disable=redefined-outer-name
       if not isinstance(results, list):
         results = [results]
       if not args.multi_model_format:
-        results = [dict(model_1=row) for row in results]
+        results = [{'model_1':row} for row in results]
       assert len(sequences) == len(descriptions)
       assert len(sequences) == len(results)
       for seq, desc, result in zip(

@@ -168,8 +168,8 @@ class ESMEmbedding(nn.Module):
 
         if not self.training:  # and n > self.sequence.max_input_len:
             embedds, contacts = [], None  # torch.zeros((b, n, n), device=device)
-            max_input_len = kwargs.get('sequence_max_input_len', self.max_input_len)
-            max_step_len = kwargs.get('sequence_max_step_len', self.max_step_len)
+            max_input_len = default(kwargs.get('sequence_max_input_len'), self.max_input_len)
+            max_step_len = default(kwargs.get('sequence_max_step_len'), self.max_step_len)
             for k in range(0, n, max_step_len):
                 i, j = k, min(k + max_input_len, n)
                 delta = 0 if i == 0 else max_input_len - max_step_len

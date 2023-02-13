@@ -245,20 +245,26 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
+
+  # init distributed env
   parser.add_argument('--nnodes', type=int, default=1,
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
       help='rank of the node.')
+  parser.add_argument('--local_rank', type=int, default=None,
+      help='local rank of xpu, default=None')
   parser.add_argument('--init_method', type=str,
       default='file:///tmp/profold2.dist',
       help='method to initialize the process group, '
            'default=\'file:///tmp/profold2.dist\'')
+
+  # output dir
   parser.add_argument('-o', '--prefix', type=str, default='.',
       help='prefix of out directory, default=\'.\'')
-
   add_arguments(parser)
-
+  # verbose
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+
   args = parser.parse_args()
 
   main(args, predict)
