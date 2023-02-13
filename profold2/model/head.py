@@ -372,9 +372,9 @@ class DistogramHead(nn.Module):
 class FoldingHead(nn.Module):
     """Head to predict 3d struct.
     """
-    def __init__(self, dim, structure_module_depth, structure_module_heads, fape_min=1e-6, fape_max=15, fape_z=15, **params):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, fape_min=1e-6, fape_max=15, fape_z=15, dropout=.0, **params):
         super().__init__()
-        self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads)
+        self.struct_module = folding.StructureModule(dim, structure_module_depth, structure_module_heads, dropout=dropout)
 
         self.fape_min = fape_min
         self.fape_max = fape_max

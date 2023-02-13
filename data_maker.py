@@ -165,7 +165,7 @@ def mmcif_get_coords(
     return None
 
   atom_id_list = list(filter(
-      lambda x: (chain is None or chain_id_list[x[0]] == chain
+      lambda x: ((chain is None or chain_id_list[x[0]] == chain)
           and fieldname_list[x[0]] == 'ATOM'),
       enumerate(atom_id_list)))
 
@@ -259,7 +259,7 @@ def mmcif_get_coords(
     revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
     if revision:
       revision = min(revision)
-    r = dict(coord=labels, coord_mask=label_mask, revision=revision)
+    r = {'coord':labels, 'coord_mask':label_mask, 'revision':revision}
     if add_plddt:
       r['bfactor'] = bfactors
     return r

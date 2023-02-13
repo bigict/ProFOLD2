@@ -1,3 +1,4 @@
+import functools
 import logging
 
 import torch
@@ -194,6 +195,7 @@ class IPABlock(nn.Module):
         dim,
         ff_mult = 1,
         ff_num_layers = 3,     # in the paper, they used 3 layer transition (feedforward) block
+        dropout=.0,
         **kwargs
     ):
         super().__init__()
@@ -205,12 +207,14 @@ class IPABlock(nn.Module):
         self.ff_norm = nn.LayerNorm(dim_single)
         self.ff = Transition(dim_single, mult = ff_mult, num_layers = ff_num_layers)
 
+        self.dropout_fn = functools.partial(F.dropout, p=dropout)
+
     def forward(self, x, **kwargs):
         x = self.attn(x, **kwargs) + x
-        x = self.attn_norm(x)
+        x = self.attn_norm(self.dropout_fn(x, training=self.training))
 
         x = self.ff(x) + x
-        x = self.ff_norm(x)
+        x = self.ff_norm(self.dropout_fn(x, training=self.training))
         return x
 
 class AngleNetBlock(nn.Module):
@@ -255,7 +259,7 @@ class AngleNet(nn.Module):
 # this portion is not accurate to AF2, as AF2 applies a FAPE auxiliary loss on each layer, as well as a stop gradient on the rotations
 # just an attempt to see if this could evolve to something more generally usable
 class StructureModule(nn.Module):
-    def __init__(self, dim, structure_module_depth, structure_module_heads):
+    def __init__(self, dim, structure_module_depth, structure_module_heads, dropout=.0):
         super().__init__()
         dim_single, dim_pairwise = embedd_dim_get(dim)
 
@@ -266,6 +270,7 @@ class StructureModule(nn.Module):
                 dim = dim_single,
                 pairwise_repr_dim = dim_pairwise,
                 heads = structure_module_heads,
+                dropout=dropout
             )
 
             self.to_affine_update = nn.Linear(dim_single, 6)

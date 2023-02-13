@@ -25,7 +25,7 @@ from profold2.data.utils import (
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 from profold2.utils import exists
-from profold2.command.worker import main, WorkerModel
+from profold2.command.worker import main, WorkerModel, WorkerXPU
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.checkpoint_every > 0:
@@ -61,6 +61,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         crop_probability=args.crop_probability,
+        intra_domain_probability=args.intra_domain_probability,
         batch_size=args.batch_size,
         weights=list(weights_from_file(weights)),
         shuffle=True,
@@ -70,14 +71,18 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     return cycling(data_loader, data_filter)
 
   train_data = create_cycling_data(args.train_data,
-      weights=args.train_data_weights)
+      weights=args.train_data_weights, data_idx=args.train_idx)
   if args.tuning_data:
     tuning_data = create_cycling_data(args.tuning_data,
-        weights=args.tuning_data_weights)
+        weights=args.tuning_data_weights, data_idx=args.tuning_idx)
+  if args.fake_data:
+    fake_data = create_cycling_data(args.fake_data,
+        weights=args.fake_data_weights, data_idx=args.fake_idx)
 
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
+        data_idx=args.eval_idx,
         max_msa_size=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
@@ -85,10 +90,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         batch_size=args.batch_size,
         pin_memory=True,
         num_workers=args.num_workers)
-
-  if args.fake_data:
-    fake_data = create_cycling_data(args.fake_data,
-        weights=args.fake_data_weights)
 
   # model
   with open(args.model_headers, 'r', encoding='utf-8') as f:
@@ -107,8 +108,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                      headers=headers)
 
   # optimizer
-  optim = Adam(model.parameters(),
-               lr=args.learning_rate/args.gradient_accumulate_every)
+  optim = Adam(model.parameters(), lr=args.learning_rate)
 
   # tensorboard
   writer = SummaryWriter(os.path.join(
@@ -152,8 +152,24 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     logging.info('checkpoint_manager.global_step: %d', global_step)
     model.train()
 
+  """
+    .. note:: When a model is trained on ``M`` nodes with ``batch=N``, the
+        gradient will be ``M`` times smaller when compared to the same model
+        trained on a single node with ``batch=M*N`` if the loss is summed (NOT
+        averaged as usual) across instances in a batch (because the gradients
+        between different nodes are averaged). You should take this into
+        consideration when you want to obtain a mathematically equivalent
+        training process compared to the local training counterpart. But in most
+        cases, you can just treat a DistributedDataParallel wrapped model, a
+        DataParallel wrapped model and an ordinary model on a single GPU as the
+        same (E.g. using the same learning rate for equivalent batch size).
+  """
+  loss_scaler = (WorkerXPU.world_size() or 1
+      ) / (args.gradient_accumulate_every or 1.0)
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optim.zero_grad(set_to_none=True)
+
+    logging.debug('_step : it=%d, loss_scaler=%f', it, loss_scaler)
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
@@ -166,6 +182,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
+      # maybe sync or not
       sync_ctx = nullcontext
       if (args.gradient_accumulate_nosync and
           isinstance(model, nn.parallel.DistributedDataParallel) and
@@ -179,7 +196,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         r = ReturnValues(**model(batch=batch,
                                  num_recycle=args.model_recycles,
                                  shard_size=args.model_shard_size))
-        r.loss.backward()
+        (r.loss * loss_scaler).backward()
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -300,14 +317,20 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='number of batches, default=10^5')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
       help='eval dataset dir, default=None')
+  parser.add_argument('--eval_idx', type=str, default='name.idx',
+      help='eval dataset idx, default=\'name.idx\'')
   parser.add_argument('--tuning_data', type=str, default=None,
       help='eval dataset dir, default=None')
+  parser.add_argument('--tuning_idx', type=str, default='name.idx',
+      help='tuning dataset idx, default=\'name.idx\'')
   parser.add_argument('--tuning_data_weights', type=str, default=None,
       help='sample tuning data by weights, default=None')
   parser.add_argument('--tuning_with_coords', action='store_true',
       help='use `coord` when tuning')
   parser.add_argument('--fake_data', type=str, default=None,
       help='fake dataset dir, default=None')
+  parser.add_argument('--fake_idx', type=str, default='name.idx',
+      help='fake dataset idx, default=\'name.idx\'')
   parser.add_argument('--fake_data_weights', type=str, default=None,
       help='sample fake data by weights, default=None')
   parser.add_argument('--fake_with_coords', action='store_true',
@@ -317,7 +340,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
   parser.add_argument('--max_msa_size', type=int, default=128,
-      help='filter out msas whose size>SIZE, default=128')
+      help='sampling MSAs with depth<=SIZE, default=128')
   parser.add_argument('--min_crop_len', type=int, default=80,
       help='filter out proteins whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
@@ -330,6 +353,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
           'length>MIN_CROP_LEN, default=0.0')
   parser.add_argument('--random_seed', type=int, default=None,
       help='random seed, default=None')
+  parser.add_argument('--intra_domain_probability', type=float, default=0.0,
+      help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
+          'instead of domain, default=0.0')
 
   parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
       help='the maximum number of checkpoints to keep, default=5')
@@ -391,15 +417,17 @@ if __name__ == '__main__':
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
       help='rank of the node.')
-  parser.add_argument('-g', '--gpu_list', type=int, nargs='+',
-      help='list of GPU IDs.')
+  parser.add_argument('--local_rank', type=int, default=None,
+      help='local rank of xpu, default=None')
   parser.add_argument('--init_method', type=str,
       default='file:///tmp/profold2.dist',
       help='method to initialize the process group, '
            'default=\'file:///tmp/profold2.dist\'')
 
+  # output dir
+  parser.add_argument('-o', '--prefix', type=str, default='.',
+      help='prefix of out directory, default=\'.\'')
   add_arguments(parser)
-
   # verbose
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
