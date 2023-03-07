@@ -94,12 +94,19 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
         p = F.one_hot(
                 msa,
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
+        num_msa = p.shape[1]
         # Shape (b, l, c)
         p = torch.sum(p, dim=1)
     else:
+        num_msa = 1
         p = F.one_hot(
                 protein['seq'],
                 num_classes=len(residue_constants.restypes_with_x_and_gap))
+
+    # gap value (b, l)
+    gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
+    protein['sequence_profile_gap_value'] = p[...,gap_idx] / (num_msa + epsilon)
+
     if exists(mask) and len(mask) > 0:
         m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
         m = F.one_hot(torch.as_tensor(m, device=p.device),

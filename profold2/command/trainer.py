@@ -278,9 +278,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
       model.train()
 
-  if exists(writer):
-    writer.close()
-
   # latest checkpoint
   if (global_step < args.num_batches and
       args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every != 0 and
@@ -289,6 +286,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
     # Add embeddings
     writer_add_embeddings(writer, model, it)
+
+  if exists(writer):
+    writer.close()
 
   # save model
   if worker.is_master():

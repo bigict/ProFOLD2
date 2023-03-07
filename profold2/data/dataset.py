@@ -46,7 +46,7 @@ def _make_msa_features(sequences):
     for sequence in msa:
         int_msa.append([residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence])
 
-    return dict(msa=torch.as_tensor(int_msa), str_msa=msa, del_msa=del_matirx)
+    return dict(msa=torch.as_tensor(int_msa), str_msa=msa, del_msa=torch.as_tensor(del_matirx))
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
     def __init__(self, sequences, descriptions=None, msa=None):
@@ -379,10 +379,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             for field in ('seq', 'mask', 'coord', 'coord_mask', 'coord_plddt'):
                 if field in batch[k]:
                     batch[k][field] = batch[k][field][i:j,...]
-            for field in ('str_msa', 'del_msa'):
+            for field in ('str_msa',):
                 if field in batch[k]:
                     batch[k][field] = [v[i:j] for v in batch[k][field]]
-            for field in ('msa',):
+            for field in ('msa', 'del_msa'):
                 if field in batch[k]:
                     batch[k][field] = batch[k][field][:,i:j,...]
 
@@ -423,10 +423,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             msas, str_msas, del_msas = list(zip(*[[b[k] for k in fields] for b in batch]))
 
             padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
+            padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
             ret.update(
                 msa=padded_msas,
                 str_msa=str_msas,
-                del_msa=del_msas)
+                del_msa=padded_dels)
 
         if clips:
             ret['clips'] = clips
@@ -473,6 +474,11 @@ def pad_for_batch(items, batch_length, dtype):
         for msa in items:
             z = torch.ones((msa.shape[0], batch_length - msa.shape[1]), dtype=msa.dtype) * residue_constants.HHBLITS_AA_TO_ID['X']
             c = torch.cat((msa, z), dim=1)
+            batch.append(c)
+    elif dtype == 'del_msa':
+        for del_msa in items:
+            z = torch.zeros((del_msa.shape[0], batch_length - del_msa.shape[1]), dtype=del_msa.dtype)
+            c = torch.cat((del_msa, z), dim=1)
             batch.append(c)
     else:
         raise ValueError('Not implement yet!')

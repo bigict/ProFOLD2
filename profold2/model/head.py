@@ -1,6 +1,7 @@
 import sys
 import functools
 import logging
+import math
 
 import torch
 from torch import nn
@@ -124,8 +125,92 @@ class ContactHead(nn.Module):
             return dict(loss=avg_error)
         return None
 
+class CoevolutionDeletionHead(nn.Module):
+    """Head to predict Co-evolution (Deletion).
+    """
+    def __init__(self, dim, mask='-', loss_min=None, loss_max=None):
+        super().__init__()
+        dim_single, dim_pairwise = embedd_dim_get(dim)
+
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+        self.single= nn.Sequential(
+                nn.Linear(dim_single, dim_single),
+                nn.GELU(),
+                nn.LayerNorm(dim_single),
+                nn.Linear(dim_single, 1))
+        self.pairwize = nn.Sequential(
+                nn.LayerNorm(dim_pairwise),
+                nn.Linear(dim_pairwise, num_class*1))
+        self.mask = mask
+
+        self.loss_min = loss_min
+        self.loss_max = loss_max
+
+    def forward(self, headers, representations, batch):
+        """Builds CoevolutionHead module.
+
+        Arguments:
+         representations: Dictionary of representations, must contain:
+           * 'pair': pair representation, shape [N_res, N_res, c_z].
+         batch: Batch, unused.
+
+        Returns:
+         Dictionary containing:
+           * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
+        """
+        if self.training or 'msa' in batch:
+            assert 'msa' in batch
+            num_class = len(residue_constants.restypes_with_x_and_gap)
+
+            si, zij = representations['single'], representations['pair']
+            m = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=si.device)
+
+            ei = self.single(si)
+            eij = self.pairwize((zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+
+            eij = eij * rearrange(1-torch.eye(zij.shape[-2], device=zij.device),
+                    'i j -> i j ()')  # eii = 0
+            hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                    F.one_hot(batch['msa'], num_class).float(),
+                    rearrange(eij, 'b i j (c d) -> b i j c d', c=1, d=num_class),
+                    m)
+            logits = rearrange(ei, 'b i c -> b () i c') + hi
+            return dict(logits=logits, wij=eij, bi=ei)
+        return None
+
+    def loss(self, value, batch):
+        """Log loss of a msa rebuilding."""
+        assert 'msa' in batch and 'del_msa' in batch
+
+        logits = value['logits']
+        labels = rearrange(
+                torch.atan(batch['del_msa'] / 3.0) * 2.0 / math.pi,
+                'b m i -> b m i ()')
+        assert len(logits.shape) == 4
+
+        num_class = len(residue_constants.restypes_with_x_and_gap)
+        label_mask = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=logits.device)
+        msa = F.one_hot(batch['msa'], num_class)
+
+        errors = torch.sum(
+                F.binary_cross_entropy_with_logits(logits, labels, reduction='none'),
+                dim=-1)
+        mask = torch.einsum('b i,b m i c,c -> b m i',
+                batch['mask'].float(),
+                msa.float(),
+                label_mask)
+
+        avg_error = functional.masked_mean(
+                value=errors, mask=mask, epsilon=1e-6)
+        logger.debug('CoevolutionHead(Deletion).loss: %s', avg_error.item())
+
+        if exists(self.loss_min) or exists(self.loss_max):
+            avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
+        return dict(loss=avg_error)
+
+
 class CoevolutionHead(nn.Module):
-    """Head to predict Co-evolution.
+    """Head to predict Co-evolution (Replacement).
     """
     def __init__(self, dim, mask='-', gammar=0.0, loss_min=None, loss_max=None):
         super().__init__()
@@ -175,7 +260,7 @@ class CoevolutionHead(nn.Module):
                     rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
                     m)
             logits = rearrange(ei, 'b i c -> b () i c') + hi
-            return dict(logits=logits, wij=eij)
+            return dict(logits=logits, wij=eij, bi=ei)
         return None
 
     def loss(self, value, batch):
@@ -184,7 +269,7 @@ class CoevolutionHead(nn.Module):
 
         logits = value['logits']
         labels = F.one_hot(batch['msa'], num_class)
-        logger.debug('CoevolutionHead.loss.logits: %s', logits.shape)
+        logger.debug('CoevolutionHead(Replacement).loss.logits: %s', logits.shape)
 
         assert len(logits.shape) == 4
         assert 'msa' in batch
@@ -200,14 +285,14 @@ class CoevolutionHead(nn.Module):
 
         avg_error = functional.masked_mean(
                 value=errors, mask=mask, epsilon=1e-6)
-        logger.debug('CoevolutionHead.loss: %s', avg_error.item())
+        logger.debug('CoevolutionHead(Replacement).loss: %s', avg_error.item())
         if self.gammar > 0 and 'wij' in value:
             epsilon = 1e-10
             M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
             p = torch.sum(M, dim=-1)
             rlh = torch.sum(torch.square(
                     torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon)))
-            logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
+            logger.debug('CoevolutionHead(Replacement).loss.LH: %s', rlh.item())
             avg_error += 0.5 * self.gammar * rlh
 
         if exists(self.loss_min) or exists(self.loss_max):
@@ -777,8 +862,56 @@ class MetricDictHead(nn.Module):
 
         return dict(loss=metrics) if metrics else None
 
+class SequenceProfileGapHead(nn.Module):
+    """Head to predict sequence profile (Gap).
+    """
+    def __init__(self, dim, input_dim=None, single_repr=None):
+        super().__init__()
+        dim, _ = embedd_dim_get(dim)
+
+        if not exists(input_dim):
+            input_dim = dim
+        if not exists(single_repr):
+            single_repr = 'struct_module'
+        assert single_repr in ('struct_module', 'mlm')
+        self.single_repr = single_repr
+        
+        self.project = nn.Sequential(
+                nn.Linear(input_dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Linear(dim, 1))
+
+    def forward(self, headers, representations, batch):
+        if self.single_repr == 'mlm':
+            assert 'mlm' in representations and 'representations' in representations['mlm']
+            x = representations['mlm']['representations']
+        else:
+            x = representations['single']
+
+        logits = self.project(x)
+        return dict(logits=logits)
+
+    def loss(self, value, batch):
+        assert 'mask' in batch
+        assert 'sequence_profile_gap_value' in batch
+        assert 'logits' in value
+
+        logits = value['logits']
+        labels = rearrange(batch['sequence_profile_gap_value'], 'b l -> b l ()')
+        assert logits.shape == labels.shape
+        mask = batch['mask']
+
+        errors = torch.sum(
+                F.binary_cross_entropy_with_logits(logits, labels, reduction='none'),
+                dim=-1)
+        avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+        logger.debug('SequenceProfileHead(Gap).loss: %s', avg_error.item())
+        return dict(loss=avg_error)
+
+
 class SequenceProfileHead(nn.Module):
-    """Head to predict sequence profile.
+    """Head to predict sequence profile (Replacement).
     """
     def __init__(self, dim, input_dim=None, single_repr=None, loss_func='CrossEntropy'):
         super().__init__()
@@ -831,7 +964,7 @@ class SequenceProfileHead(nn.Module):
                     labels=labels, logits=logits, mask=label_mask)
 
         avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-        logger.debug('SequenceProfileHead.loss(%s): %s', self.loss_func, avg_error.item())
+        logger.debug('SequenceProfileHead(Replacement).loss(%s): %s', self.loss_func, avg_error.item())
         return dict(loss=avg_error)
 
 class TMscoreHead(nn.Module):
@@ -908,6 +1041,7 @@ class ViolationHead(nn.Module):
 class HeaderBuilder:
     _headers = dict(
             coevolution = CoevolutionHead,
+            coevolutiond = CoevolutionDeletionHead,
             confidence = ConfidenceHead,
             contact = ContactHead,
             distillation = DistillationHead,
@@ -917,6 +1051,7 @@ class HeaderBuilder:
             metric = MetricDictHead,
             roberta = RobertaLMHead,
             profile = SequenceProfileHead,
+            profileg = SequenceProfileGapHead,
             tmscore = TMscoreHead,
             violation = ViolationHead)
 
