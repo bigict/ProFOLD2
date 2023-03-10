@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 from torch import nn
 
 from profold2.model import Alphafold2
-from profold2.utils import default, exists
+from profold2.utils import default, exists, torch_allow_tf32
 
 class _WorkerLogFilter(logging.Filter):
   def __init__(self, rank=-1):
@@ -192,7 +192,15 @@ class WorkerFunction(object):
     #--------------
     xpu.init_process_group()
 
-    self.work_fn(xpu, args)
+    # Starting in PyTorch 1.7, there is a new flag called allow_tf32.
+    # This flag defaults to True in PyTorch 1.7 to PyTorch 1.11, and
+    # False in PyTorch 1.12 and later. This flag controls whether
+    # PyTorch is allowed to use the TensorFloat32 (TF32) tensor cores,
+    # available on new NVIDIA GPUs since Ampere, internally to compute
+    # matmul (matrix multiplies and batched matrix multiplies) and
+    # convolutions.
+    with torch_allow_tf32(allow=True):
+      self.work_fn(xpu, args)
 
     #--------------
     # cleanup
