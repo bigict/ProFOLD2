@@ -16,7 +16,7 @@ from profold2.data.utils import pdb_save
 from profold2.model import FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
-from profold2.command.worker import main, WorkerModel
+from profold2.command.worker import main, WorkerModel, WorkerXPU
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.save_pdb:
@@ -31,18 +31,19 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('model: %s', model)
 
   kwargs = {}
-  if args.gpu_list and len(args.gpu_list) > 1:
-    kwargs['num_replicas'] = len(args.gpu_list)
-    kwargs['rank'] = rank
+  if WorkerXPU.device_count() > 1:
+    kwargs['num_replicas'] = WorkerXPU.device_count()
+    kwargs['rank'] = rank.rank
   test_loader = dataset.load(
-      data_dir=args.casp_data,
+      data_dir=args.eval_data,
+      data_idx=args.eval_idx,
       max_msa_size=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
       feat_flags=(~dataset.ProteinStructureDataset.FEAT_PDB
-                  if args.casp_without_pdb
+                  if args.eval_without_pdb
                   else dataset.ProteinStructureDataset.FEAT_ALL),
       batch_size=args.batch_size,
       num_workers=args.num_workers, **kwargs)
@@ -118,9 +119,11 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
 
-  parser.add_argument('-k', '--casp_data', type=str, default='test',
-      help='CASP dataset, default=\'test\'')
-  parser.add_argument('--casp_without_pdb', action='store_true',
+  parser.add_argument('--eval_data', type=str, default='test',
+      help='eval dataset, default=\'test\'')
+  parser.add_argument('--eval_idx', type=str, default='name.idx',
+      help='eval dataset idx, default=\'name.idx\'')
+  parser.add_argument('--eval_without_pdb', action='store_true',
       help='DO NOT load pdb data')
   parser.add_argument('--min_protein_len', type=int, default=0,
       help='filter out proteins whose length<LEN, default=0')
@@ -161,7 +164,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
   # init distributed env
-  parser.add_argument('--nnodes', type=int, default=1,
+  parser.add_argument('--nnodes', type=int, default=None,
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
       help='rank of the node.')
