@@ -7,6 +7,7 @@ import uuid
 
 import numpy as np
 import torch
+from torch.cuda.amp import autocast
 
 # helpers
 def exists(val):
@@ -87,11 +88,18 @@ def torch_default_dtype(dtype):
     torch.set_default_dtype(prev_dtype)
 
 @contextlib.contextmanager
-def torch_disable_tf32():
-    orig_value = torch.backends.cuda.matmul.allow_tf32
-    torch.backends.cuda.matmul.allow_tf32 = False
+def torch_allow_tf32(allow=True):
+    if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+        matmul_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = allow
+    if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
+        cudnn_allow_tf32 = torch.backends.cudnn.allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow
     yield
-    torch.backends.cuda.matmul.allow_tf32 = orig_value
+    if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
+        torch.backends.cudnn.allow_tf32 = cudnn_allow_tf32
+    if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+        torch.backends.cuda.matmul.allow_tf32 = matmul_allow_tf32
 
 # distance utils (distogram to dist mat + masking)
 
@@ -376,7 +384,7 @@ def calc_phis_numpy(pred_coords, N_mask, CA_mask, C_mask=None,
 # alignment by centering + rotation to compute optimal RMSD
 # adapted from : https://github.com/charnley/rmsd/
 
-def kabsch_torch(X, Y, cpu=True):
+def kabsch_torch(X, Y, cpu=False):
     """ Kabsch alignment of X into Y. 
         Assumes X,Y are both (Dims x N_points). See below for wrapper.
     """
@@ -394,7 +402,8 @@ def kabsch_torch(X, Y, cpu=True):
         V, S, W = torch.svd(C)
         W = W.t()
     else: 
-        V, S, W = torch.linalg.svd(C)
+        with autocast(enabled=False):
+            V, S, W = torch.linalg.svd(C.float())
     
     # determinant sign for direction correction
     d = (torch.det(V) * torch.det(W)) < 0.0

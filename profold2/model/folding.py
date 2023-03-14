@@ -3,8 +3,8 @@ import logging
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from torch.cuda.amp import autocast
+from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
@@ -136,7 +136,8 @@ class InvariantPointAttention(nn.Module):
         attn = F.softmax(attn_logits, dim = -1)
 
         # disable TF32 for precision
-        with torch_disable_tf32(), autocast(enabled = False):
+        # with torch_allow_tf32(allow=False), autocast(enabled=False):
+        with torch_allow_tf32(allow=False):
 
             # aggregate values
             results_scalar = torch.einsum('b i j, b j d -> b i d', attn, v_scalar)

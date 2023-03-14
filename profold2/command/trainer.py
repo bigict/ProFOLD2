@@ -14,6 +14,7 @@ import random
 import numpy as np
 import torch
 from torch import nn
+from torch.cuda.amp import autocast, GradScaler
 from torch.optim import Adam
 
 from profold2.data import dataset, esm
@@ -164,6 +165,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         DataParallel wrapped model and an ordinary model on a single GPU as the
         same (E.g. using the same learning rate for equivalent batch size).
   """
+  grad_scaler = GradScaler(enabled=args.amp_enabled)
   loss_scaler = (WorkerXPU.world_size() or 1
       ) / (args.gradient_accumulate_every or 1.0)
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
@@ -193,10 +195,17 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
       # sequence embedding (msa / esm / attn / or nothing)
       with sync_ctx():
-        r = ReturnValues(**model(batch=batch,
-                                 num_recycle=args.model_recycles,
-                                 shard_size=args.model_shard_size))
-        (r.loss * loss_scaler).backward()
+        autocast_ctx = nullcontext 
+        if grad_scaler.is_enabled() and it != global_step:
+          autocast_ctx = autocast
+        with autocast_ctx():
+          r = ReturnValues(**model(batch=batch,
+                                   num_recycle=args.model_recycles,
+                                   shard_size=args.model_shard_size))
+        if grad_scaler.is_enabled() and it != global_step:
+          grad_scaler.scale(r.loss * loss_scaler).backward()
+        else:
+          (r.loss * loss_scaler).backward()
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -213,7 +222,12 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       #writer.add_scalar(f'Loss/train@{k}', v, it)
 
-    optim.step()
+    # optim.step()
+    if grad_scaler.is_enabled() and it != global_step:
+      grad_scaler.step(optim)
+      grad_scaler.update()
+    else:
+      optim.step()
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
@@ -406,6 +420,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
+  parser.add_argument('--amp_enabled', action='store_true',
+      help='enable automatic mixed precision, default=False')
 
 if __name__ == '__main__':
   import argparse
@@ -413,7 +429,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
   # init distributed env
-  parser.add_argument('--nnodes', type=int, default=1,
+  parser.add_argument('--nnodes', type=int, default=None,
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
       help='rank of the node.')

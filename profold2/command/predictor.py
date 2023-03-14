@@ -10,6 +10,7 @@ import glob
 import json
 import logging
 
+import numpy as np
 import torch
 from torch.utils.data.distributed import DistributedSampler
 
@@ -56,6 +57,11 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
     else:
       sequences += s[:1]
       descriptions += d[:1]
+      if len(s) > args.max_msa_size:
+        s = s[:1] + list(np.random.choice(
+            s,
+            size=args.max_msa_size - 1,
+            replace=False) if args.max_msa_size > 1 else [])
       msa += [s]
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
   kwargs = {
@@ -231,6 +237,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='number of recycles in profold2, default=0')
   parser.add_argument('--model_shard_size', type=int, default=None,
       help='shard size in evoformer model, default=None')
+  parser.add_argument('--max_msa_size', type=int, default=1024,
+      help='filter out msas whose size>SIZE, default=512')
 
   parser.add_argument('--num_workers', type=int, default=0,
       help='number of workers, default=0')
@@ -247,7 +255,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
   # init distributed env
-  parser.add_argument('--nnodes', type=int, default=1,
+  parser.add_argument('--nnodes', type=int, default=None,
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
       help='rank of the node.')
