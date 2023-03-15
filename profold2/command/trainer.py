@@ -7,6 +7,7 @@
 import os
 from contextlib import suppress as nullcontext
 import copy
+import functools
 import json
 import logging
 import random
@@ -196,16 +197,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       # sequence embedding (msa / esm / attn / or nothing)
       with sync_ctx():
         autocast_ctx = nullcontext 
-        if grad_scaler.is_enabled() and it != global_step:
-          autocast_ctx = autocast
+        if grad_scaler.is_enabled():
+          # FIXED ME: cache_enabled=True will crash :(
+          autocast_ctx = functools.partial(autocast, cache_enabled=False)
         with autocast_ctx():
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
                                    shard_size=args.model_shard_size))
-        if grad_scaler.is_enabled() and it != global_step:
-          grad_scaler.scale(r.loss * loss_scaler).backward()
-        else:
-          (r.loss * loss_scaler).backward()
+        grad_scaler.scale(r.loss * loss_scaler).backward()
 
       # running loss
       running_loss += MetricDict({'all':r.loss})
@@ -223,11 +222,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       #writer.add_scalar(f'Loss/train@{k}', v, it)
 
     # optim.step()
-    if grad_scaler.is_enabled() and it != global_step:
-      grad_scaler.step(optim)
-      grad_scaler.update()
-    else:
-      optim.step()
+    grad_scaler.step(optim)
+    grad_scaler.update()
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
