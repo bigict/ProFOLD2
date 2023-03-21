@@ -389,31 +389,32 @@ def kabsch_torch(X, Y, cpu=False):
         Assumes X,Y are both (Dims x N_points). See below for wrapper.
     """
     device = X.device
-    #  center X and Y to the origin
-    X_ = X - X.mean(dim=-1, keepdim=True)
-    Y_ = Y - Y.mean(dim=-1, keepdim=True)
-    # calculate convariance matrix (for each prot in the batch)
-    C = torch.matmul(X_, Y_.t()).detach()
-    if cpu: 
-        C = C.cpu()
-    # Optimal rotation matrix via SVD
-    if int(torch.__version__.split(".")[1]) < 8:
-        # warning! int torch 1.<8 : W must be transposed
-        V, S, W = torch.svd(C)
-        W = W.t()
-    else: 
-        with autocast(enabled=False):
-            V, S, W = torch.linalg.svd(C.float())
-    
-    # determinant sign for direction correction
-    d = (torch.det(V) * torch.det(W)) < 0.0
-    if d:
-        S[-1]    = S[-1] * (-1)
-        V[:, -1] = V[:, -1] * (-1)
-    # Create Rotation matrix U
-    U = torch.matmul(V, W).to(device)
-    # calculate rotations
-    X_ = torch.matmul(X_.t(), U).t()
+    with autocast(enabled=False):
+        X, Y = X.float(), Y.float()
+        # center X and Y to the origin
+        X_ = X - X.mean(dim=-1, keepdim=True)
+        Y_ = Y - Y.mean(dim=-1, keepdim=True)
+        # calculate convariance matrix (for each prot in the batch)
+        C = torch.matmul(X_, Y_.t()).detach()
+        if cpu: 
+            C = C.cpu()
+        # Optimal rotation matrix via SVD
+        if int(torch.__version__.split(".")[1]) < 8:
+            # Warning! int torch 1.<8 : W must be transposed
+            V, S, W = torch.svd(C)
+            W = W.t()
+        else: 
+            V, S, W = torch.linalg.svd(C)
+
+        # determinant sign for direction correction
+        d = (torch.det(V) * torch.det(W)) < 0.0
+        if d:
+            S[-1]    = S[-1] * (-1)
+            V[:, -1] = V[:, -1] * (-1)
+        # Create Rotation matrix U
+        U = torch.matmul(V, W).to(device)
+        # calculate rotations
+        X_ = torch.matmul(X_.t(), U).t()
     # return centered and aligned
     return X_, Y_
 
