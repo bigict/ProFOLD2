@@ -128,7 +128,7 @@ class ContactHead(nn.Module):
 class CoevolutionDeletionHead(nn.Module):
     """Head to predict Co-evolution (Deletion).
     """
-    def __init__(self, dim, mask='-', loss_min=None, loss_max=None):
+    def __init__(self, dim, mask='-', alpha=0.0, beta=0.0, gammar=0.0, loss_min=None, loss_max=None):
         super().__init__()
         dim_single, dim_pairwise = embedd_dim_get(dim)
 
@@ -143,6 +143,9 @@ class CoevolutionDeletionHead(nn.Module):
                 nn.Linear(dim_pairwise, num_class*1))
         self.mask = mask
 
+        self.alpha = alpha
+        self.beta = beta
+        self.gammar = gammar
         self.loss_min = loss_min
         self.loss_max = loss_max
 
@@ -203,6 +206,24 @@ class CoevolutionDeletionHead(nn.Module):
         avg_error = functional.masked_mean(
                 value=errors, mask=mask, epsilon=1e-6)
         logger.debug('CoevolutionHead(Deletion).loss: %s', avg_error.item())
+        if self.alpha > 0 and 'wij' in value:
+            r1 = torch.mean(torch.sum(torch.abs(value['wij']), dim=-1))
+            logger.debug('CoevolutionHead(Deletion).loss.L1: %s', r1.item())
+            avg_error += self.alpha * r1
+
+        if self.beta > 0 and 'wij' in value:
+            r2 = torch.mean(torch.sum(torch.square(value['wij']), dim=-1))
+            logger.debug('CoevolutionHead(Deletion).loss.L2: %s', r2.item())
+            avg_error += self.beta * r2
+
+        if self.gammar > 0 and 'wij' in value:
+            epsilon = 1e-10
+            M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
+            p = torch.sum(M, dim=-1)
+            rlh = torch.sum(torch.square(
+                    torch.einsum('... i, ... i j, ... j', p, M, p) / (torch.einsum('... i,... i', p, p) + epsilon)))
+            logger.debug('CoevolutionHead(Deletion).loss.LH: %s', rlh.item())
+            avg_error += 0.5 * self.gammar * rlh
 
         if exists(self.loss_min) or exists(self.loss_max):
             avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
@@ -212,7 +233,7 @@ class CoevolutionDeletionHead(nn.Module):
 class CoevolutionHead(nn.Module):
     """Head to predict Co-evolution (Replacement).
     """
-    def __init__(self, dim, mask='-', gammar=0.0, loss_min=None, loss_max=None):
+    def __init__(self, dim, mask='-', alpha=0.0, beta=0.0, gammar=0.0, loss_min=None, loss_max=None):
         super().__init__()
         dim_single, dim_pairwise = embedd_dim_get(dim)
 
@@ -227,6 +248,8 @@ class CoevolutionHead(nn.Module):
                 nn.Linear(dim_pairwise, num_class**2))
         self.mask = mask
 
+        self.alpha = alpha
+        self.beta = beta
         self.gammar = gammar
         self.loss_min = loss_min
         self.loss_max = loss_max
@@ -286,6 +309,16 @@ class CoevolutionHead(nn.Module):
         avg_error = functional.masked_mean(
                 value=errors, mask=mask, epsilon=1e-6)
         logger.debug('CoevolutionHead(Replacement).loss: %s', avg_error.item())
+        if self.alpha > 0 and 'wij' in value:
+            r1 = torch.mean(torch.sum(torch.abs(value['wij']), dim=-1))
+            logger.debug('CoevolutionHead(Replacement).loss.L1: %s', r1.item())
+            avg_error += self.alpha * r1
+
+        if self.beta > 0 and 'wij' in value:
+            r2 = torch.mean(torch.sum(torch.square(value['wij']), dim=-1))
+            logger.debug('CoevolutionHead(Replacement).loss.L2: %s', r2.item())
+            avg_error += self.beta * r2
+
         if self.gammar > 0 and 'wij' in value:
             epsilon = 1e-10
             M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
