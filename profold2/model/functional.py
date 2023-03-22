@@ -12,7 +12,6 @@ def l2_norm(v, dim=-1, epsilon=1e-12):
     return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
 
 def masked_mean(mask, value, epsilon=1e-10):
-    mask = default(mask, 1.0)
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
 
 def batched_gather(params, indices):
