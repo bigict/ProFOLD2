@@ -35,10 +35,10 @@ def parse_fasta(filename, datasource=None):
         name = name.split()[0]
       yield name, seq
   if filename.endswith('.gz'):
-    with gzip.open(filename, 'rt', encoding='utf-8') as f:
+    with gzip.open(filename, 'rt') as f:
       for name, seq in iter_fasta(FastaParser(f)):
         yield name, seq
-  with open(filename, 'r', encoding='utf-8') as f:
+  with open(filename, 'r') as f:
     for name, seq in iter_fasta(FastaParser(f)):
       yield name, seq
 
@@ -53,7 +53,7 @@ def compose_pid(pid, chain):
   return f'{pid}_{chain}' if chain else f'{pid}'
 
 def parse_cluster(filename):
-  with open(filename, 'r', encoding='utf-8') as f:
+  with open(filename, 'r') as f:
     for cid, values in groupby(map(lambda x: x.split(), lines(f)),
                                key=lambda x: x[0]):
       items = set()
@@ -73,7 +73,7 @@ def mmcif_get_filename(pid, chain, datasource=None):
 
 def mmcif_parse(filename):
   if filename.endswith('.gz'):
-    with gzip.open(filename, 'rt', encoding='utf-8') as f:
+    with gzip.open(filename, 'rt') as f:
       return MMCIF2Dict(f)
   return MMCIF2Dict(filename)
 
@@ -295,8 +295,7 @@ def process(item, sequences=None, args=None):  # pylint: disable=redefined-outer
           clu_list.append(fid)
 
           with open(
-              os.path.join(args.output, 'fasta', f'{fid}.fasta'),
-              'w', encoding='utf-8') as fasta:
+              os.path.join(args.output, 'fasta', f'{fid}.fasta'), 'w') as fasta:
             print(f'>{fid}', file=fasta)
             print(f'{sequences[fid]}', file=fasta)
           np.savez(os.path.join(args.output, 'npz', fid), **coords)
@@ -318,7 +317,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   logger.info('sequences - %s', len(sequences))
 
-  with open(os.path.join(args.output, 'name.idx'), 'w', encoding='utf-8') as f:
+  with open(os.path.join(args.output, 'name.idx'), 'w') as f:
     succeed, total = 0, 0
     with mp.Pool(args.processes) as p:
       for cid, pid_list, clu_list in p.imap(

@@ -36,7 +36,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   for fasta_file in args.fasta_list:
     logger.info('Request: %s begin', fasta_file)
-    with open(fasta_file, 'r', encoding='utf-8') as f:
+    with open(fasta_file, 'r') as f:
       fasta_str = f.read()
     with timing(f'Request: {fasta_file}', print):
       r = requests.post(args.uri,
@@ -92,8 +92,7 @@ def main(args):  # pylint: disable=redefined-outer-name
           print(f'{seq}')
 
           unrelaxed_pdbs[model_name] = pdb
-          with open(filename_get(desc, model_name, 'pdb'), 'w',
-              encoding='utf-8') as f:
+          with open(filename_get(desc, model_name, 'pdb'), 'w') as f:
             f.write(pdb)
 
           if 'metric' in header:
@@ -118,8 +117,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
             msa_list = list(yield_seq(pred))
             if args.dump_msa:
-              with open(filename_get(desc, model_name, 'a4m'), 'w',
-                  encoding='utf-8') as f:
+              with open(filename_get(desc, model_name, 'a4m'), 'w') as f:
                 f.write('\n'.join(msa_list))
             print('\n'.join(msa_list))
           if 'distogram' in header:
@@ -134,8 +132,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
             svg = t.read()
             unrelaxed_svgs[model_name] = svg
-            with open(filename_get(desc, model_name, 'svg'), 'w',
-                encoding='utf-8') as f:
+            with open(filename_get(desc, model_name, 'svg'), 'w') as f:
               f.write(svg)
 
         # Rank by model confidence and write out relaxed PDBs in rank order.
@@ -143,15 +140,14 @@ def main(args):  # pylint: disable=redefined-outer-name
         for idx, (model_name, _) in enumerate(
             sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)):
           ranked_order.append(model_name)
-          with open(filename_get(desc, f'{idx}', 'pdb', prefix='ranked_'), 'w',
-              encoding='utf-8') as f:
+          with open(filename_get(desc, f'{idx}', 'pdb', prefix='ranked_'),
+                    'w') as f:
             f.write(unrelaxed_pdbs[model_name])
-          with open(filename_get(desc, f'{idx}', 'svg', prefix='ranked_'), 'w',
-              encoding='utf-8') as f:
+          with open(filename_get(desc, f'{idx}', 'svg', prefix='ranked_'),
+                    'w') as f:
             f.write(unrelaxed_svgs[model_name])
 
-        with open(filename_get(desc, 'ranking_debug', 'json'), 'w',
-            encoding='utf-8') as f:
+        with open(filename_get(desc, 'ranking_debug', 'json'), 'w') as f:
           f.write(json.dumps(
               {'confidences': ranking_scores, 'order': ranked_order}, indent=4))
 

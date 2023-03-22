@@ -1,11 +1,14 @@
-import os
-import argparse
+"""Tools for convert pdb to mmcif, run
+     ```bash
+     $python pdb2mmcif.py -h
+     ```
+     for further help.
+"""
 import gzip
 import pathlib
 import logging
 
 from Bio.PDB.mmcifio import MMCIFIO
-from Bio.PDB.MMCIFParser import MMCIFParser
 from Bio.PDB.PDBParser import PDBParser
 
 logger = logging.getLogger(__file__)
@@ -14,15 +17,15 @@ def mmcif_get_basename(filename):
   if filename.suffix == '.gz':
     filename = filename.stem
   return pathlib.Path(filename).name
-  
+
 def pdb_get_structure(filename):
   o = PDBParser(QUIET=True)
-  if filename.suffix == '.gz': 
+  if filename.suffix == '.gz':
     with gzip.open(filename, 'rt', encoding='utf-8') as f:
       return o.get_structure('1n2c', f)
   return o.get_structure('1n2c', filename)
 
-def main(args):
+def main(args):  # pylint: disable=redefined-outer-name
   output = pathlib.Path(args.output)
   output.mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +47,8 @@ def main(args):
       logger.info(mmcif_file)
 
 if __name__ == '__main__':
+  import argparse
+
   parser = argparse.ArgumentParser()
 
   parser.add_argument('-o', '--output', type=str, default='.',

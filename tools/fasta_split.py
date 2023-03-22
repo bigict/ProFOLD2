@@ -1,4 +1,9 @@
-#!/Users/zhangyingchen/opt/anaconda3/envs/pytorch/bin/python3
+"""Tools for split fasta to single sequence file, run
+     ```bash
+     $python fasta_split.py -h
+     ```
+     for further help.
+"""
 import os
 import functools
 import glob

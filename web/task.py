@@ -58,8 +58,7 @@ def do_task(task, uri, args, log_func=print):  # pylint: disable=redefined-outer
     return False
 
   results = r.json()
-  with open(serving_meta(task['job_id'], task['id']),
-      'w', encoding='utf-8') as log:
+  with open(serving_meta(task['job_id'], task['id']), 'w') as log:
     print('======================', file=log)
     print(fasta_str, file=log)
 
@@ -94,16 +93,17 @@ def do_task(task, uri, args, log_func=print):  # pylint: disable=redefined-outer
         print('-------------', file=log)
         print(svg, file=log)
         if args.dump_contact:
-          with open(serving_svg(
-                  task['job_id'], task['id'], prefix=f'{model_name}_'),
-              'w', encoding='utf-8') as f:
+          with open(
+              serving_svg(task['job_id'], task['id'], prefix=f'{model_name}_'),
+              'w') as f:
             f.write(svg)
 
       print('-------------', file=log)
       print(f'{pdb}', file=log)
-      with open(serving_pdb(
-              task['job_id'], task['id'], prefix=f'unrelaxed_{model_name}_'),
-          'w', encoding='utf-8') as f:
+      with open(
+          serving_pdb(task['job_id'], task['id'],
+                      prefix=f'unrelaxed_{model_name}_'),
+          'w') as f:
         f.write(pdb)
       if args.run_relaxer:
         c = argparse.Namespace(
@@ -132,7 +132,7 @@ def do_task(task, uri, args, log_func=print):  # pylint: disable=redefined-outer
   return True
 
 def do_job(job, uri, args):  # pylint: disable=redefined-outer-name
-  with open(serving_log(job['job_id']), 'w', encoding='utf-8') as f:
+  with open(serving_log(job['job_id']), 'w') as f:
     log_func = functools.partial(to_log_file, f=f)
 
     db.job_set(job_id=job['job_id'],
