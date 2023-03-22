@@ -1,7 +1,13 @@
-# data
+"""Tools for check dataset file, run
+     ```bash
+     $python dataset.py -h
+     ```
+     for further help.
+"""
 from profold2.data import dataset
 
-def to_fasta(data, args):
+
+def to_fasta(data, args):  # pylint: disable=redefined-outer-name
   for prot in iter(data):
     if args.dump_keys:
       print(prot.keys())
@@ -9,30 +15,36 @@ def to_fasta(data, args):
     assert len(prot['pid']) == len(prot['str_seq'])
     if args.print_fasta:
       for i, pid in enumerate(prot['pid']):
-          print(f'>{pid}')
-          print(prot['str_seq'][i])
+        print(f'>{pid}')
+        print(prot['str_seq'][i])
     if args.print_first_only:
       print(prot)
       break
 
-def main(args):
+
+def main(args):  # pylint: disable=redefined-outer-name
   # get data
-  data_loader = dataset.load(
-      data_dir=args.data,
-      data_idx=args.name_idx)
+  data_loader = dataset.load(data_dir=args.data, data_idx=args.name_idx)
   to_fasta(data_loader, args)
+
 
 if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('--data', type=str, default=None,
-      help='train dataset dir, default=None')
-  parser.add_argument('--name_idx', type=str, default='name.idx',
-      help='train dataset idx, default=\'name.idx\'')
+  parser.add_argument('--data',
+                      type=str,
+                      default=None,
+                      help='train dataset dir, default=None')
+  parser.add_argument('--name_idx',
+                      type=str,
+                      default='name.idx',
+                      help='train dataset idx, default=\'name.idx\'')
   parser.add_argument('--dump_keys', action='store_true', help='dump keys')
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')
-  parser.add_argument('--print_first_only', action='store_true', help='print first only')
+  parser.add_argument('--print_first_only',
+                      action='store_true',
+                      help='print first only')
   args = parser.parse_args()
 
   main(args)

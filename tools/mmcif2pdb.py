@@ -1,5 +1,9 @@
-import os
-import argparse
+"""Tools for convert mmcif to pdb, run
+     ```bash
+     $python mmcif2pdb.py -h
+     ```
+     for further help.
+"""
 import functools
 import gzip
 import pathlib
@@ -37,17 +41,17 @@ def mmcif_get_basename(filename):
   if filename.suffix == '.gz':
     filename = filename.stem
   return pathlib.Path(filename).name
-  
+
 def mmcif_get_structure(filename):
   o = MMCIFParser(QUIET=True)
-  if filename.suffix == '.gz': 
+  if filename.suffix == '.gz':
     with gzip.open(filename, 'rt', encoding='utf-8') as f:
       structure = o.get_structure('1n2c', f)
   else:
     structure = o.get_structure('1n2c', filename)
   return structure
 
-def mmcif2pdb(filename, args=None):
+def mmcif2pdb(filename, args=None):  # pylint: disable=redefined-outer-name
   output = pathlib.Path(args.output)
   try:
     io = PDBIO()
@@ -68,16 +72,19 @@ def mmcif2pdb(filename, args=None):
     logger.error('%s, %s', filename, str(e))
   return filename
 
-def main(args):
+def main(args):  # pylint: disable=redefined-outer-name
   output = pathlib.Path(args.output)
   output.mkdir(parents=True, exist_ok=True)
 
   for p in args.pdbfiles:
     with mp.Pool() as pool:
-      for filename in pool.imap(functools.partial(mmcif2pdb, args=args), pathlib.Path().glob(p)):
+      for filename in pool.imap(functools.partial(mmcif2pdb, args=args),
+                                pathlib.Path().glob(p)):
         logger.info(filename)
 
 if __name__ == '__main__':
+  import argparse
+
   parser = argparse.ArgumentParser()
 
   parser.add_argument('-o', '--output', type=str, default='.',

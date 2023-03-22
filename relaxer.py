@@ -28,7 +28,7 @@ def main(args):  # pylint: disable=redefined-outer-name
       print(f'{pdb_files} -> {pdb_file}')
       # Relax the prediction.
       t_0 = time.time()
-      with open(pdb_file, 'r', encoding='utf-8') as f:
+      with open(pdb_file, 'r') as f:
         unrelaxed_protein = protein.from_pdb_string(f.read())
       relaxed_pdb_str, _, _ = amber_relaxer.process(prot=unrelaxed_protein)
       relax_timings = time.time() - t_0
@@ -37,8 +37,7 @@ def main(args):  # pylint: disable=redefined-outer-name
       os.makedirs(args.output, exist_ok=True)
 
       pid = os.path.basename(pdb_file)
-      with open(os.path.join(args.output, f'{args.prefix}{pid}'), 'w',
-          encoding='utf-8') as f:
+      with open(os.path.join(args.output, f'{args.prefix}{pid}'), 'w') as f:
         f.write(relaxed_pdb_str)
 
 if __name__ == '__main__':

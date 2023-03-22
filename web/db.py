@@ -102,7 +102,7 @@ def job_get(with_tasks=True, logic_op='and', **kwargs):
                   cursor.fetchall()))
       log_file = serving_log(job_id)
       if os.path.exists(log_file):
-        with open(log_file, 'r', encoding='utf-8') as f:
+        with open(log_file, 'r') as f:
           job['logs'] = f.read()
   if job_list and 'job_id' in kwargs and logic_op == 'and':
     assert len(job_list) == 1
