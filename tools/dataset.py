@@ -20,6 +20,18 @@ def to_fasta(data, args):  # pylint: disable=redefined-outer-name
     if args.print_first_only:
       print(prot)
       break
+    if args.checksum:
+      #print(prot['pid'], 'Cheking...')
+      n = len(prot['str_seq'][0])
+      assert 'msa' in prot
+      if n != prot['msa'].shape[2]:
+        print(prot['pid'], n, prot['msa'].shape)
+      assert 'coord' in prot
+      if n != prot['coord'].shape[1]:
+        print(prot['pid'], n, prot['coord'].shape)
+      assert 'coord_mask' in prot
+      if n != prot['coord_mask'].shape[1]:
+        print(prot['pid'], n, prot['coord_mask'].shape)
 
 
 def main(args):  # pylint: disable=redefined-outer-name
@@ -41,6 +53,7 @@ if __name__ == '__main__':
                       default='name.idx',
                       help='train dataset idx, default=\'name.idx\'')
   parser.add_argument('--dump_keys', action='store_true', help='dump keys')
+  parser.add_argument('--checksum', action='store_true', help='dump keys')
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')
   parser.add_argument('--print_first_only',
                       action='store_true',

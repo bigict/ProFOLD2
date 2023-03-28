@@ -1,0 +1,99 @@
+<html>
+  <head>
+    <title>{{ exp_name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/1.8.0/3Dmol-min.js"></script>
+  </head>
+  <body>
+  <h1>{{ exp_name }}</h1>
+  <table class="table table-bordered" width="100%">
+  <tr>
+{% for i in range(num_pred) %}
+  <th>Predict_{{ i+1 }}</th>
+{% endfor %}
+  <th>Ground Truth</th>
+  </tr>
+{% for d in diff_list %}
+  {% set i=loop.index %}
+  <tr>
+  <td class="table-secondary" colspan="{{ num_pred + 1 }}" with="100%"><b>[{{ i }}]</b> {{ d.desc }}</td>
+  </tr>
+  <tr>
+  <td colspan="{{ num_pred + 1 }}"  style="white-space:normal;word-break:break-all;">{{ d.seq }}</td>
+  </tr>
+  <tr>
+  {% for p in d.pred_list %}
+  <td><a href="{{ module }}/{{ p.pred_pdb }}">{{ d.pid }}.pdb</td>
+  {% endfor %}
+  <td><a href="{{ module }}/{{ d.truth_pdb }}">{{ d.pid }}.pdb</td>
+  </tr>
+  <tr>
+  </tr>
+  {% for p in d.pred_list %}
+  <td>{{ p.desc }}</td>
+  {% endfor %}
+  <td></td>
+  <tr>
+  {% for p in d.pred_list %}
+    {% set j=loop.index %}
+  <td>
+   <div id ="pdb_div_{{ num_pred*(i-1) + j }}" data-href="{{ module }}/{{ p.pred_pdb }}" style="float: top; height:461px; width: 461px; position: relative;"/>
+  </td>
+  {% endfor %}
+  <td>
+   <div id ="pdb_gt_{{ i }}" data-href="{{ module }}/{{ d.truth_pdb }}" style="float: top; height:461px; width: 461px; position: relative;"/>
+  </td>
+  </tr>
+  <tr>
+  {% for p in d.pred_list %}
+  <td><a href="{{ module }}/{{ p.pred_svg }}"><img src="{{ module }}/{{ p.pred_svg }}"/></a></td>
+  {% endfor %}
+  <td><a href="{{ module }}/{{ d.truth_svg }}"><img src="{{ module }}/{{ d.truth_svg }}"/></a></td>
+  </tr>
+{% endfor %}
+  </table>
+  <script>
+    function pdb_show(n, name) {
+      function cb(entries) {
+        entries.forEach(entry => {
+          let target = entry.target;
+          const id = target.id;
+          const data_url=target.getAttribute('data-href');
+          if (entry.isIntersecting) {
+            let glviewer = $3Dmol.createViewer(id, {});
+            $(function () {
+              $.ajax({
+                url: data_url,
+                dataType: "text",
+                success: function (data) {
+                    glviewer.setBackgroundColor(0xf8f8f8);
+                    glviewer.addModel(data, "pdb");
+                    glviewer.setStyle({ cartoon: { color: "spectrum" } });
+                    glviewer.zoomTo();
+                    glviewer.render();
+                }
+              });
+            });
+          } else {
+            for (let node of target.children) {
+              if (node.nodeName=='CANVAS') {
+                target.removeChild(node);
+                break;
+              }
+            }
+          }
+        });
+      }
+      var obs = new IntersectionObserver(cb);
+      for (let idx = 1; idx < n; idx++) {
+        obs.observe(document.getElementById(name + idx));
+      }
+    }
+    $(function() {
+      pdb_show({{ diff_list | length * num_pred }}, "pdb_div_");
+      pdb_show({{ diff_list | length }}, "pdb_gt_");
+    });
+  </script>
+  </body>
+</html>

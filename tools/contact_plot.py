@@ -8,6 +8,7 @@ import os
 import math
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import torch
 from einops import rearrange
 
@@ -15,35 +16,38 @@ from profold2.common import protein, residue_constants
 from profold2.data.dataset import ProteinStructureDataset
 from profold2.model.features import pseudo_beta_fn
 from profold2.utils import exists
-import matplotlib.colors as mcolors 
 
 
-n0 = (4/256, 20/256, 50/256)
-n1 = (13/256, 71/256, 161/256)
-n2 = (21/256, 101/256, 192/256)
-n3 = (25/256, 118/256, 210/256)
-n4 = (30/256, 136/256, 229/256)
-n5 = (33/256, 150/256, 243/256)
-n6 = (66/256, 165/256, 245/256)
-n7 = (100/256, 181/256, 246/256)
-n8 = (144/256, 202/256, 249/256)
-n9 = (187/256, 222/256, 251/256)
-n10 = (227/256,246/256,253/256)
-#colors = [n1,n2,n3,n4,n5,n6,n8,n9,n11,n12,n13]#,n12,n13]
-n11 = (1,1,1)
-b1 = (168/256,3/256,38/256)
-b2 = (218/256,56/256,42/256)
-b3 = (246/256,121/256,72/256)
-b4 = (253/256,185/256,107/256)
-b5 = (254/256,233/256,157/256)
-b7 = (244/256,251/256,211/256)
-b6 = (1, 1, 1)
-b8 = (202/256,232/256,242/256)
-b9 = (146/256,197/256,222/256)
-b10 = (92/256,144/256,194/256)
-b11 = (57/256,81/256,162/256)
-colors = [n11,n10,n9,n8,n7,n6,n5,n4,n3,n2,n1,n0]
-cmap = mcolors.LinearSegmentedColormap.from_list('my_colormap', colors, N=256)
+b_colors = [
+  (168/256, 3/256, 38/256),
+  (218/256, 56/256, 42/256),
+  (246/256, 121/256, 72/256),
+  (253/256, 185/256, 107/256),
+  (254/256, 233/256, 157/256),
+  (244/256, 251/256, 211/256),
+  (1, 1, 1),
+  (202/256, 232/256, 242/256),
+  (146/256, 197/256, 222/256),
+  (92/256, 144/256, 194/256),
+  (57/256, 81/256, 162/256),
+]
+gulf_colors = [
+  (1, 1, 1),
+  (227/256, 246/256, 253/256),
+  (187/256, 222/256, 251/256),
+  (144/256, 202/256, 249/256),
+  (100/256, 181/256, 246/256),
+  (66/256, 165/256, 245/256),
+  (33/256, 150/256, 243/256),
+  (30/256, 136/256, 229/256),
+  (25/256, 118/256, 210/256),
+  (21/256, 101/256, 192/256),
+  (13/256, 71/256, 161/256),
+  (4/256, 20/256, 50/256),
+]
+cmap = dict(gulf=mcolors.LinearSegmentedColormap.from_list('my_colormap',
+                                                           gulf_colors,
+                                                           N=256))
 
 
 def _dataset_load(data_dir, data_idx='name.idx'):
@@ -103,7 +107,10 @@ def main(args):  # pylint: disable=redefined-outer-name
 
     p, _ = os.path.splitext(os.path.basename(pdb_file))
     with open(os.path.join(args.prefix, f'{p}.svg'), 'w') as f:
-      plt.matshow(-true_bins,cmap=cmap)
+      kwargs = {}
+      if exists(args.cmap):
+        kwargs['cmap'] = cmap[args.cmap]
+      plt.matshow(-true_bins, **kwargs)
       plt.savefig(f, format='svg', dpi=100)
       plt.close()
 
@@ -126,6 +133,10 @@ if __name__ == '__main__':
                       type=str,
                       default='name.idx',
                       help='dataset index, default=\'name.idx\'')
+  parser.add_argument('--cmap',
+                      type=str,
+                      default='gulf',
+                      help='The colormap')
   parser.add_argument('pdb_files',
                       type=str,
                       nargs='+',

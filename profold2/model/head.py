@@ -893,6 +893,12 @@ class MetricDictHead(nn.Module):
                     logger.debug('MetricDictHead.coevolution.identity: %s', avg_sim.item())
                     metrics['coevolution']['identity'] = avg_sim
 
+                    errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
+                    avg_error = torch.exp(functional.masked_mean(value=errors,
+                                                                 mask=torch.sum(mask, dim=-1)))
+                    logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error.item())
+                    metrics['coevolution']['perplexity'] = avg_error
+
         return dict(loss=metrics) if metrics else None
 
 class SequenceProfileGapHead(nn.Module):
