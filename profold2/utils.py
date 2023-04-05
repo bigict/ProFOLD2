@@ -748,7 +748,7 @@ def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
       lambda r: np.triu(mask1s, default(r[0], 0)) - np.triu(
           mask1s, default(r[1], seq_len)), ranges)
 
-  pred_truth = np.stack((pred, truth), dim=-1)
+  pred_truth = np.stack((pred, truth), axis=-1)
 
   for m in mask_range:
     masked_pred_truth = pred_truth[m.nonzero()]

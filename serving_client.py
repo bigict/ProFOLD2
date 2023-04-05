@@ -67,9 +67,9 @@ def main(args):  # pylint: disable=redefined-outer-name
         unrelaxed_pdbs, unrelaxed_svgs = {}, {}
         ranking_scores = {}
 
-        for model_name, result in result.items():
-          assert 'pdb' in result and 'headers' in result
-          pdb, header = result['pdb'], result['headers']
+        for model_name, pth in result.items():
+          assert 'pdb' in pth and 'headers' in pth
+          pdb, header = pth['pdb'], pth['headers']
 
           with io.BytesIO(base64.b64decode(header)) as f:
             header = torch.load(f, map_location='cpu')

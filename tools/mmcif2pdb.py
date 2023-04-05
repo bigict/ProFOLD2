@@ -17,9 +17,11 @@ logger = logging.getLogger(__file__)
 
 class CustomSelect(Select):
   def accept_chain(self, chain):
+    del chain
     return True
 
   def accept_atom(self, atom):
+    del atom
     return True
 
 def mmcif_rename_chains(structure):
