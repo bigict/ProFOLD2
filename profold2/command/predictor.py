@@ -126,7 +126,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
         print_fn=logging.info,
         callback_fn=functools.partial(timing_callback,
             timings, 'predict_structure')):
-      logging.debug('Sequence shape {fasta_name}: %s', batch['seq'].shape)
+      logging.debug('Sequence shape %s: %s', fasta_name, batch['seq'].shape)
 
       output_dir = os.path.join(args.prefix, fasta_name)
       os.makedirs(output_dir, exist_ok=True)
@@ -238,7 +238,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_shard_size', type=int, default=None,
       help='shard size in evoformer model, default=None')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE, default=512')
+      help='filter out msas whose size>SIZE, default=1024')
 
   parser.add_argument('--num_workers', type=int, default=0,
       help='number of workers, default=0')
