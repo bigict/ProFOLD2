@@ -69,9 +69,19 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
             num_recycle=args.model_recycles,
             shard_size=args.model_shard_size))
 
+    metric_dict = {}
     if 'confidence' in r.headers:
-      logging.info('%d pid: %s Confidence: %s',
+      metric_dict['confidence'] = r.headers['confidence']['loss'].item()
+      logging.debug('%d pid: %s Confidence: %s',
             i, fasta_name, r.headers['confidence']['loss'].item())
+    if 'metric' in r.headers:
+      metrics = r.headers['metric']['loss']
+      if 'contact' in metrics:
+        if '[24,inf)_1' in metrics['contact']:
+          metric_dict['P@L'] = metrics['contact']['[24,inf)_1'].item()
+      if 'coevolution' in metrics:
+        if 'perplexity' in metrics['coevolution']:
+          metric_dict['perplexity'] = metrics['coevolution']['perplexity']
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']
       if 'coord' in batch:
@@ -98,11 +108,14 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
                       rearrange(labels_aligned, 'd l -> () d l'),
                       L=torch.sum(batch['mask'], dim=-1))
-        logging.info('%d pid: %s TM-score: %f',
+        metric_dict['tmscore'] = tms.item()
+        logging.debug('%d pid: %s TM-score: %f',
             i, fasta_name, tms.item())
 
         tmscore, n = tmscore + tms.item(), n + 1
 
+      logging.info('no: %d pid: %s, %s', i, fasta_name,
+                   ', '.join(f'{k}: {v}' for k, v in metric_dict.items()))
       if args.save_pdb:
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=i)
     else:
