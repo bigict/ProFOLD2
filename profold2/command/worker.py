@@ -75,7 +75,7 @@ class WorkerXPU(object):
 
   def is_master(self):
     if self.is_available():
-      return (self.args.node_rank == 0 and self.local_rank == 0)
+      return self.args.node_rank == 0 and self.local_rank == 0
     return True
 
   @property

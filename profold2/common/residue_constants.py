@@ -698,8 +698,8 @@ def _make_standard_atom_mask() -> np.ndarray:
   mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.int32)
   for restype, restype_letter in enumerate(restypes):
     restype_name = restype_1to3[restype_letter]
-    atom_list = restype_name_to_atom14_names[restype_name]
-    for atom_type, atom_name in enumerate(atom_list):
+    atom_list = restype_name_to_atom14_names[restype_name]  # pylint: disable=redefined-outer-name
+    for atom_type, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if atom_name:
         mask[restype, atom_type] = 1
   return mask
@@ -736,8 +736,11 @@ chi_atom_2_one_hot = chi_angle_atom(2)
 
 # An array like chi_angles_atoms but using indices rather than names.
 chi_angles_atom_indices = [chi_angles_atoms[restype_1to3[r]] for r in restypes]
-chi_angles_atom_indices = list(map(lambda atom_name_index: list(map(lambda atom_name_list: list(map(lambda atom_name:
-    atom_order[atom_name], atom_name_list)), atom_name_index)), chi_angles_atom_indices))
+chi_angles_atom_indices = list(
+    map(lambda atom_name_index: list(
+        map(lambda atom_name_list: list(
+            map(lambda atom_name: atom_order[atom_name],
+                atom_name_list)), atom_name_index)), chi_angles_atom_indices))
 chi_angles_atom_indices = np.array([
     chi_atoms + ([[0, 0, 0, 0]] * (4 - len(chi_atoms)))
     for chi_atoms in chi_angles_atom_indices])
@@ -745,33 +748,33 @@ chi_angles_atom_indices = np.array([
 chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int)
 chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.bool)
 for res_name, res_chi_angles in chi_angles_atoms.items():
-  restype = resname_to_idx[res_name]
+  res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
 
   # omega angles
   for i, atom_name in enumerate(('CA', 'C', 'N', 'CA')):
     atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[restype, 0, i] = atom_idx
-  chi_angles_atom14_exists[restype, 0] = 1
+    chi_angles_atom14_indices[res_type, 0, i] = atom_idx
+  chi_angles_atom14_exists[res_type, 0] = 1
 
   # phi angles
   for i, atom_name in enumerate(('C', 'N', 'CA', 'C')):
     atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[restype, 1, i] = atom_idx
-  chi_angles_atom14_exists[restype, 1] = 1
+    chi_angles_atom14_indices[res_type, 1, i] = atom_idx
+  chi_angles_atom14_exists[res_type, 1] = 1
 
   # psi angles
   for i, atom_name in enumerate(('N', 'CA', 'C', 'O')):
     atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[restype, 2, i] = atom_idx
-  chi_angles_atom14_exists[restype, 2] = 1
+    chi_angles_atom14_indices[res_type, 2, i] = atom_idx
+  chi_angles_atom14_exists[res_type, 2] = 1
 
   # chi angles
   for chi_idx, chi_angle in enumerate(res_chi_angles):
     for i, atom_name in enumerate(chi_angle):
       atom_idx = atom_list.index(atom_name)
-      chi_angles_atom14_indices[restype, 3 + chi_idx, i] = atom_idx
-    chi_angles_atom14_exists[restype, 3 + chi_idx] = 1
+      chi_angles_atom14_indices[res_type, 3 + chi_idx, i] = atom_idx
+    chi_angles_atom14_exists[res_type, 3 + chi_idx] = 1
 
 # Mapping from (res_name, atom_name) pairs to the atom's chi group index
 # and atom index within that group.
@@ -815,13 +818,13 @@ restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int)
 restype_rigid_group_mask = np.zeros([21, 8], dtype=np.bool)
 
 def _make_rigid_group_constants():
-  def to_atom37_index(atom_names):
-    return [atom_order[atom_name] for atom_name in atom_names]
+  # def to_atom37_index(atom_names):
+  #   return [atom_order[atom_name] for atom_name in atom_names]
   def to_atom14_index(resname, atom_names):
-    atom_list = restype_name_to_atom14_names[resname]
+    atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
     return [atom_list.index(atom_name) for atom_name in atom_names]
 
-  """Fill the arrays above."""
+  # Fill the arrays above.
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
     for atomname, group_idx, atom_position in rigid_group_atom_positions[
@@ -844,7 +847,8 @@ def _make_rigid_group_constants():
 
     # backbone to backbone is the identity transform
     restype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
-    restype_rigid_group_atom14_idx[restype, 0, :] = np.array(to_atom14_index(resname, ['C', 'CA', 'N']))
+    restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
+        to_atom14_index(resname, ['C', 'CA', 'N']))
     restype_rigid_group_mask[restype, 0] = True
 
     # pre-omega-frame to backbone (currently dummy identity matrix)
@@ -863,7 +867,8 @@ def _make_rigid_group_constants():
         ey=atom_positions['CA'] - atom_positions['N'],
         translation=atom_positions['C'])
     restype_rigid_group_default_frame[restype, 3, :, :] = mat
-    restype_rigid_group_atom14_idx[restype, 3, :] = np.array(to_atom14_index(resname, ['CA', 'C', 'O']))
+    restype_rigid_group_atom14_idx[restype, 3, :] = np.array(
+        to_atom14_index(resname, ['CA', 'C', 'O']))
     restype_rigid_group_mask[restype, 3] = True
 
     # chi1-frame to backbone
@@ -875,14 +880,15 @@ def _make_rigid_group_constants():
           ey=base_atom_positions[0] - base_atom_positions[1],
           translation=base_atom_positions[2])
       restype_rigid_group_default_frame[restype, 4, :, :] = mat
-      restype_rigid_group_atom14_idx[restype, 4, :] = np.array(to_atom14_index(resname, base_atom_names[1:]))
+      restype_rigid_group_atom14_idx[restype, 4, :] = np.array(
+          to_atom14_index(resname, base_atom_names[1:]))
 
     # chi2-frame to chi1-frame
     # chi3-frame to chi2-frame
     # chi4-frame to chi3-frame
     # luckily all rotation axes for the next frame start at (0,0,0) of the
     # previous frame
-    for chi_idx in range(1, 4):
+    for chi_idx in range(1, 4):  # pylint: disable=redefined-outer-name
       if chi_angles_mask[restype][chi_idx]:
         axis_end_atom_name = chi_angles_atoms[resname][chi_idx][2]
         axis_end_atom_position = atom_positions[axis_end_atom_name]
@@ -891,7 +897,8 @@ def _make_rigid_group_constants():
             ey=np.array([-1., 0., 0.]),
             translation=axis_end_atom_position)
         restype_rigid_group_default_frame[restype, 4 + chi_idx, :, :] = mat
-        restype_rigid_group_atom14_idx[restype, 4 + chi_idx, :] = np.array(to_atom14_index(resname, chi_angles_atoms[resname][chi_idx][1:]))
+        restype_rigid_group_atom14_idx[restype, 4 + chi_idx, :] = np.array(
+            to_atom14_index(resname, chi_angles_atoms[resname][chi_idx][1:]))
     restype_rigid_group_mask[restype, 4:] = chi_angles_mask[restype]
 
 _make_rigid_group_constants()
@@ -901,8 +908,8 @@ atom14_van_der_waals_radius = np.zeros((21, 14), dtype=np.float32)
 def _make_atom14_van_der_waals_radius():
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
-    atom_list = restype_name_to_atom14_names[resname]
-    for atom_idx, atom_name in enumerate(atom_list):
+    atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
+    for atom_idx, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if not atom_name:
         continue
       atom_radius = van_der_waals_radius[atom_name[0]]
@@ -919,7 +926,7 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5,
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
-    atom_list = restype_name_to_atom14_names[resname]
+    atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
 
     # create lower and upper bounds for clashes
     for atom1_idx, atom1_name in enumerate(atom_list):

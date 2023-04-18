@@ -29,6 +29,12 @@ def softmax_cross_entropy_with_probability(probs, labels, mask=None):
     loss = -torch.sum(labels * torch.log(probs) * mask, dim=-1)
     return loss
 
+def softmax_cross_entropy_with_focal(logits, labels, gammar=0, mask=None):
+    prob = F.softmax(logits, dim=-1)
+    if gammar > 0:
+        labels = labels.float() * ((1 - prob) ** gammar)
+    return softmax_cross_entropy_with_probability(prob, labels, mask)
+
 def softmax_kl_diversity(logits, labels, mask=None):
     if not exists(mask):
         mask = 1.0
@@ -233,7 +239,7 @@ class CoevolutionDeletionHead(nn.Module):
 class CoevolutionHead(nn.Module):
     """Head to predict Co-evolution (Replacement).
     """
-    def __init__(self, dim, mask='-', alpha=0.0, beta=0.0, gammar=0.0, loss_min=None, loss_max=None):
+    def __init__(self, dim, mask='-', alpha=0.0, beta=0.0, gammar=0.0, focal_loss=0, loss_min=None, loss_max=None):
         super().__init__()
         dim_single, dim_pairwise = embedd_dim_get(dim)
 
@@ -251,6 +257,7 @@ class CoevolutionHead(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.gammar = gammar
+        self.focal_loss = focal_loss
         self.loss_min = loss_min
         self.loss_max = loss_max
 
@@ -292,15 +299,20 @@ class CoevolutionHead(nn.Module):
 
         logits = value['logits']
         labels = F.one_hot(batch['msa'], num_class)
-        logger.debug('CoevolutionHead(Replacement).loss.logits: %s', logits.shape)
+        logger.debug('CoevolutionHead(Replacement).loss.logits: %s, %s', logits.shape, self.focal_loss)
 
         assert len(logits.shape) == 4
         assert 'msa' in batch
         label_mask = make_mask(residue_constants.restypes_with_x_and_gap, self.mask, device=logits.device)
 
-        errors = softmax_cross_entropy(
-                labels=labels,
-                logits=logits, mask=label_mask)
+        if self.focal_loss > 0:
+            errors = softmax_cross_entropy_with_focal(
+                    labels=labels,
+                    logits=logits, mask=label_mask, gammar=self.focal_loss)
+        else:
+            errors = softmax_cross_entropy(
+                    labels=labels,
+                    logits=logits, mask=label_mask)
         mask = torch.einsum('b i,b m i c,c -> b m i',
                 batch['mask'].float(),
                 labels.float(),
@@ -410,7 +422,7 @@ class DistogramHead(nn.Module):
     """Head to predict a distogram.
     """
     def __init__(self, dim,
-            buckets_first_break, buckets_last_break, buckets_num):
+            buckets_first_break, buckets_last_break, buckets_num, focal_loss=0):
         super().__init__()
         _, dim = embedd_dim_get(dim)
 
@@ -419,6 +431,7 @@ class DistogramHead(nn.Module):
         self.net = nn.Sequential(
                 nn.LayerNorm(dim),
                 nn.Linear(dim, buckets_num))
+        self.focal_loss = focal_loss
 
     def forward(self, headers, representations, batch):
         """Builds DistogramHead module.
@@ -457,8 +470,12 @@ class DistogramHead(nn.Module):
                 keepdims=True)
 
             true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
-            errors = softmax_cross_entropy(
-                labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
+            if self.focal_loss > 0:
+                errors = softmax_cross_entropy_with_focal(
+                        labels=F.one_hot(true_bins, self.num_buckets), logits=logits, gammar=self.focal_loss)
+            else:
+                errors = softmax_cross_entropy(
+                        labels=F.one_hot(true_bins, self.num_buckets), logits=logits)
         else:
             b, l, device = *batch['seq'].shape, batch['seq'].device
             mask = torch.ones((b, l), device=device, dtype=torch.bool)
@@ -892,6 +909,12 @@ class MetricDictHead(nn.Module):
                             mask=mask)
                     logger.debug('MetricDictHead.coevolution.identity: %s', avg_sim.item())
                     metrics['coevolution']['identity'] = avg_sim
+
+                    errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
+                    avg_error = torch.exp(functional.masked_mean(value=errors,
+                                                                 mask=torch.sum(mask, dim=-1)))
+                    logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error.item())
+                    metrics['coevolution']['perplexity'] = avg_error
 
         return dict(loss=metrics) if metrics else None
 
