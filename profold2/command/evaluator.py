@@ -31,8 +31,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('model: %s', model)
 
   kwargs = {}
-  if WorkerXPU.device_count() > 1:
-    kwargs['num_replicas'] = WorkerXPU.device_count()
+  if rank.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
+    kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
     kwargs['rank'] = rank.rank
   test_loader = dataset.load(
       data_dir=args.eval_data,

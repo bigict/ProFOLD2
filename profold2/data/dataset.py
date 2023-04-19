@@ -125,7 +125,8 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.sequences)
 
-    def collate_fn(self, batch):
+    @staticmethod
+    def collate_fn(batch):
         fields = ('pid', 'seq', 'seq_index', 'mask', 'str_seq')
         pids, seqs, seqs_idx, masks, str_seqs = list(zip(*[[b[k] for k in fields] for b in batch]))
         lengths = tuple(len(s) for s in str_seqs)

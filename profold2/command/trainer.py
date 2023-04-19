@@ -165,7 +165,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   #     DataParallel wrapped model and an ordinary model on a single GPU as the
   #     same (E.g. using the same learning rate for equivalent batch size).
   grad_scaler = GradScaler(enabled=args.amp_enabled)
-  loss_scaler = (WorkerXPU.world_size() or 1
+  loss_scaler = (WorkerXPU.world_size(args.nnodes) or 1
       ) / (args.gradient_accumulate_every or 1.0)
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optim.zero_grad(set_to_none=True)

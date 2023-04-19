@@ -66,10 +66,10 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
   kwargs = {
       'num_workers': args.num_workers,
-      'collate_fn': data.collate_fn}
-  if xpu.is_available() and WorkerXPU.world_size() > 1:
+      'collate_fn': ProteinSequenceDataset.collate_fn}
+  if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
-        num_replicas=WorkerXPU.world_size(), rank=xpu.rank)
+        num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
   return torch.utils.data.DataLoader(data, **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
