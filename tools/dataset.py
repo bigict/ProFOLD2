@@ -4,9 +4,11 @@
      ```
      for further help.
 """
+import functools
 import logging
 
 from profold2.data import dataset
+from profold2.data.utils import weights_from_file
 
 
 def to_fasta(data, args):  # pylint: disable=redefined-outer-name
@@ -38,7 +40,9 @@ def to_fasta(data, args):  # pylint: disable=redefined-outer-name
 
 def main(args):  # pylint: disable=redefined-outer-name
   # get data
-  data_loader = dataset.load(data_dir=args.data, data_idx=args.name_idx)
+  data_loader = dataset.load(data_dir=args.data_dir,
+                             data_idx=args.data_idx,
+                             weights=list(weights_from_file(args.data_weights)))
   to_fasta(data_loader, args)
 
 
@@ -46,14 +50,18 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('--data',
+  parser.add_argument('--data_dir',
                       type=str,
                       default=None,
                       help='train dataset dir, default=None')
-  parser.add_argument('--name_idx',
+  parser.add_argument('--data_idx',
                       type=str,
-                      default='name.idx',
-                      help='train dataset idx, default=\'name.idx\'')
+                      default=None,
+                      help='dataset idx, default=None')
+  parser.add_argument('--data_weights',
+                      type=str,
+                      default=None,
+                      help='sample data by weights, default=None')
   parser.add_argument('--dump_keys', action='store_true', help='dump keys')
   parser.add_argument('--checksum', action='store_true', help='dump keys')
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')

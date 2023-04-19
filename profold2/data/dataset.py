@@ -13,7 +13,7 @@ import zipfile
 import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import WeightedRandomSampler
+from torch.utils.data import ConcatDataset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from profold2.common import protein, residue_constants
@@ -159,10 +159,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     FEAT_MSA = 0x02
     FEAT_ALL = 0xff
 
-    def __init__(self, data_dir, data_idx='name.idx', max_msa_size=128, max_seq_len=None, coord_type='npz', feat_flags=FEAT_ALL&(~FEAT_MSA)):
+    def __init__(self, data_dir, data_idx=None, max_msa_size=128, max_seq_len=None, coord_type='npz', feat_flags=FEAT_ALL&(~FEAT_MSA)):
         super().__init__()
 
         self.data_dir = pathlib.Path(data_dir)
+        data_idx = default(data_idx, 'name.idx')
         if zipfile.is_zipfile(self.data_dir):
             self.data_dir = zipfile.ZipFile(self.data_dir)
         self.max_msa_size = max_msa_size
@@ -314,7 +315,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 str_seq=str_seq,
                 mask=mask)
 
-    def batch_clips_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random', **kwargs):
+    @staticmethod
+    def batch_clips_fn(batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random', **kwargs):
         def _random_sampler(b, n, batch):
             def _crop_length(n, crop):
                 assert exists(min_crop_len) or exists(max_crop_len)
@@ -420,11 +422,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
         return clips
 
-    def collate_fn(self, batch, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random', **kwargs):
+    @staticmethod
+    def collate_fn(batch, feat_flags=None, min_crop_len=None, max_crop_len=None, crop_probability=0.0, crop_algorithm='random', **kwargs):
         if exists(max_crop_len) and exists(min_crop_len):
             assert max_crop_len >= min_crop_len 
 
-        clips = self.batch_clips_fn(batch,
+        clips = ProteinStructureDataset.batch_clips_fn(batch,
                 min_crop_len=min_crop_len, max_crop_len=max_crop_len, crop_probability=crop_probability, crop_algorithm=crop_algorithm, **kwargs)
         for k, clip in clips.items():
             i, j = clip['i'], clip['j']
@@ -456,7 +459,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 mask=padded_masks,
                 str_seq=str_seqs)
 
-        if self.feat_flags & ProteinStructureDataset.FEAT_PDB and 'coord' in batch[0]:
+        feat_flags = default(feat_flags, ProteinStructureDataset.FEAT_ALL)
+        if feat_flags & ProteinStructureDataset.FEAT_PDB and 'coord' in batch[0]:
             # required
             fields = ('coord', 'coord_mask')
             coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
@@ -474,7 +478,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 padded_values = pad_for_batch([b[field] for b in batch], max_batch_len, field)
                 ret[field] = padded_values
 
-        if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
+        if feat_flags & ProteinStructureDataset.FEAT_MSA:
             fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
             msas, str_msas, del_msas, num_msa = list(zip(*[[b[k] for k in fields] for b in batch]))
 
@@ -548,7 +552,7 @@ def pad_for_batch(items, batch_length, dtype):
     return batch
 
 def load(data_dir,
-        data_idx='name.idx',
+        data_idx=None,
         min_crop_len=None,
         max_crop_len=None,
         crop_probability=0,
@@ -558,13 +562,23 @@ def load(data_dir,
     max_msa_size = 128
     if 'max_msa_size' in kwargs:
         max_msa_size = kwargs.pop('max_msa_size')
-    dataset = ProteinStructureDataset(data_dir, data_idx=data_idx, max_msa_size=max_msa_size, feat_flags=feat_flags)
+
+    data_dir = data_dir.split(',')
+    if exists(data_idx):
+        data_idx = data_idx.split(',')
+    else:
+        data_idx = [None] * len(data_dir)
+    assert len(data_dir) == len(data_idx)
+
+    dataset = torch.utils.data.ConcatDataset(
+            [ProteinStructureDataset(data_dir[i], data_idx=data_idx[i], max_msa_size=max_msa_size, feat_flags=feat_flags) for i in range(len(data_dir))])
     if not 'collate_fn' in kwargs:
         collate_fn_kwargs = {}
         if 'intra_domain_probability' in kwargs:
             collate_fn_kwargs['intra_domain_probability'] = kwargs.pop('intra_domain_probability')
         kwargs['collate_fn'] = functools.partial(
-                dataset.collate_fn,
+                ProteinStructureDataset.collate_fn,
+                feat_flags=feat_flags,
                 min_crop_len=min_crop_len,
                 max_crop_len=max_crop_len,
                 crop_probability=crop_probability,

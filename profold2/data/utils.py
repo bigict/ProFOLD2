@@ -85,12 +85,13 @@ def cycling(loader, cond=lambda x: True):
 
       epoch += 1
 
-def weights_from_file(filename):
-    if filename:
-        with open(filename, 'r', encoding='utf-8') as f:
-            for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
-                items = line.split()
-                yield float(items[0])
+def weights_from_file(filename_list):
+    if filename_list:
+        for filename in filename_list.split(','):
+            with open(filename, 'r', encoding='utf-8') as f:
+                for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
+                    items = line.split()
+                    yield float(items[0])
 
 def embedding_get_labels(name, mat):
     if name == 'token':
