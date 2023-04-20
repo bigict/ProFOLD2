@@ -1,5 +1,5 @@
 """A lot of modules in Alphafold2
- """
+  """
 import functools
 
 import torch
@@ -41,8 +41,7 @@ class Always(nn.Module):
 
 # feed forward
 class GEGLU(nn.Module):
-  """Gated GELU
-   """
+  """Gated GELU"""
   def forward(self, x):
     x, gates = x.chunk(2, dim=-1)
     return x * F.gelu(gates)
@@ -50,7 +49,7 @@ class GEGLU(nn.Module):
 
 class FeedForward(nn.Module):
   """FeedForward layer in transformer
-   """
+    """
   def __init__(self, dim, mult=4, dropout=0.):
     super().__init__()
     self.norm = nn.LayerNorm(dim)
@@ -66,7 +65,7 @@ class FeedForward(nn.Module):
 
 class Attention(nn.Module):
   """Multi-head Attention
-   """
+    """
   def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
     super().__init__()
     inner_dim = dim_head * heads
@@ -165,7 +164,7 @@ class Attention(nn.Module):
 
 class AxialAttention(nn.Module):
   """AxialAttention
-   """
+    """
   def __init__(self,
                dim,
                heads,
@@ -237,7 +236,7 @@ class AxialAttention(nn.Module):
 
 class TriangleMultiplicativeModule(nn.Module):
   """TriangleMultiplicative
-   """
+    """
   def __init__(self, *, dim, hidden_dim=None, mix='ingoing'):
     super().__init__()
     assert mix in {'ingoing',
@@ -300,7 +299,7 @@ class TriangleMultiplicativeModule(nn.Module):
 
 class OuterMean(nn.Module):
   """OuterProductMean
-   """
+    """
   def __init__(self, dim, dim_hidden=None, eps=1e-5):
     super().__init__()
 
@@ -354,7 +353,7 @@ class OuterMean(nn.Module):
 
 class PairwiseAttentionBlock(nn.Module):
   """PairwiseAttentionBlock
-   """
+    """
   def __init__(
       self,
       dim,
@@ -413,7 +412,7 @@ class PairwiseAttentionBlock(nn.Module):
 
 class MsaAttentionBlock(nn.Module):
   """MsaAttentionBlock
-   """
+    """
   def __init__(self, dim, heads, dim_head, dropout=0.):
     super().__init__()
 
@@ -441,7 +440,7 @@ class MsaAttentionBlock(nn.Module):
 
 class RelativePositionEmbedding(nn.Module):
   """RelativePositionEmbedding
-   """
+    """
   def __init__(self, dim, max_rel_dist):
     super().__init__()
 
@@ -459,7 +458,7 @@ class RelativePositionEmbedding(nn.Module):
 
 class PairwiseEmbedding(nn.Module):
   """PairwiseEmbedding
-   """
+    """
   def __init__(self, dim, max_rel_dist=0):
     super().__init__()
 

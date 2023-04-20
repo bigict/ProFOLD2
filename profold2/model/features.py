@@ -1,5 +1,5 @@
 """feature functions
- """
+  """
 import functools
 from inspect import isfunction
 
@@ -322,7 +322,7 @@ def make_selection(protein, fields, is_training=True):
 
 class FeatureBuilder:
   """Build features by feature functions in config
-   """
+    """
   def __init__(self, config):
     self.config = config
 

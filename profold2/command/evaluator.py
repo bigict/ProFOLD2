@@ -42,9 +42,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
-      feat_flags=(~dataset.ProteinStructureDataset.FEAT_PDB
-                  if args.eval_without_pdb
-                  else dataset.ProteinStructureDataset.FEAT_ALL),
+      feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb
+                                    else dataset.FEAT_ALL),
       batch_size=args.batch_size,
       num_workers=args.num_workers, **kwargs)
 
@@ -132,8 +131,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
 
-  parser.add_argument('--eval_data', type=str, default='test',
-      help='eval dataset, default=\'test\'')
+  parser.add_argument('--eval_data', type=str, default=None,
+      help='eval dataset, default=None')
   parser.add_argument('--eval_idx', type=str, default='name.idx',
       help='eval dataset idx, default=\'name.idx\'')
   parser.add_argument('--eval_without_pdb', action='store_true',

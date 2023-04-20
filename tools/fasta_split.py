@@ -25,7 +25,8 @@ def yield_rcsb_chain(desc):
       m = re.match(chain_p, item)
       if m.group(3):
         yield m.group(3)
-      yield m.group(1)
+      else:
+        yield m.group(1)
 
 def pid_split(pid):
   k = pid.find('_')

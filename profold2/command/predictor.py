@@ -16,6 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 # models & data
 from profold2.common import protein
+from profold2.data import dataset
 from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import pdb_from_prediction
@@ -42,6 +43,17 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
         yield fasta_name, fasta_str
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
+  kwargs = {}
+  if exists(args.data_dir):
+    if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
+      kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
+      kwargs['rank'] = xpu.rank
+    return dataset.load(
+        data_dir=args.data_dir,
+        data_idx=args.data_idx,
+        max_msa_size=args.max_msa_size,
+        num_workers=args.num_workers, **kwargs)
+
   sequences, descriptions, msa = [], [], []
   for fasta_name, fasta_str in _read_fasta(args):
     if args.fasta_fmt == 'a4m':
@@ -64,13 +76,12 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
             replace=False) if args.max_msa_size > 1 else [])
       msa += [s]
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
-  kwargs = {
-      'num_workers': args.num_workers,
-      'collate_fn': ProteinSequenceDataset.collate_fn}
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
         num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
-  return torch.utils.data.DataLoader(data, **kwargs)
+  return torch.utils.data.DataLoader(data,
+                                     collate_fn=ProteinSequenceDataset.collate_fn,
+                                     num_workers=args.num_workers, **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
   from profold2.relax import relax  # pylint: disable=import-outside-toplevel
@@ -127,6 +138,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
         callback_fn=functools.partial(timing_callback,
             timings, 'predict_structure')):
       logging.debug('Sequence shape %s: %s', fasta_name, batch['seq'].shape)
+      if args.fasta_fmt in ('a3m', 'a4m'):
+        logging.debug('msa shape %s: %s', fasta_name, batch['msa'].shape)
 
       output_dir = os.path.join(args.prefix, fasta_name)
       os.makedirs(output_dir, exist_ok=True)
@@ -226,6 +239,11 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       choices=['single', 'a3m', 'a4m'],
       help='format of fasta files, default=\'single\'')
 
+  parser.add_argument('--data_dir', type=str, default=None,
+      help='load data from dataset, default=None')
+  parser.add_argument('--data_idx', type=str, default=None,
+      help='dataset idx, default=None')
+
   parser.add_argument('--models', type=str, nargs='+',
       metavar='[MODEL_NAME=]MODEL_PATH',
       help=' Models to be loaded using [model_name=]model_location format')
@@ -240,8 +258,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--max_msa_size', type=int, default=1024,
       help='filter out msas whose size>SIZE, default=1024')
 
-  parser.add_argument('--num_workers', type=int, default=0,
-      help='number of workers, default=0')
+  parser.add_argument('--num_workers', type=int, default=1,
+      help='number of workers, default=1')
   parser.add_argument('--no_relaxer', action='store_true',
       help='do NOT run relaxer')
   parser.add_argument('--no_pth', action='store_true',
