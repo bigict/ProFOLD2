@@ -370,7 +370,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
   parser.add_argument('--tuning_every', type=int, default=10,
-      help='eval model every K times, default=10')
+      help='tuning model every K times, default=10')
+  parser.add_argument('--fake_every', type=int, default=100,
+      help='fake model every K times, default=100')
   parser.add_argument('--eval_every', type=int, default=100,
       help='eval model every K times, default=100')
   parser.add_argument(

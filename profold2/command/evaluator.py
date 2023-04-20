@@ -132,8 +132,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
 
-  parser.add_argument('--eval_data', type=str, default='test',
-      help='eval dataset, default=\'test\'')
+  parser.add_argument('--eval_data', type=str, default=None,
+      help='eval dataset, default=None')
   parser.add_argument('--eval_idx', type=str, default='name.idx',
       help='eval dataset idx, default=\'name.idx\'')
   parser.add_argument('--eval_without_pdb', action='store_true',
