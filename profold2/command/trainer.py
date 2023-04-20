@@ -165,12 +165,12 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   #     DataParallel wrapped model and an ordinary model on a single GPU as the
   #     same (E.g. using the same learning rate for equivalent batch size).
   grad_scaler = GradScaler(enabled=args.amp_enabled)
-  loss_scaler = (WorkerXPU.world_size() or 1
+  loss_scaler = (WorkerXPU.world_size(args.nnodes) or 1
       ) / (args.gradient_accumulate_every or 1.0)
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optim.zero_grad(set_to_none=True)
 
-    logging.debug('_step : it=%d, loss_scaler=%f', it, loss_scaler)
+    logging.debug('_step it: %d, loss_scaler: %f', it, loss_scaler)
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
@@ -180,7 +180,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         batch = batch_callback(batch)
 
       seq = batch['seq']
-      logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
+      logging.debug('%d %d %d seq.shape: %s pid: %s, clips: %s',
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # maybe sync or not
@@ -190,7 +190,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           it != global_step and
           jt + 1 != args.gradient_accumulate_every):
         sync_ctx = model.no_sync
-        logging.debug('_step without sync: it=%d, jt=%d', it, jt)
+        logging.debug('_step without sync: it: %d, jt: %d', it, jt)
 
       # sequence embedding (msa / esm / attn / or nothing)
       with sync_ctx():
@@ -271,7 +271,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         n, eval_loss = 0, MetricDict()
         for jt, data in enumerate(iter(eval_loader)):
           seq = data['seq']
-          logging.debug('%d %d %d seq.shape: %s pid: %s clips: %s',
+          logging.debug('%d %d %d seq.shape: %s, pid: %s, clips: %s',
               0, it, jt, seq.shape, ','.join(data['pid']), data.get('clips'))
           data = features(data, is_training=False)
           r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
@@ -370,7 +370,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--checkpoint_every', type=int, default=100,
       help='save a checkpoint every K times, default=100')
   parser.add_argument('--tuning_every', type=int, default=10,
-      help='eval model every K times, default=10')
+      help='tuning model every K times, default=10')
+  parser.add_argument('--fake_every', type=int, default=100,
+      help='fake model every K times, default=100')
   parser.add_argument('--eval_every', type=int, default=100,
       help='eval model every K times, default=100')
   parser.add_argument(

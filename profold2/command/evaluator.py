@@ -31,8 +31,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('model: %s', model)
 
   kwargs = {}
-  if WorkerXPU.device_count() > 1:
-    kwargs['num_replicas'] = WorkerXPU.device_count()
+  if rank.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
+    kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
     kwargs['rank'] = rank.rank
   test_loader = dataset.load(
       data_dir=args.eval_data,
@@ -132,8 +132,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model', type=str, default='model.pth',
       help='model of profold2, default=\'model.pth\'')
 
-  parser.add_argument('--eval_data', type=str, default='test',
-      help='eval dataset, default=\'test\'')
+  parser.add_argument('--eval_data', type=str, default=None,
+      help='eval dataset, default=None')
   parser.add_argument('--eval_idx', type=str, default='name.idx',
       help='eval dataset idx, default=\'name.idx\'')
   parser.add_argument('--eval_without_pdb', action='store_true',
