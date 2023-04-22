@@ -42,9 +42,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
-      feat_flags=(~dataset.ProteinStructureDataset.FEAT_PDB
-                  if args.eval_without_pdb
-                  else dataset.ProteinStructureDataset.FEAT_ALL),
+      feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb
+                                    else dataset.FEAT_ALL),
       batch_size=args.batch_size,
       num_workers=args.num_workers, **kwargs)
 

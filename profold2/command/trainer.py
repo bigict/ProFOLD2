@@ -411,8 +411,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='dimensions of each head in evoformer model, default=32')
   parser.add_argument('--model_shard_size', type=int, default=None,
       help='shard size in evoformer model, default=None')
-  parser.add_argument('--model_dropout', type=float, default=0,
-      help='dropout of evoformer in model, default=0')
+  parser.add_argument('--model_dropout', type=float, default=0.1,
+      help='dropout of evoformer in model, default=0.1')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')

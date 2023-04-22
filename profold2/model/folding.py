@@ -1,5 +1,5 @@
 """Folding the protein based on s_{i}
- """
+  """
 import functools
 import logging
 
@@ -26,7 +26,7 @@ def max_neg_value(t):
 # classes
 class InvariantPointAttention(nn.Module):
   """Invariant Point Attention
-   """
+    """
   def __init__(self,
                *,
                dim,
@@ -223,7 +223,7 @@ def Transition(dim, mult=1., num_layers=2, act=nn.ReLU):  # pylint: disable=inva
 class IPABlock(nn.Module):
   """One transformer block based on IPA
      In the paper, they used 3 layer transition (feedforward) block
-   """
+    """
   def __init__(
       self,
       *,
@@ -266,7 +266,7 @@ class AngleNetBlock(nn.Module):
 
 class AngleNet(nn.Module):
   """Predict the torsion angles
-   """
+    """
   def __init__(self, dim, channel=128, num_blocks=2):
     super().__init__()
 
@@ -293,7 +293,7 @@ class AngleNet(nn.Module):
 
 class StructureModule(nn.Module):
   """Iteratively updating rotations and translations
-   """
+    """
   def __init__(self,
                dim,
                structure_module_depth,

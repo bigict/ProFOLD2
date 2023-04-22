@@ -64,21 +64,18 @@ class CustomSelect(Select):
 
   def accept_chain(self, chain):
     if self.chain_id:
-      return chain.id in self.chain_id
-    else:
-      return True
+      return chain.id == self.chain_id
+    return True
 
   def accept_atom(self, atom):
     if self.backbone_only:
       return atom.name in ['N', 'C', 'CA', 'O']
-    else:
-      return True
+    return True
 
   def accept_residue(self, residue):
     if self.skip_het:
       return residue.id[0] == ' '
-    else:
-      return True
+    return True
 
 
 def process(input_file, args=None):  # pylint: disable=redefined-outer-name

@@ -23,6 +23,11 @@ from profold2.utils import default, exists, timing
 logger = logging.getLogger(__file__)
 
 
+FEAT_PDB = 0x01
+FEAT_MSA = 0x02
+FEAT_ALL = 0xff
+
+
 def _make_msa_features(sequences, max_msa_depth=None):
   """Constructs a feature dict of MSA features."""
 
@@ -179,10 +184,6 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 class ProteinStructureDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from a zip or filesystem
    """
-  FEAT_PDB = 0x01
-  FEAT_MSA = 0x02
-  FEAT_ALL = 0xff
-
   def __init__(self,
                data_dir,
                data_idx=None,
@@ -222,8 +223,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     self.pdb_dir = 'npz'
     logger.info('load structure data from: %s', self.pdb_dir)
-    assert not (feat_flags & ProteinStructureDataset.FEAT_PDB) or (self.pdb_dir
-                                                                   is not None)
 
     self.msa_list = ['BFD30_E-3']
 
@@ -249,9 +248,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       seq_feats = self.get_seq_features(pkey)
 
       ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
-      if self.feat_flags & ProteinStructureDataset.FEAT_MSA:
+      if self.feat_flags & FEAT_MSA:
         ret.update(self.get_msa_features_new(pkey))
-      if self.feat_flags & ProteinStructureDataset.FEAT_PDB:
+      if self.feat_flags & FEAT_PDB:
         ret.update(self.get_structure_label_npz(pid))
       if 'coord_mask' in ret:
         ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
@@ -528,8 +527,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                mask=padded_masks,
                str_seq=str_seqs)
 
-    feat_flags = default(feat_flags, ProteinStructureDataset.FEAT_ALL)
-    if feat_flags & ProteinStructureDataset.FEAT_PDB and 'coord' in batch[0]:
+    feat_flags = default(feat_flags, FEAT_ALL)
+    if feat_flags & FEAT_PDB and 'coord' in batch[0]:
       # required
       fields = ('coord', 'coord_mask')
       coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
@@ -546,7 +545,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                       field)
         ret[field] = padded_values
 
-    if feat_flags & ProteinStructureDataset.FEAT_MSA:
+    if feat_flags & FEAT_MSA:
       fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
       msas, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
@@ -635,7 +634,7 @@ def load(data_dir,
          max_crop_len=None,
          crop_probability=0,
          crop_algorithm='random',
-         feat_flags=ProteinStructureDataset.FEAT_ALL,
+         feat_flags=FEAT_ALL,
          **kwargs):
   max_msa_size = 128
   if 'max_msa_size' in kwargs:

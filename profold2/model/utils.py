@@ -1,5 +1,5 @@
 """CheckpointManager
- """
+  """
 import logging
 import os
 import signal
