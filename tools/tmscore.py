@@ -99,7 +99,8 @@ def main(args):  # pylint: disable=redefined-outer-name
 
     scores = run_scorer(args.exe_path, model_f, native_f, terms=name_map.keys())
     for k, v in scores.items():
-      df.loc[pid][name_map[k]] = v
+      # df.loc[pid][name_map[k]] = v
+      df.loc[pid, name_map[k]] = v  # FIX: warning removed
       if args.verbose:
         print(f'{pid} {k}={v}')
   print(df.describe())
