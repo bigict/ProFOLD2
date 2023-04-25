@@ -1,11 +1,13 @@
-"""Tools for convert pdb to mmcif, run
+"""Tools for convert pdb and mmcif files, run
      ```bash
-     $python pdb2mmcif.py -h
+     $python pdb_convert.py -h
      ```
      for further help.
 """
 import sys
+import functools
 import gzip
+import multiprocessing as mp
 import pathlib
 import logging
 
@@ -75,9 +77,10 @@ def cif2pdb(mmcif_file, pdb_file):
         io.save(f, select=CustomSelect())
 
   except Exception as e:
-    logger.error('%s, %s', pdb_file, str(e))
+    logger.error('%s, %s', mmcif_file, str(e))
 
-  logger.info(pdb_file)
+  logger.info(mmcif_file)
+  return mmcif_file
 
 def pdb2cif(pdb_file, mmcif_file):
   io = MMCIFIO()
@@ -91,6 +94,7 @@ def pdb2cif(pdb_file, mmcif_file):
       io.save(f)
 
   logger.info(mmcif_file)
+  return pdb_file
 
 def read_pairwise_list(f, output):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
@@ -101,16 +105,9 @@ def read_pairwise_list(f, output):
       output_file = output / output_file
     yield input_file, output_file
 
-def add_arguments(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-o', '--output', type=str, default='.',
-      help='output dir, default=\'.\'')
-  parser.add_argument('--gzip', action='store_true', help='verbose')
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
-  parser.add_argument('-l', '--pairwise_list', default=None,
-                      help='read pdb file from list.')
-  parser.add_argument('files', type=str, nargs='*',
-      help='list of pdb/mmcif files')
-  return parser
+def work_fn_wrap(item, work_fn=None):
+  input_file, output_file = item
+  return work_fn(input_file, output_file)
 
 def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
   logger.debug(args)
@@ -118,14 +115,20 @@ def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
   output = pathlib.Path(args.output)
   output.mkdir(parents=True, exist_ok=True)
 
+  # read (input, output)
+  pairwise_list = []
   if args.pairwise_list:
     if args.pairwise_list == '-':
-      for input_file, output_file in read_pairwise_list(sys.stdin, output):
-        work_fn(input_file, output_file)
+      pairwise_list = [
+          (input_file, output_file)
+          for input_file, output_file in read_pairwise_list(sys.stdin, output)
+      ]
     else:
       with open(args.pairwise_list, 'r') as f:
-        for input_file, output_file in read_pairwise_list(f, output):
-          work_fn(input_file, output_file)
+        pairwise_list = [
+            (input_file, output_file)
+            for input_file, output_file in read_pairwise_list(f, output)
+        ]
 
   for p in args.files:
     for input_file in pathlib.Path().glob(p):
@@ -134,7 +137,12 @@ def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
         output_file = output_file.with_suffix(f'{fmt}.gz')
       else:
         output_file = output_file.with_suffix(fmt)
-      work_fn(input_file, output_file)
+      pairwise_list.append((input_file, output_file))
+
+  with mp.Pool() as p:
+    for _ in p.imap(functools.partial(work_fn_wrap, work_fn=work_fn),
+                    pairwise_list):
+      pass
 
 
 if __name__ == '__main__':
@@ -149,7 +157,15 @@ if __name__ == '__main__':
   sub_parsers = parser.add_subparsers(dest='command', required=True)
   for cmd in commands:
     cmd_parser = sub_parsers.add_parser(cmd)
-    add_arguments(cmd_parser)
+    cmd_parser.add_argument('-o', '--output', type=str, default='.',
+                            help='output dir, default=\'.\'')
+    cmd_parser.add_argument('--gzip', action='store_true', help='verbose')
+    cmd_parser.add_argument('-v', '--verbose', action='store_true',
+                            help='verbose')
+    cmd_parser.add_argument('-l', '--pairwise_list', default=None,
+                            help='read pdb file from list.')
+    cmd_parser.add_argument('files', type=str, nargs='*',
+                            help='list of pdb/mmcif files')
   args = parser.parse_args()
 
   logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
