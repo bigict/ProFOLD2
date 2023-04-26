@@ -270,6 +270,7 @@ class CoevolutionHead(nn.Module):
                alpha=0.0,
                beta=0.0,
                gammar=0.0,
+               num_pivot=1024,
                focal_loss=0,
                loss_min=None,
                loss_max=None):
@@ -288,6 +289,7 @@ class CoevolutionHead(nn.Module):
     self.alpha = alpha
     self.beta = beta
     self.gammar = gammar
+    self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
     self.loss_max = loss_max
@@ -357,17 +359,36 @@ class CoevolutionHead(nn.Module):
 
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
     logger.debug('CoevolutionHead.loss: %s', avg_error.item())
-    if self.alpha > 0 and 'wij' in value:
-      r1 = torch.mean(torch.sum(torch.abs(value['wij']), dim=-1))
-      logger.debug('CoevolutionHead.loss.L1: %s', r1.item())
-      avg_error += self.alpha * r1
 
-    if self.beta > 0 and 'wij' in value:
-      r2 = torch.mean(torch.sum(torch.square(value['wij']), dim=-1))
-      logger.debug('CoevolutionHead.loss.L2: %s', r2.item())
-      avg_error += self.beta * r2
+    def _make_dynamic_regularization(w):
+      if isinstance(w, float) and w > 0:
+        b, device = value['wij'].shape[0], value['wij'].device
+        return torch.full((b,), w, device=device)
+      elif isinstance(w, list):
+        assert 'num_msa' in batch
+        min_w, max_w = w
+        num_msa = torch.clamp(batch['num_msa'], max=self.num_pivot)
+        return max_w + (min_w - max_w) * num_msa / self.num_pivot
+      return None
 
-    if self.gammar > 0 and 'wij' in value:
+    # L1 regularization
+    alpha = _make_dynamic_regularization(self.alpha)
+    if exists(alpha):
+       r1 = torch.sum(torch.abs(value['wij']), dim=-1)
+       logger.debug('CoevolutionHead.loss.L1(%s): %s',
+                    alpha.tolist(), torch.mean(r1).item())
+       avg_error += torch.mean(alpha[...,None,None] * r1)
+
+    # L2 regularization
+    beta = _make_dynamic_regularization(self.beta)
+    if exists(beta):
+       r2 = torch.sum(torch.square(value['wij']), dim=-1)
+       logger.debug('CoevolutionHead.loss.L2(%s): %s',
+                    beta.tolist(), torch.mean(r2).item())
+       avg_error += torch.mean(beta[...,None,None] * r2)
+
+    # LH regularization
+    if self.gammar > 0:
       epsilon = 1e-10
       M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
       p = torch.sum(M, dim=-1)

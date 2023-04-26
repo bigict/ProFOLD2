@@ -257,7 +257,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
               if args.tuning_with_coords else batch_seq_only))
 
     if (args.fake_data and
-        args.eval_every > 0 and (it + 1) % args.eval_every == 0):
+        args.fake_every > 0 and (it + 1) % args.fake_every == 0):
       _step(fake_data, it, writer, stage='fake',
           batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))

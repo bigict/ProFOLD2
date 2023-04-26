@@ -176,7 +176,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
       ret.update(msa=padded_msas,
                  str_msa=str_msas,
                  del_msa=del_msas,
-                 num_msa=num_msa)
+                 num_msa=torch.as_tensor(num_msa))
 
     return ret
 
@@ -555,7 +555,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret.update(msa=padded_msas,
                  str_msa=str_msas,
                  del_msa=padded_dels,
-                 num_msa=num_msa)
+                 num_msa=torch.as_tensor(num_msa))
 
     if clips:
       ret['clips'] = clips
