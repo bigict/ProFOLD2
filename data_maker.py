@@ -138,7 +138,7 @@ def mmcif_get_coords(
 
         int_resseq = int(mmcif_dict[seq_id_key][i])
         resname = residue_constants.restype_3to1.get(
-            residue_id_list[i], residue_constants.unk_restype)
+            residue_id_list[i], residue_constants.restypes_with_x[-1])
         if running_state == 1:
           if prev_resseq == int_resseq:
             continue

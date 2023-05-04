@@ -16,7 +16,7 @@ import numpy as np
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
 from profold2.common import residue_constants
-from profold2.utils import exists
+from profold2.utils import exists, timing
 
 logger = logging.getLogger(__file__)
 
@@ -49,19 +49,26 @@ def mmcif_yield_chain(mmcif_dict, args):
   icode_list = mmcif_dict['_atom_site.pdbx_PDB_ins_code']
   b_factor_list = mmcif_dict['_atom_site.B_iso_or_equiv']
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
+  model_list = mmcif_dict['_atom_site.pdbx_PDB_model_num']
 
   def _make_npz(coord_list, coord_mask_list, bfactor_list):
-    npz = dict(cood=np.concatenate(coord_list), axis=0,
-               cood_mask=np.concatenate(coord_mask_list, axis=0))
+    npz = dict(coord=np.stack(coord_list, axis=0),
+               coord_mask=np.stack(coord_mask_list, axis=0))
     if args.add_plddt:
-      npz['bfactor'] = np.concatenate(bfactor_list, axis=0)
+      npz['bfactor'] = np.stack(bfactor_list, axis=0)
     return npz
+  def _make_domain(start, end, delta=0):
+    return f'{start + delta}-{end + delta}'
 
   chain_id, seq, domains = None, [], []
   int_resseq_start, int_resseq_end = None, None
+  int_resseq_delta = 0
   coord_list, coord_mask_list, bfactor_list = [], [], []
+  labels, label_mask, bfactors = None, None, None
   for i, atom_id in enumerate(atom_id_list):
     if fieldname_list[i] != 'ATOM':
+      continue
+    if model_list[i] != model_list[0]:  # the 1st model only: 5w0s
       continue
 
     icode = icode_list[i]
@@ -70,22 +77,44 @@ def mmcif_yield_chain(mmcif_dict, args):
 
     if chain_id_list[i] != chain_id:
       if exists(chain_id):
+        domains += [
+            _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
+        if exists(labels):
+          coord_list.append(labels)
+          coord_mask_list.append(label_mask)
+          bfactor_list.append(bfactors)
         npz = _make_npz(coord_list, coord_mask_list, bfactor_list)
         yield chain_id, seq, domains, npz
       chain_id, seq, domains = chain_id_list[i], [], []
       int_resseq_start, int_resseq_end = None, None
+      int_resseq_delta = 0
+      coord_list, coord_mask_list, bfactor_list = [], [], []
+      labels, label_mask, bfactors = None, None, None
 
     int_resseq = int(label_seq_id_list[i])
 
     if not exists(int_resseq_start):
       int_resseq_start = int_resseq
+      if int_resseq_start < 0:
+        int_resseq_delta = -int_resseq_start
+
     if exists(int_resseq_end) and int_resseq - int_resseq_end > 1:
-      domains += [f'{int_resseq_start}-{int_resseq_end}']
+      domains += [
+          _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
       int_resseq_start = int_resseq
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
       resname = residue_constants.restype_3to1.get(
-          residue_id_list[i], residue_constants.unk_restype)
+          residue_id_list[i], residue_constants.restypes_with_x[-1])
       seq.append(resname)
+
+      if exists(labels):
+        coord_list.append(labels)
+        coord_mask_list.append(label_mask)
+        bfactor_list.append(bfactors)
+      labels = np.zeros((14, 3), dtype=np.float32)
+      label_mask = np.zeros((14,), dtype=np.bool_)
+      bfactors = np.zeros((14,), dtype=np.float32)
+
     int_resseq_end = int_resseq
 
 
@@ -93,15 +122,12 @@ def mmcif_yield_chain(mmcif_dict, args):
       res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
     else:
       res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
-    labels = np.zeros((14, 3), dtype=np.float32)
-    label_mask = np.zeros((14,), dtype=np.bool_)
-    bfactors = np.zeros((14,), dtype=np.float32)
-
     try:
       atom14idx = res_atom14_list.index(atom_id)
       coord = np.asarray((x_list[i], y_list[i], z_list[i]))
       if np.any(np.isnan(coord)):
         continue
+      labels[atom14idx] = coord
       if np.any(coord != 0):
         # occupancy & B factor
         tempfactor = 0.0
@@ -114,26 +140,29 @@ def mmcif_yield_chain(mmcif_dict, args):
     except ValueError as e:
       logger.debug(e)
 
-    coord_list.append(labels)
-    coord_mask_list.append(label_mask)
-    bfactor_list.append(bfactors)
   if exists(chain_id):
-    domains += [f'{int_resseq_start}-{int_resseq_end}']
+    domains += [
+        _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
+    if exists(labels):
+      coord_list.append(labels)
+      coord_mask_list.append(label_mask)
+      bfactor_list.append(bfactors)
     npz = _make_npz(coord_list, coord_mask_list, bfactor_list)
     yield chain_id, seq, domains, npz
 
 def process(input_file, args=None):
-  mmcif_dict = mmcif_parse(input_file)
-  assert mmcif_dict is not None
+  with timing(f'processing {input_file}', logger.info):
+    mmcif_dict = mmcif_parse(input_file)
+    assert mmcif_dict is not None
 
-  revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
-  if revision:
-    revision = min(revision)
+    revision = mmcif_dict.get('_pdbx_audit_revision_history.revision_date')
+    if revision:
+      revision = min(revision)
 
-  results = []
-  for chain, seq, domains, npz in mmcif_yield_chain(mmcif_dict, args):
-    npz['revision'] = revision
-    results.append((chain, seq, domains, npz))
+    results = []
+    for chain, seq, domains, npz in mmcif_yield_chain(mmcif_dict, args):
+      npz['revision'] = revision
+      results.append((chain, seq, domains, npz))
   return input_file, results
 
 def main(args):  # pylint: disable=redefined-outer-name
@@ -158,32 +187,44 @@ def main(args):  # pylint: disable=redefined-outer-name
         else:
           mapping_dict[v] = (pk, set(sk_list))
 
-  with mp.Pool() as p:
-    for input_file, results in p.imap(functools.partial(process, args=args),
-                                      input_files):
-      pid = output_get_basename(input_file).lower()
-      for chain, seq, domains, npz in results:
-        seq, domains = ''.join(seq), ','.join(domains)
-        fid = f'{pid}_{chain}'
+  with timing('processing', logger.info):
+    with mp.Pool() as p:
+      for input_file, results in p.imap(functools.partial(process, args=args),
+                                        input_files):
+        pid = output_get_basename(input_file).lower()
+        for chain, seq, domains, npz in results:
+          seq, domains = ''.join(seq), ','.join(domains)
+          fid = f'{pid}_{chain}'
 
-        if seq in mapping_dict:
-          pk, sk_list = mapping_dict[seq]
-          mapping_dict[seq] = (pk, sk_list | set([fid]))
-        else:
-          mapping_dict[seq] = (fid, set([fid]))
+          if seq in mapping_dict:
+            pk, sk_list = mapping_dict[seq]
+            mapping_dict[seq] = (pk, sk_list | set([fid]))
+          else:
+            mapping_dict[seq] = (fid, set([fid]))
+            with open(os.path.join(args.output, 'fasta', f'{fid}.fasta'),
+                      'w') as f:
+              f.write(f'>{fid} {domains}\n')
+              f.write(seq)
 
-        with open(os.path.join(args.output, 'fasta', f'{fid}.fasta'),
-                  'w') as f:
-          f.write(f'>{pid}_{chain} {domains}\n')
-          f.write(seq)
+          np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
 
-        np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
+  with timing('writiing mapping.dict', logger.info):
+    with open(os.path.join(args.output, 'mapping.dict'), 'w') as f:
+      for v, (pk, sk_list) in mapping_dict.items():
+        for sk in sk_list:
+          f.write(f'{v}\t{pk}\t{sk}\n')
 
-  with open(os.path.join(args.output, 'mapping.idx'), 'w') as f:
-    for v, (pk, sk_list) in mapping_dict.items():
-      for sk in sk_list:
-        f.write(f'{v}\t{pk}\t{sk}')
+  with timing('writiing mapping.idx', logger.info):
+    with open(os.path.join(args.output, 'mapping.idx'), 'w') as f:
+      for _, (pk, sk_list) in mapping_dict.items():
+        for sk in sk_list:
+          f.write(f'{pk}\t{sk}\n')
 
+  with timing('writiing name.idx', logger.info):
+    with open(os.path.join(args.output, 'name.idx'), 'w') as f:
+      for _, (_, sk_list) in mapping_dict.items():
+        sk_list = ' '.join(sk_list)
+        f.write(f'{sk_list}\n')
 
 if __name__ == '__main__':
   import argparse
