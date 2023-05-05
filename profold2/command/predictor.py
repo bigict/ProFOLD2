@@ -128,7 +128,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     timings[key] = toc - tic
 
   # Predict structure
-  for batch in iter(test_loader):
+  for idx, batch in enumerate(iter(test_loader)):
     assert len(batch['pid']) == 1
     timings = {}
 
@@ -137,7 +137,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
         print_fn=logging.info,
         callback_fn=functools.partial(timing_callback,
             timings, 'predict_structure')):
-      logging.debug('Sequence shape %s: %s', fasta_name, batch['seq'].shape)
+      logging.debug('Sequence %d shape %s: %s',
+                    idx, fasta_name, batch['seq'].shape)
       if args.fasta_fmt in ('a3m', 'a4m'):
         logging.debug('msa shape %s: %s', fasta_name, batch['msa'].shape)
 
