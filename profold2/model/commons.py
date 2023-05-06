@@ -26,6 +26,11 @@ def embedd_dim_get(dim):
     return dim
   return (dim, dim)
 
+def embedd_dropout_get(p):
+  if isinstance(p, (tuple, list)):
+    assert len(p) == 2  # (p_single, p_pairwise)
+    return p
+  return (p, p)
 
 # helper classes
 class Always(nn.Module):
@@ -386,6 +391,7 @@ class PairwiseAttentionBlock(nn.Module):
     self.triangle_multiply_ingoing = TriangleMultiplicativeModule(
         dim=dim_pairwise, mix='ingoing')
 
+    _, dropout = embedd_dropout_get(dropout)
     self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
   def forward(self,
@@ -429,6 +435,7 @@ class MsaAttentionBlock(nn.Module):
                                    row_attn=False,
                                    col_attn=True)
 
+    dropout, _ = embedd_dropout_get(dropout)
     self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
   def forward(self, x, mask=None, pairwise_repr=None):
