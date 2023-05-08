@@ -32,6 +32,18 @@ def embedd_dropout_get(p):
     return p
   return (p, p)
 
+def shared_dropout(x, p, broadcast_dim=None, training=True):
+  if exists(broadcast_dim):
+    assert len(x.shape) == 4
+    assert broadcast_dim in (0, 1)
+    if broadcast_dim == 0:  # shared across rows
+      x = rearrange(x, 'b m i d -> b i m d')
+      x = F.dropout2d(x, p=p, training=training)
+      return rearrange(x, 'b i m d -> b m i d')
+    else:  # shared across columns
+      return F.dropout2d(x, p=p, training=training)
+  return F.dropout(x, p=p, training=training)
+
 # helper classes
 class Always(nn.Module):
 
@@ -392,7 +404,12 @@ class PairwiseAttentionBlock(nn.Module):
         dim=dim_pairwise, mix='ingoing')
 
     _, dropout = embedd_dropout_get(dropout)
-    self.dropout_fn = functools.partial(F.dropout, p=dropout)
+    self.dropout_rowwise_fn = functools.partial(shared_dropout,
+                                                broadcast_dim=0,
+                                                p=dropout)
+    self.dropout_column_fn = functools.partial(shared_dropout,
+                                                broadcast_dim=1,
+                                                p=dropout)
 
   def forward(self,
               x,
@@ -403,16 +420,20 @@ class PairwiseAttentionBlock(nn.Module):
     if exists(msa_repr):
       x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
-    x = x + self.dropout_fn(self.triangle_multiply_outgoing(x, mask=mask),
-                            training=self.training)
-    x = x + self.dropout_fn(self.triangle_multiply_ingoing(x, mask=mask),
-                            training=self.training)
-    x = x + self.dropout_fn(self.triangle_attention_outgoing(
-        x, edges=x, mask=mask, shard_size=shard_size),
-                            training=self.training)
-    x = x + self.dropout_fn(self.triangle_attention_ingoing(
-        x, edges=x, mask=mask, shard_size=shard_size),
-                            training=self.training)
+    x = x + self.dropout_rowwise_fn(
+        self.triangle_multiply_outgoing(x, mask=mask),
+        training=self.training)
+    x = x + self.dropout_rowwise_fn(
+        self.triangle_multiply_ingoing(x, mask=mask),
+        training=self.training)
+    x = x + self.dropout_rowwise_fn(
+        self.triangle_attention_outgoing(x, edges=x, mask=mask,
+                                         shard_size=shard_size),
+        training=self.training)
+    x = x + self.dropout_column_fn(
+        self.triangle_attention_ingoing(x, edges=x, mask=mask,
+                                        shard_size=shard_size),
+        training=self.training)
     return x
 
 
@@ -436,7 +457,9 @@ class MsaAttentionBlock(nn.Module):
                                    col_attn=True)
 
     dropout, _ = embedd_dropout_get(dropout)
-    self.dropout_fn = functools.partial(F.dropout, p=dropout)
+    self.dropout_fn = functools.partial(shared_dropout,
+                                        broadcast_dim=0,
+                                        p=dropout)
 
   def forward(self, x, mask=None, pairwise_repr=None):
     x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr),
