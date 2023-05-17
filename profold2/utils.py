@@ -727,12 +727,14 @@ def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
     sorter_idx = (-masked_pred_truth[:, 0]).argsort()
     sorted_pred_truth = masked_pred_truth[sorter_idx]
 
+    num_corrects = ((0 < sorted_pred_truth[:,1]) &
+                    (sorted_pred_truth[:,1] <= cutoff)).sum()
     for ratio in ratios:
-      num_tops = max(1, int(seq_len * ratio))
+      num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
       assert 0 < num_tops <= seq_len
       top_labels = sorted_pred_truth[:num_tops, 1]
-      num_corrects = ((0 < top_labels) & (top_labels < cutoff)).sum()
-      yield (i, j), ratio, num_corrects / float(num_tops)
+      pred_corrects = ((0 < top_labels) & (top_labels <= cutoff)).sum()
+      yield (i, j), ratio, pred_corrects / float(num_tops)
 
 
 def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
@@ -744,23 +746,24 @@ def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
   mask1s = np.ones_like(truth, dtype=np.int8)
   if exists(mask):
     mask1s = mask1s * (mask[...:, None] * mask[..., None, :])
-  mask_range = map(
+  mask_ranges = map(
       lambda r: np.triu(mask1s, default(r[0], 0)) - np.triu(
           mask1s, default(r[1], seq_len)), ranges)
 
   pred_truth = np.stack((pred, truth), axis=-1)
-
-  for m in mask_range:
+  for (i, j), m in zip(ranges, mask_ranges):
     masked_pred_truth = pred_truth[m.nonzero()]
     sorter_idx = (-masked_pred_truth[:, 0]).argsort()
     sorted_pred_truth = masked_pred_truth[sorter_idx]
 
+    num_corrects = ((0 < sorted_pred_truth[:,1]) &
+                    (sorted_pred_truth[:,1] <= cutoff)).sum()
     for ratio in ratios:
-      num_tops = max(1, int(seq_len * ratio))
+      num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
       assert 0 < num_tops <= seq_len
       top_labels = sorted_pred_truth[:num_tops, 1]
-      num_corrects = ((0 < top_labels) & (top_labels < cutoff)).sum()
-      yield num_corrects / float(num_tops)
+      pred_corrects = ((0 < top_labels) & (top_labels <= cutoff)).sum()
+      yield (i, j), ratio, pred_corrects / float(num_tops)
 
 
 @set_backend_kwarg
