@@ -242,6 +242,8 @@ class AxialAttention(nn.Module):
     attn_bias = None
     if exists(self.edges_to_attn_bias) and exists(edges):
       attn_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
+    if exists(attn_bias) and self.col_attn:
+      attn_bias = rearrange(attn_bias, '... i j -> ... j i')
 
     return functional.sharded_apply(
         run_attn, [x, mask],

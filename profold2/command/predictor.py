@@ -51,7 +51,7 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
     return dataset.load(
         data_dir=args.data_dir,
         data_idx=args.data_idx,
-        max_msa_size=args.max_msa_size,
+        max_msa_depth=args.max_msa_size,
         num_workers=args.num_workers, **kwargs)
 
   sequences, descriptions, msa = [], [], []

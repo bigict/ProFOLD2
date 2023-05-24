@@ -404,95 +404,6 @@ class CoevolutionHead(nn.Module):
     return dict(loss=avg_error)
 
 
-class DistillationHead(nn.Module):
-  """Head to predict Co-evolution.
-    """
-
-  def __init__(self,
-               dim,
-               pij_model_dir,
-               loss_fn=None,
-               loss_min=None,
-               loss_max=None):
-    super().__init__()
-
-    pij_model = np.load(pij_model_dir)
-    self.pij = torch.from_numpy(pij_model['model'])
-
-    if not exists(loss_fn):
-      loss_fn = 'evoformer_module'
-    assert loss_fn in ('evoformer_module', 'struct_module')
-    self.loss_fn = loss_fn
-    self.loss_min = loss_min
-    self.loss_max = loss_max
-
-  def forward(self, headers, representations, batch):
-    assert 'distogram' in headers and 'breaks' in headers['distogram']
-    if not 'coord' in batch and not 'coord_mask' in batch:
-      if self.loss_fn == 'evoformer_module':
-        assert 'logits' in headers['distogram']
-        return dict(logits=headers['distogram']['logits'],
-                    breaks=headers['distogram']['breaks'])
-      else:
-        assert 'folding' in headers and 'coords' in headers['folding']
-        return dict(coords=headers['folding']['coords'],
-                    breaks=headers['distogram']['breaks'])
-    return None
-
-  def loss(self, value, batch):
-    sq_breaks = (value['breaks']**2)
-    b, seq_len, device = *batch['seq'].shape, batch['seq'].device
-
-    pij, pij_mask = self.pij_from_ref(seq_len, device=device)
-    assert sq_breaks.shape[-1] + 1 == pij.shape[-1]
-    if self.loss_fn == 'evoformer_module':
-      logits = value['logits']
-      errors = softmax_kl_diversity(labels=pij, logits=logits)
-    else:
-      ca_idx = residue_constants.atom_order['CA']
-      # is_gly = torch.eq(batch['seq'], residue_constants.restype_order['G'])
-      # cb_idx = residue_constants.atom_order['CB']
-      # cb_coord = torch.where(
-      #     repeat(is_gly, '... i -> ... i d', d=3),
-      #     coords[..., ca_idx, :],
-      #     coords[..., cb_idx, :])
-      # cb_dist2 = torch.sum((rearrange(cb_coord, '... i d -> ... i () d') -
-      #     rearrange(cb_coord, '... j d -> ... () j d'))**2, dim=-1, keepdims=True)
-      # cb_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
-      coords = value['coords']
-      ca_coord = coords[..., ca_idx, :]
-      ca_dist2 = torch.sum((rearrange(ca_coord, '... i d -> ... i () d') -
-                            rearrange(ca_coord, '... j d -> ... () j d'))**2,
-                           dim=-1,
-                           keepdims=True)
-      ca_bins = torch.sum(ca_dist2 > sq_breaks, dim=-1)
-      errors = softmax_cross_entropy_with_probability(
-          labels=F.one_hot(ca_bins, num_classes=pij.shape[-1]),
-          probs=repeat(pij, '... -> b ...', b=b))
-
-    avg_error = functional.masked_mean(value=errors,
-                                       mask=pij_mask,
-                                       epsilon=1e-6)
-    logger.debug('DistillationHead.loss(%s): %s', self.loss_fn,
-                 avg_error.item())
-    if exists(self.loss_min) or exists(self.loss_max):
-      avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
-    return dict(loss=avg_error)
-
-  def pij_from_ref(self, seq_len, device=None, epsilon=1e-10):
-    max_sep_len, num_buckets = self.pij.shape
-    value = torch.zeros(
-        (seq_len, seq_len, num_buckets), device=device) + epsilon
-    mask = torch.zeros((seq_len, seq_len), dtype=torch.bool, device=device)
-    for i in range(seq_len):
-      for j in range(i + 1, min(seq_len, i + max_sep_len)):
-        value[i, j] = self.pij[j - i].to(device=device)
-        value[j, i] = value[i, j]
-        mask[i, j] = True
-        mask[j, i] = mask[i, j]
-    return value, mask
-
-
 class DistogramHead(nn.Module):
   """Head to predict a distogram.
     """
@@ -1111,8 +1022,7 @@ class SequenceProfileHead(nn.Module):
   def __init__(self,
                dim,
                input_dim=None,
-               single_repr=None,
-               loss_func='CrossEntropy'):
+               single_repr=None):
     super().__init__()
     dim, _ = embedd_dim_get(dim)
 
@@ -1126,9 +1036,6 @@ class SequenceProfileHead(nn.Module):
     self.project = nn.Sequential(
         nn.Linear(input_dim, dim), nn.GELU(), nn.LayerNorm(dim),
         nn.Linear(dim, len(residue_constants.restypes_with_x_and_gap)))
-
-    assert loss_func in ('CrossEntropy', 'KLDiv')
-    self.loss_func = loss_func
 
   def forward(self, headers, representations, batch):
     assert 'sequence_profile' in batch
@@ -1154,18 +1061,12 @@ class SequenceProfileHead(nn.Module):
     if 'sequence_profile_mask' in batch:
       label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
 
-    if self.loss_func == 'CrossEntropy':
-      errors = softmax_cross_entropy(labels=labels,
-                                     logits=logits,
-                                     mask=label_mask)
-    else:
-      errors = softmax_kl_diversity(labels=labels,
-                                    logits=logits,
-                                    mask=label_mask)
+    errors = softmax_kl_diversity(labels=labels,
+                                  logits=logits,
+                                  mask=label_mask)
 
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('SequenceProfileHead.loss(%s): %s', self.loss_func,
-                 avg_error.item())
+    logger.debug('SequenceProfileHead.loss: %s', avg_error.item())
     return dict(loss=avg_error)
 
 
@@ -1269,7 +1170,6 @@ class HeaderBuilder:
                   coevolutiond=CoevolutionDeletionHead,
                   confidence=ConfidenceHead,
                   contact=ContactHead,
-                  distillation=DistillationHead,
                   distogram=DistogramHead,
                   folding=FoldingHead,
                   lddt=LDDTHead,

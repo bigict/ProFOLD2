@@ -187,7 +187,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def __init__(self,
                data_dir,
                data_idx=None,
-               max_msa_size=128,
+               max_msa_depth=128,
                max_seq_len=None,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
@@ -196,7 +196,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     data_idx = default(data_idx, 'name.idx')
     if zipfile.is_zipfile(self.data_dir):
       self.data_dir = zipfile.ZipFile(self.data_dir)  # pylint: disable=consider-using-with
-    self.max_msa_size = max_msa_size
+    self.max_msa_depth = max_msa_depth
     self.max_seq_len = max_seq_len
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
@@ -295,7 +295,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     source = self.msa_list[k]
     with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
       sequences = list(map(lambda x: self._ftext(x).strip(), f))
-    return _make_msa_features(sequences, max_msa_depth=self.max_msa_size)
+    return _make_msa_features(sequences, max_msa_depth=self.max_msa_depth)
 
   def get_structure_label_npz(self, protein_id):
     if self._fstat(f'{self.pdb_dir}/{protein_id}.npz'):
@@ -636,9 +636,9 @@ def load(data_dir,
          crop_algorithm='random',
          feat_flags=FEAT_ALL,
          **kwargs):
-  max_msa_size = 128
-  if 'max_msa_size' in kwargs:
-    max_msa_size = kwargs.pop('max_msa_size')
+  max_msa_depth = 128
+  if 'max_msa_depth' in kwargs:
+    max_msa_depth = kwargs.pop('max_msa_depth')
 
   data_dir = data_dir.split(',')
   if exists(data_idx):
@@ -650,7 +650,7 @@ def load(data_dir,
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
-                              max_msa_size=max_msa_size,
+                              max_msa_depth=max_msa_depth,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))
   ])
