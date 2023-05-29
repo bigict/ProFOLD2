@@ -8,6 +8,9 @@ import os
 import functools
 import glob
 import json
+import pickle
+import shutil
+import time
 import logging
 
 import numpy as np
@@ -17,13 +20,47 @@ from torch.utils.data.distributed import DistributedSampler
 # models & data
 from profold2.common import protein
 from profold2.data import dataset
-from profold2.data.dataset import ProteinSequenceDataset
+from profold2.data import pipeline
+from profold2.data import templates
+from profold2.data.dataset import ProteinSequenceDataset, ProteinPklDataset
 from profold2.data.parsers import parse_fasta
+from profold2.data.tools import hhsearch
 from profold2.data.utils import pdb_from_prediction
 from profold2.model import FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
+
+MAX_TEMPLATE_HITS = 20
+
+def run_msa_tool(
+    fasta_path: str,
+    fasta_name: str,
+    output_dir_base: str,
+    data_pipeline: pipeline.DataPipeline):
+  """Predicts structure using ProFOLD for the given sequence."""
+  logging.info('Querying %s', fasta_name)
+  timings = {}
+  output_dir = os.path.join(output_dir_base, fasta_name)
+  if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+  msa_output_dir = os.path.join(output_dir, 'msas')
+  if not os.path.exists(msa_output_dir):
+    os.makedirs(msa_output_dir)
+
+  # Get features.
+  t_0 = time.time()
+  feature_dict = data_pipeline.process(
+      input_fasta_path=fasta_path,
+      msa_output_dir=msa_output_dir)
+  timings['features'] = time.time() - t_0
+
+  # Write out features as a pickled dictionary.
+  features_output_path = os.path.join(output_dir, 'features.pkl')
+  with open(features_output_path, 'wb') as f:
+    pickle.dump(feature_dict, f, protocol=4)
+
+  return feature_dict
 
 def _read_fasta(args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
@@ -35,11 +72,41 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
     for fasta_name, fasta_str in args.fasta_data:
       yield fasta_name, fasta_str
   else:
+    if args.fasta_fmt == 'pkl':
+      template_searcher = hhsearch.HHSearch(
+          binary_path=args.hhsearch_binary_path,
+          databases=[args.pdb70_database_path])
+      template_featurizer = templates.HhsearchHitFeaturizer(
+          mmcif_dir=args.template_mmcif_dir,
+          max_template_date=args.max_template_date,
+          max_hits=MAX_TEMPLATE_HITS,
+          kalign_binary_path=args.kalign_binary_path,
+          release_dates_path=None,
+          obsolete_pdbs_path=args.obsolete_pdbs_path)
+
+      data_pipeline = pipeline.DataPipeline(
+          jackhmmer_binary_path=args.jackhmmer_binary_path,
+          hhblits_binary_path=args.hhblits_binary_path,
+          uniref90_database_path=args.uniref90_database_path,
+          mgnify_database_path=args.mgnify_database_path,
+          bfd_database_path=args.bfd_database_path,
+          uniref30_database_path=args.uniref30_database_path,
+          small_bfd_database_path=args.small_bfd_database_path,
+          template_searcher=template_searcher,
+          template_featurizer=template_featurizer,
+          use_small_bfd=args.use_small_bfd,
+          use_precomputed_msas=args.use_precomputed_msas)
     for fasta_glob in args.fasta_files:
       for fasta_file in glob.glob(fasta_glob):
         fasta_name = filename_get(fasta_file)
         with open(fasta_file, 'r', encoding='utf-8') as f:
           fasta_str = f.read()
+        if args.fasta_fmt == 'pkl':
+          run_msa_tool(
+              fasta_path=fasta_file,
+              fasta_name=fasta_name,
+              output_dir_base=args.prefix,
+              data_pipeline=data_pipeline)
         yield fasta_name, fasta_str
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
@@ -66,6 +133,9 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
       sequences += s
       descriptions += d
       msa += [None] * len(s)
+    elif args.fasta_fmt == 'pkl':
+      sequences += [os.path.join(args.prefix, fasta_name, 'features.pkl')]
+      descriptions += d
     else:
       sequences += s[:1]
       descriptions += d[:1]
@@ -75,12 +145,15 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
             size=args.max_msa_size - 1,
             replace=False) if args.max_msa_size > 1 else [])
       msa += [s]
-  data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
+  if args.fasta_fmt == 'pkl':
+    data = ProteinPklDataset(sequences, descriptions)
+  else:
+    data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
+    kwargs['collate_fn'] = ProteinSequenceDataset.collate_fn
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
         num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
   return torch.utils.data.DataLoader(data,
-                                     collate_fn=ProteinSequenceDataset.collate_fn,
                                      num_workers=args.num_workers, **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
@@ -162,8 +235,6 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
               callback_fn=functools.partial(timing_callback,
                   timings, f'predict_{model_name}')):
             r = ReturnValues(**model(batch=feats,
-                sequence_max_input_len=args.model_sequence_max_input_len,
-                sequence_max_step_len=args.model_sequence_max_step_len,
                 num_recycle=args.model_recycles,
                 shard_size=args.model_shard_size))
 
@@ -210,10 +281,10 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
       # Rank by model confidence and write out relaxed PDBs in rank order.
       ranked_order = []
-      for idx, (model_name, _) in enumerate(
+      for i, (model_name, _) in enumerate(
           sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)):
         ranked_order.append(model_name)
-        ranked_output_path = os.path.join(output_dir, f'ranked_{idx}.pdb')
+        ranked_output_path = os.path.join(output_dir, f'ranked_{i}.pdb')
         with open(ranked_output_path, 'w', encoding='utf-8') as f:
           if exists(amber_relaxer):
             f.write(relaxed_pdbs[model_name])
@@ -237,7 +308,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('fasta_files', type=str, nargs='*',
       help='fasta files')
   parser.add_argument('--fasta_fmt', type=str, default='single',
-      choices=['single', 'a3m', 'a4m'],
+      choices=['single', 'a3m', 'a4m', 'pkl'],
       help='format of fasta files, default=\'single\'')
 
   parser.add_argument('--data_dir', type=str, default=None,
@@ -248,16 +319,46 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--models', type=str, nargs='+',
       metavar='[MODEL_NAME=]MODEL_PATH',
       help=' Models to be loaded using [model_name=]model_location format')
-  parser.add_argument('--model_sequence_max_input_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
-  parser.add_argument('--model_sequence_max_step_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in profold2, default=0')
   parser.add_argument('--model_shard_size', type=int, default=None,
       help='shard size in evoformer model, default=None')
   parser.add_argument('--max_msa_size', type=int, default=1024,
       help='filter out msas whose size>SIZE, default=1024')
+
+  for tool_name in (
+      'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild', 'kalign'):
+    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+        default=shutil.which(tool_name),
+        help=f'path to the `{tool_name}` executable.')
+  for database_name in (
+      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniref30', 'pdb70'):
+    parser.add_argument(f'--{database_name}_database_path', type=str,
+        default=None,
+        help=f'path to database {database_name}')
+  parser.add_argument('--use_small_bfd', action='store_true',
+      help='use small bfd database or not')
+  parser.add_argument('--pdb_seqres_database_path', type=str, default=None,
+      help='Path to the PDB '
+           'seqres database for use by hmmsearch.')
+  parser.add_argument('--template_mmcif_dir', type=str, default=None,
+      help='Path to a directory with '
+           'template mmCIF structures, each named <pdb_id>.cif')
+  parser.add_argument('--max_template_date', type=str,default=None,
+      help='Maximum template release date '
+           'to consider. Important if folding historical test sets.')
+  parser.add_argument('--obsolete_pdbs_path', type=str, default=None,
+      help='Path to file containing a '
+           'mapping from obsolete PDB IDs to the PDB IDs of their '
+           'replacements.')
+  parser.add_argument('--use_precomputed_msas', action='store_true',
+      help='Whether to read MSAs that '
+           'have been written to disk instead of running the MSA '
+           'tools. The MSA files are looked up in the output '
+           'directory, so it must stay the same between multiple '
+           'runs that are to reuse the MSAs. WARNING: This will not '
+           'check if the sequence, database or configuration have '
+           'changed.')
 
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers, default=1')

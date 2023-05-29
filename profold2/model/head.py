@@ -158,7 +158,7 @@ class CoevolutionDeletionHead(nn.Module):
                loss_min=None,
                loss_max=None):
     super().__init__()
-    dim_single, dim_pairwise = embedd_dim_get(dim)
+    dim_single, dim_pairwise = embedd_dim_get(dim, 'single', 'pairwise')
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     self.single = nn.Sequential(nn.Linear(dim_single, dim_single),
@@ -275,7 +275,7 @@ class CoevolutionHead(nn.Module):
                loss_min=None,
                loss_max=None):
     super().__init__()
-    dim_single, dim_pairwise = embedd_dim_get(dim)
+    dim_single, dim_pairwise = embedd_dim_get(dim, 'single', 'pairwise')
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     self.single = nn.Sequential(nn.Linear(dim_single, dim_single),
@@ -504,7 +504,7 @@ class DistogramHead(nn.Module):
                buckets_num,
                focal_loss=0):
     super().__init__()
-    _, dim = embedd_dim_get(dim)
+    dim, = embedd_dim_get(dim, 'pairwise')
 
     self.num_buckets = buckets_num
     self.buckets = torch.linspace(buckets_first_break,
@@ -595,15 +595,19 @@ class FoldingHead(nn.Module):
                dim,
                structure_module_depth,
                structure_module_heads,
+               qkv_use_bias=False,
+               position_scale=1.0,
+               dropout=.0,
                fape_min=1e-6,
                fape_max=15,
                fape_z=15,
-               dropout=.0,
                **params):
     super().__init__()
     self.struct_module = folding.StructureModule(dim,
                                                  structure_module_depth,
                                                  structure_module_heads,
+                                                 qkv_use_bias=qkv_use_bias,
+                                                 position_scale=position_scale,
                                                  dropout=dropout)
 
     self.fape_min = fape_min
@@ -835,15 +839,17 @@ class LDDTHead(nn.Module):
 
   def __init__(self,
                dim,
+               num_channels=None,
                buckets_num=50,
                min_resolution=.0,
                max_resolution=sys.float_info.max):
     super().__init__()
-    dim, _ = embedd_dim_get(dim)
+    dim, = embedd_dim_get(dim, 'single')
+    num_channels = default(num_channels, dim)
 
-    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim), nn.ReLU(),
-                             nn.Linear(dim, dim), nn.ReLU(),
-                             nn.Linear(dim, buckets_num))
+    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
+                             nn.Linear(num_channels, num_channels), nn.ReLU(),
+                             nn.Linear(num_channels, buckets_num))
     self.buckets_num = buckets_num
 
     self.min_resolution = min_resolution
@@ -909,7 +915,7 @@ class RobertaLMHead(nn.Module):
   def __init__(self, dim, loss_min=None, loss_max=None):
     super().__init__()
 
-    dim, _ = embedd_dim_get(dim)
+    dim, = embedd_dim_get(dim, 'single')
     self.project = nn.Sequential(
         nn.Linear(dim, dim), nn.GELU(), nn.LayerNorm(dim),
         nn.Linear(dim, len(residue_constants.restypes_with_x)))
@@ -1062,7 +1068,7 @@ class SequenceProfileGapHead(nn.Module):
 
   def __init__(self, dim, input_dim=None, single_repr=None):
     super().__init__()
-    dim, _ = embedd_dim_get(dim)
+    dim, = embedd_dim_get(dim, 'single')
 
     if not exists(input_dim):
       input_dim = dim
@@ -1114,7 +1120,7 @@ class SequenceProfileHead(nn.Module):
                single_repr=None,
                loss_func='CrossEntropy'):
     super().__init__()
-    dim, _ = embedd_dim_get(dim)
+    dim, = embedd_dim_get(dim, 'single')
 
     if not exists(input_dim):
       input_dim = dim

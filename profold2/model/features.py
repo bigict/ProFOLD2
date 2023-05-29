@@ -2,6 +2,7 @@
   """
 import functools
 from inspect import isfunction
+import math
 
 import numpy as np
 import torch
@@ -11,7 +12,8 @@ from einops import rearrange
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
 from profold2.model.functional import (angles_from_positions, batched_gather,
-                                       rigids_from_3x3, rigids_from_positions,
+                                       pseudo_beta_fn, rigids_from_3x3,
+                                       rigids_from_positions,
                                        symmetric_ground_truth_create_alt)
 from profold2.utils import default, exists
 
@@ -195,25 +197,6 @@ def make_bert_mask(protein, fraction=0.12, is_training=True):
   return protein
 
 
-def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
-  """Create pseudo beta features."""
-
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
-  ca_idx = residue_constants.atom_order['CA']
-  cb_idx = residue_constants.atom_order['CB']
-  pseudo_beta = torch.where(
-      torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
-      all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :])
-
-  if all_atom_masks is not None:
-    pseudo_beta_mask = torch.where(is_gly, all_atom_masks[..., ca_idx],
-                                   all_atom_masks[..., cb_idx])
-    pseudo_beta_mask = pseudo_beta_mask.float()
-    return pseudo_beta, pseudo_beta_mask
-
-  return pseudo_beta
-
-
 @take1st
 def make_pseudo_beta(protein, prefix='', is_training=True):
   del is_training
@@ -258,11 +241,14 @@ def make_affine(protein, is_training=True):
 
 
 @take1st
-def make_torsion_angles(protein, is_training=True):
-  if is_training and ('coord' in protein and 'coord_mask' in protein):
-    feats = angles_from_positions(protein['seq'], protein['coord'],
-                                  protein['coord_mask'])
-    protein.update(feats)
+def make_torsion_angles(protein, prefix='', is_training=True):
+  if is_training and (f'{prefix}coord' in protein and
+                      f'{prefix}coord_mask' in protein):
+    feats = angles_from_positions(protein[f'{prefix}seq'],
+                                  protein[f'{prefix}coord'],
+                                  protein[f'{prefix}coord_mask'])
+    for k, v in feats.items():
+      protein[f'{prefix}{k}'] = v
   return protein
 
 
@@ -319,6 +305,152 @@ def make_selection(protein, fields, is_training=True):
 
   return {k: protein[k] for k in fields}
 
+@take1st
+def make_target_feat(protein, is_training=True):
+  del is_training
+  # Whether there is a domain break. Always zero for chains, but keeping
+  # for compatibility with domain datasets.
+  seq = protein['seq']
+  has_break = torch.zeros_like(seq)
+
+  target_feat = [
+      has_break[..., None].float(),
+      F.one_hot(seq.long(),
+                num_classes=len(residue_constants.restypes_with_x)).float(),
+  ]
+  protein['target_feat'] = torch.cat(target_feat, dim=-1)
+
+  return protein
+
+@take1st
+def make_msa_feat(protein, is_training=True):
+  del is_training
+  has_deletion = torch.clamp(protein['deletion_matrix'], min=0, max=1.0)
+  deletion_value = torch.atan(protein['deletion_matrix'] / 3.0) * (2. / math.pi)
+
+  msa_feat = [
+      F.one_hot(protein['msa'].long(), num_classes=23),
+      has_deletion[..., None],
+      deletion_value[..., None],
+  ]
+  if 'cluster_profile' in protein:
+    deletion_mean_value = torch.atan(
+        protein['cluster_deletion_mean'] / 3.0) * (2. / math.pi)
+    msa_feat += [protein['cluster_profile'], deletion_mean_value[..., None]]
+
+  if 'extra_deletion_matrix' in protein:
+    protein['extra_has_deletion'] = torch.clamp(
+        protein['extra_deletion_matrix'], min=0, max=1.0)
+    protein['extra_deletion_value'] = torch.atan(
+        protein['extra_deletion_matrix'] / 3.0) * (2. / math.pi)
+
+  protein['msa_feat'] = torch.cat(msa_feat, dim=-1)
+  return protein
+
+@take1st
+def make_nn_clusters(protein, gap_agreement_weight=0., is_training=True):
+  """Assign each extra MSA sequence to its nearest neighbor in sampled MSA."""
+
+  del is_training
+
+  # Determine how much weight we assign to each agreement.  In theory, we could
+  # use a full blosum matrix here, but right now let's just down-weight gap
+  # agreement because it could be spurious.
+  # Never put weight on agreeing on BERT mask
+  weights = torch.cat([
+      torch.ones((21,)),
+      gap_agreement_weight * torch.ones((1,)),
+      torch.zeros((1,))], dim=0)
+  weights = weights.to(protein['msa_mask'].device)
+
+  # Make agreement score as weighted Hamming distance
+  sample_one_hot = (protein['msa_mask'][..., None] *
+                    F.one_hot(protein['msa'].long(), num_classes=23))
+  extra_one_hot = (protein['extra_msa_mask'][..., None] *
+                   F.one_hot(protein['extra_msa'].long(), num_classes=23))
+
+  # Compute tf.einsum('mrc,nrc,c->mn', sample_one_hot, extra_one_hot, weights)
+  # in an optimized fashion to avoid possible memory or computation blowup.
+  agreement = torch.matmul(
+      rearrange(extra_one_hot.float(), '... m r c -> ... m (r c)'),
+      rearrange(sample_one_hot.float() * weights, '... n r c -> ... (r c) n'))
+
+  # Assign each sequence in the extra sequences to the closest MSA sample
+  protein['extra_cluster_assignment'] = torch.argmax(agreement, dim=-1)
+
+  return protein
+
+@take1st
+def make_summerized_clusters(protein, is_training=True):
+  """Produce profile and deletion_matrix_mean within each cluster."""
+
+  del is_training
+
+  num_seq = protein['msa'].shape[-2]
+  def csum(x):
+    return torch.einsum(
+        'b m n, b m ... -> b n ...',
+        F.one_hot(protein['extra_cluster_assignment'],
+                  num_classes=num_seq).float(),
+        x.float())
+
+  mask = protein['extra_msa_mask']
+  mask_counts = 1e-6 + protein['msa_mask'] + csum(mask)  # Include center
+
+  msa_sum = csum(mask[..., None] *
+                 F.one_hot(protein['extra_msa'].long(), num_classes=23))
+  msa_sum += F.one_hot(protein['msa'].long(),
+                       num_classes=23)  # Original sequence
+  protein['cluster_profile'] = msa_sum / mask_counts[..., None]
+
+  del msa_sum
+
+  del_sum = csum(mask * protein['extra_deletion_matrix'])
+  del_sum += protein['deletion_matrix']  # Original sequence
+  protein['cluster_deletion_mean'] = del_sum / mask_counts
+  del del_sum
+
+  return protein
+
+@take1st
+def sample_msa(protein, max_depth, keep_extra=True, is_training=True):
+  """Sample MSA randomly, remaining sequences are stored as `extra_*`.
+  """
+  del is_training
+  msa_depth, device = protein['msa'].shape[1], protein['msa'].device
+  index_order = torch.full((1,), 0, device=device)
+  if msa_depth > 1:
+    index_order = torch.cat(
+        (index_order, torch.randperm(msa_depth - 1, device=device) + 1), dim=-1)
+  max_msa_depth = min(msa_depth, max_depth)
+  sel_msa, not_sel_msa = index_order[:max_msa_depth], index_order[
+      max_msa_depth:]
+  for k in ('msa', 'deletion_matrix', 'msa_mask'):
+    if keep_extra:
+      protein[f'extra_{k}'] = torch.index_select(protein[k], 1, not_sel_msa)
+    protein[k] = torch.index_select(protein[k], 1, sel_msa)
+
+  return protein
+
+@take1st
+def crop_extra_msa(protein, max_depth=None, is_training=True):
+  del is_training
+  if exists(max_depth):
+    msa_depth, device = protein['extra_msa'].shape[0], protein[
+        'extra_msa'].device
+    index_order = torch.full((1,), 0, device=device)
+    if msa_depth > 1:
+      index_order = torch.cat(
+          (index_order, torch.randperm(msa_depth - 1, device=device) + 1),
+          dim=-1)
+    max_msa_depth = min(msa_depth, max_depth)
+    sel_idx = index_order[:max_msa_depth]
+    for k in ('msa', 'deletion_matrix', 'msa_mask'):
+      if f'extra_{k}' in protein:
+        protein[f'extra_{k}'] = torch.index_select(protein[f'extra_{k}'], 1,
+                                                   sel_idx)
+
+  return protein
 
 class FeatureBuilder:
   """Build features by feature functions in config

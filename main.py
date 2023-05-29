@@ -9,11 +9,13 @@ import argparse
 
 from profold2.command import (
     evaluator,
+    msa_processor,
     predictor,
     trainer,
     worker)
 
 _COMMANDS = [
+    ('msa_process', msa_processor.msa_process, msa_processor.add_arguments),
     ('train', trainer.train, trainer.add_arguments),
     ('evaluate', evaluator.evaluate, evaluator.add_arguments),
     ('predict', predictor.predict, predictor.add_arguments),

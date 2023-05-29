@@ -1,4 +1,5 @@
 import collections
+from inspect import isfunction
 
 import numpy as np
 import torch
@@ -9,7 +10,9 @@ from profold2.common import residue_constants
 from profold2.utils import default, exists
 
 def l2_norm(v, dim=-1, epsilon=1e-12):
-    return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
+    norm = torch.sqrt(torch.sum(v**2, dim=dim, keepdim=True) + epsilon)
+    return v / norm
+    # return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
 
 def masked_mean(mask, value, epsilon=1e-10):
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
@@ -23,7 +26,7 @@ def batched_gather(params, indices):
     ext = list(map(chr, range(ord('o'), ord('o') + c)))
     kwargs = dict(zip(ext, params.shape[-c:]))
     ext = ' '.join(ext)
-    return torch.gather(params, 1, repeat(indices, f'b n ... -> b n ... {ext}', **kwargs))
+    return torch.gather(params, 1, repeat(indices.long(), f'b n ... -> b n ... {ext}', **kwargs))
 
 def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0, **kwargs):
     """Sharded apply.
@@ -46,6 +49,9 @@ def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0,
     if not exists(shard_size):
         return run_fn(*sharded_args)
 
+    if isfunction(cat_dim):
+      return cat_dim(run_chunk(*sharded_args))
+    assert isinstance(cat_dim, int)
     return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
 
 """
@@ -209,6 +215,37 @@ def quaternion_multiply(a, b):
     return standardize_quaternion(ab)
 
 
+def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
+  """Create pseudo beta features."""
+
+  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
+  ca_idx = residue_constants.atom_order['CA']
+  cb_idx = residue_constants.atom_order['CB']
+  pseudo_beta = torch.where(
+      torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
+      all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :])
+
+  if all_atom_masks is not None:
+    pseudo_beta_mask = torch.where(is_gly, all_atom_masks[..., ca_idx],
+                                   all_atom_masks[..., cb_idx])
+    pseudo_beta_mask = pseudo_beta_mask.float()
+    return pseudo_beta, pseudo_beta_mask
+
+  return pseudo_beta
+
+def distogram_from_positions(coords, breaks):
+  lo_breaks = torch.square(breaks)
+  hi_breaks = torch.cat(
+      (lo_breaks[1:], torch.full((1,), 1e8, device=breaks.device)),
+      dim=-1)
+  dist2 = torch.sum(torch.square(
+      rearrange(coords, '... i c -> ... i () c') -
+      rearrange(coords, '... j c -> ... () j c')),
+                    dim=-1,
+                    keepdims=True)
+  dgram = ((dist2 > lo_breaks) * (dist2 < hi_breaks))
+  return dgram.float()
+
 def lddt(pred_points, true_points, points_mask, cutoff=15.):
     """Computes the lddt score for a batch of coordinates.
         https://academic.oup.com/bioinformatics/article/29/21/2722/195896
@@ -257,6 +294,16 @@ def plddt(logits):
 
 Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
 
+def rotations_from_vecs(v1, v2, epsilon=1e-8):
+    e1 = l2_norm(v1, epsilon=epsilon)
+    c = torch.sum(e1 * v2, dim=-1, keepdim=True)
+    u2 = v2 - e1*c
+    e2 = l2_norm(u2, epsilon=epsilon)
+    e3 = torch.cross(e1, e2, dim=-1)
+    R = torch.stack((e1, e2, e3), dim=-1)
+
+    return R
+
 def rigids_from_3x3(points, indices=None, epsilon=1e-6):
     """Create rigids from 3 points.
     This creates a set of rigid transformations from 3 points by Gram Schmidt
@@ -287,7 +334,7 @@ def rigids_from_4x4(m):
     assert m.shape[-2:] == (4, 4)
     return m[...,:3,:3], m[...,:3,3]
 
-def angles_from_positions(aatypes, coords, coord_mask):
+def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined=False):
     prev_coords, prev_mask = coords[...,:-1,:,:], coord_mask[...,:-1,:]
     this_coords, this_mask = coords[...,1:,:,:], coord_mask[...,1:,:]
 
@@ -322,16 +369,13 @@ def angles_from_positions(aatypes, coords, coord_mask):
     # First atom: point on x-y-plane
     # Second atom: point on negative x-axis
     # Third atom: origin
-    torsion_frames = rigids_from_3x3(torsion_points, indices=(2, 1, 0))
+    # torsion_frames = rigids_from_3x3(torsion_points, indices=(1, 2, 0))
+    torsion_frames = rotations_from_vecs(torsion_points[...,2,:] - torsion_points[...,1,:], torsion_points[...,0,:] - torsion_points[...,2,:]), torsion_points[...,2,:]
 
     # Compute the position of the forth atom in this frame (y and z coordinate
     # define the chi angle)
-    def to_local(rotations, translations, points):
-        rotations = rearrange(rotations, '... h w -> ... w h')
-        translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
-        return torch.einsum('... w,... h w -> ... h', points, rotations) + translations
     def to_angles(rotations, translations, torsion_points_4):
-        local_points = to_local(rotations, translations, torsion_points_4)
+        local_points = torch.einsum('... w,... w h -> ... h', torsion_points_4 - translations, rotations)
         angles_sin_cos = torch.stack((local_points[...,2], local_points[...,1]), dim=-1)
         return angles_sin_cos / torch.sqrt(1e-8 +
                 torch.sum(angles_sin_cos**2, dim=-1, keepdim=True))
@@ -345,11 +389,23 @@ def angles_from_positions(aatypes, coords, coord_mask):
             'g -> g ()')
 
     # Create alternative angles for ambiguous atom names.
-    chi_is_ambiguous = batched_gather(np.asarray(residue_constants.chi_pi_periodic), aatypes)
+    chi_is_ambiguous = batched_gather(
+        np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32), aatypes)
     mirror_ambiguous = torch.cat((
-            torch.ones(aatypes.shape + (3,), device=aatypes.device),
+            torch.ones(aatypes.shape + (3,), dtype=torch.float32, device=aatypes.device),
             1 - 2*chi_is_ambiguous), dim=-1)
     torsion_angles_alt = torsion_angles * mirror_ambiguous[...,None]
+    if placeholder_for_undefined:
+      # Add placeholder torsions in place of undefined torsion angles
+      # (e.g. N-terminus pre-omega)
+      placeholder_torsions = torch.stack([
+          torch.ones(torsion_angles.shape[:-1], device=torsion_angles.device),
+          torch.zeros(torsion_angles.shape[:-1], device=torsion_angles.device)
+      ], dim=-1)
+      torsion_angles = torsion_angles * torsion_angles_mask[
+          ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
+      torsion_angles_alt = torsion_angles_alt * torsion_angles_mask[
+          ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
 
     return dict(torsion_angles=torsion_angles,
             torsion_angles_mask=torsion_angles_mask,
@@ -443,10 +499,18 @@ def rigids_multiply(a, b):
     translations = torch.einsum('... w,... h w -> ... h', trans_b, rots_a) + trans_a
     return rotations, translations
 
+def rigids_apply(frames, points):
+    rotations, translations = frames
+    return torch.einsum('... h w,... w -> ... h', rotations, points) + translations
+
 def rigids_rotate(frames, mat3x3):
     rotations, translations = frames
     rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
     return rotations, translations
+
+def rigids_scale(frames, position_scale):
+    rotations, translations = frames
+    return rotations, translations * position_scale
 
 def rigids_from_angles(aatypes, backb_frames, angles):
     """Create rigids from torsion angles

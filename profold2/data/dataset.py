@@ -6,6 +6,7 @@ import functools
 import logging
 from io import BytesIO
 import pathlib
+import pickle
 import re
 import string
 import zipfile
@@ -18,6 +19,7 @@ from torch.utils.data.distributed import DistributedSampler
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import domain_parser
+from profold2.model import functional
 from profold2.utils import default, exists, timing
 
 logger = logging.getLogger(__file__)
@@ -112,6 +114,8 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
   def __init__(self, sequences, descriptions=None, msa=None):
+    super().__init__()
+
     self.sequences = sequences
     self.descriptions = descriptions
     self.msa = msa
@@ -180,6 +184,66 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 
     return ret
 
+class ProteinPklDataset(torch.utils.data.Dataset):
+  """Construct a `Dataset` from a pkl
+   """
+  def __init__(self,
+               pkl_files,
+               pids,
+               max_templates=4,
+  ):
+    super().__init__()
+
+    assert len(pids) == len(pkl_files)
+    self.pkl_files = pkl_files
+    self.pids = pids
+    self.max_templates = max_templates
+
+  def __getitem__(self, idx):
+    pid, pkl_file = self.pids[idx], self.pkl_files[idx]
+    with open(pkl_file, 'rb') as f:
+      feature_dict = pickle.load(f)
+
+    protein = {}
+
+    # target sequence
+    protein['pid'] = pid
+    protein['seq'] = torch.from_numpy(
+        np.argmax(feature_dict['aatype'], axis=-1).astype(np.int32))
+    protein['mask'] = torch.ones_like(protein['seq'])
+    protein['seq_index'] = torch.from_numpy(
+        feature_dict['residue_index'].astype(np.int32))
+    protein['str_seq'] = feature_dict['sequence'].astype(str)[0]
+
+    # msa
+    new_order = np.asarray(residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE)
+    protein['msa'] = torch.from_numpy(new_order[feature_dict['msa']].astype(np.int32))
+    protein['msa_mask'] = torch.ones_like(protein['msa'])
+    protein['deletion_matrix'] = torch.from_numpy(
+        feature_dict['deletion_matrix_int'].astype(np.int32))
+    protein['template_seq'] = torch.from_numpy(
+        new_order[np.argmax(feature_dict['template_aatype'], axis=-1)].astype(np.int32))
+    protein['template_mask'] = torch.from_numpy(
+        np.ones(len(feature_dict['template_domain_names']), dtype=np.int32))
+
+    for k_from, k_to in (('template_all_atom_positions', 'template_coord'),
+                         ('template_all_atom_masks', 'template_coord_mask')):
+      protein[k_to] = torch.from_numpy(feature_dict[k_from][:self.max_templates,...])
+    protein['template_seq'] = protein['template_seq'][:self.max_templates,...]
+    protein['template_mask'] = protein['template_mask'][:self.max_templates,...]
+
+    template_angles = functional.angles_from_positions(
+        torch.clamp(protein['template_seq'], max=20),
+        protein['template_coord'],
+        protein['template_coord_mask'],
+        placeholder_for_undefined=False)
+    for k, v in template_angles.items():
+      protein[f'template_{k}'] = v
+
+    return protein
+
+  def __len__(self):
+    return len(self.pkl_files)
 
 class ProteinStructureDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from a zip or filesystem

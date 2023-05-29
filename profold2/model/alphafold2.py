@@ -7,27 +7,29 @@ import random
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from einops import rearrange
 
 from profold2.common import residue_constants
-from profold2.model.commons import Always, embedd_dim_get, PairwiseEmbedding
-from profold2.model.evoformer import Evoformer
+from profold2.model.commons import (embedd_dim_get, PairwiseEmbedding)
+from profold2.model.functional import pseudo_beta_fn, distogram_from_positions
+from profold2.model.evoformer import Evoformer, TemplateEmbedding
 from profold2.model.head import HeaderBuilder
-from profold2.model.sequence import (ESMEmbedding, ESM_EMBED_DIM,
-                                     ESM_MODEL_PATH)
-from profold2.utils import default, exists
+from profold2.utils import exists
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Recyclables:
-  single_msa_repr_row: torch.Tensor
+  msa_first_row_repr: torch.Tensor
   pairwise_repr: torch.Tensor
+  coords: torch.Tensor
 
   def asdict(self):
-    return dict(single_msa_repr_row=self.single_msa_repr_row,
-                pairwise_repr=self.pairwise_repr)
+    return dict(msa_first_row_repr=self.msa_first_row_repr,
+                pairwise_repr=self.pairwise_repr,
+                coords=self.coords)
 
 
 @dataclass
@@ -50,6 +52,70 @@ class ReturnValues(_ReturnValues):
                 headers=self.headers,
                 loss=self.loss)
 
+class InputEmbeddings(nn.Module):
+  def __init__(self,
+               dim,
+               num_seq_tokens=len(residue_constants.restypes_with_x),
+               num_msa_tokens=0,
+               max_rel_dist=0):
+    super().__init__()
+
+    dim_msa, dim_pairwise = embedd_dim_get(dim, 'msa', 'pairwise')
+
+    self.to_single_emb = nn.Linear(num_seq_tokens, dim_msa)
+    self.to_msa_emb = nn.Linear(
+        num_msa_tokens, dim_msa) if num_msa_tokens > 0 else None
+
+    if num_msa_tokens > 0:
+      self.to_pairwise_emb = PairwiseEmbedding(num_seq_tokens,
+                                               dim_pairwise,
+                                               max_rel_dist=max_rel_dist)
+    else:
+      self.to_pairwise_emb = PairwiseEmbedding(dim_msa,
+                                               dim_pairwise,
+                                               max_rel_dist=max_rel_dist)
+
+  def forward(self, target_feat, target_mask, seq_index,
+              msa_feat=None, msa_mask=None):
+    m = self.to_single_emb(target_feat)
+    if not exists(msa_feat):
+      target_feat = m
+    m = rearrange(m, 'b i d -> b () i d')
+    if exists(self.to_msa_emb) and exists(msa_feat):
+      m = self.to_msa_emb(msa_feat) + m
+      m_mask = msa_mask
+      assert exists(msa_mask)
+    else:
+      m_mask = rearrange(target_mask, 'b i -> b () i')
+
+    x, x_mask = self.to_pairwise_emb(target_feat,
+                                     target_mask,
+                                     seq_index=seq_index)
+    return x, m, x_mask, m_mask
+
+def _create_extra_msa_feature(batch):
+  """Expand extra_msa into 1hot and concat with other extra msa features.
+
+  We do this as late as possible as the one_hot extra msa can be very large.
+
+  Arguments:
+    batch: a dictionary with the following keys:
+     * 'extra_msa': [N_extra_seq, N_res] MSA that wasn't selected as a cluster
+       centre. Note, that this is not one-hot encoded.
+     * 'extra_has_deletion': [N_extra_seq, N_res] Whether there is a deletion to
+       the left of each position in the extra MSA.
+     * 'extra_deletion_value': [N_extra_seq, N_res] The number of deletions to
+       the left of each position in the extra MSA.
+
+  Returns:
+    Concatenated tensor of extra MSA features.
+  """
+  # 23 = 20 amino acids + 'X' for unknown + gap + bert mask
+  msa_1hot = F.one_hot(batch['extra_msa'].long(), num_classes=23)
+  msa_feat = [msa_1hot,
+              batch['extra_has_deletion'][...,None],
+              batch['extra_deletion_value'][...,None]]
+  return torch.cat(msa_feat, axis=-1), batch['extra_msa_mask']
 
 class Alphafold2(nn.Module):
   """An implementation of the Alphafold2 model
@@ -58,45 +124,84 @@ class Alphafold2(nn.Module):
   def __init__(self,
                *,
                dim,
-               depth=6,
-               heads=8,
-               dim_head=64,
+               evoformer_depth=48,
+               evoformer_msa_dim=(256, 32),
+               evoformer_head_num=(8, 4),
+               evoformer_head_dim=(32, 32),
+               evoformer_extra_depth=4,
+               evoformer_extra_msa_dim=(64, 32),
+               evoformer_extra_heads=(8, 4),
+               evoformer_extra_head_dim=(8, 32),
+               template_depth=2,
                max_rel_dist=32,
                num_tokens=len(residue_constants.restypes_with_x),
-               embedd_dim=ESM_EMBED_DIM,
+               num_msa_tokens=0,
+               embedd_dim=0,
                attn_dropout=0.,
                ff_dropout=0.,
-               disable_token_embed=False,
+               recycling_single_repr=True,
+               recycling_pos=False,
+               recycling_pos_min_bin=3.25,
+               recycling_pos_max_bin=20.75,
+               recycling_pos_num_bin=15,
                headers=None):
     super().__init__()
 
-    self.dim = dim
-    dim_single, dim_pairwise = embedd_dim_get(dim)
+    dim_single, dim_pairwise = dim
 
-    # token embedding
-    self.token_emb = nn.Embedding(
-        num_tokens + 1, dim_single) if not disable_token_embed else Always(0)
-    self.disable_token_embed = disable_token_embed
-    self.to_pairwise_repr = PairwiseEmbedding(dim, max_rel_dist)
+    dim_msa, dim_outer = evoformer_msa_dim
+    self.dim = dim_single, dim_msa, dim_pairwise
+    # input embeddinas
+    self.input_emb = InputEmbeddings(dim=(dim_single, dim_msa, dim_pairwise),
+                                     num_seq_tokens=num_tokens,
+                                     num_msa_tokens=num_msa_tokens,
+                                     max_rel_dist=max_rel_dist)
+    self.template_emb = TemplateEmbedding(dim=dim_pairwise,
+                                          depth=template_depth,
+                                          dim_templ=64,
+                                          heads=4,
+                                          dim_head=16,
+                                          dim_msa=dim_msa,
+                                          attn_dropout=0.25,
+                                          ff_dropout=0) if template_depth > 0 else None
 
-    # custom embedding projection
-    if embedd_dim > 0:
-      self.embedd_project = nn.Linear(embedd_dim, dim_single)
-      self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
-
+    # extra msa stack
+    dim_msa_extra, dim_outer_extra = evoformer_extra_msa_dim
+    if evoformer_extra_depth > 0:
+      self.msa_activations_extra = nn.Linear(25, dim_msa_extra)
+      self.evoformer_extra = Evoformer(
+              dim=(dim_single, dim_msa_extra, dim_pairwise, dim_outer_extra),
+              depth=evoformer_extra_depth,
+              heads=evoformer_extra_heads,
+              dim_head=evoformer_extra_head_dim,
+              attn_dropout=attn_dropout,
+              ff_dropout=ff_dropout,
+              global_column_attn=True)
     # main trunk modules
-    self.evoformer = Evoformer(dim=dim,
-                               depth=depth,
-                               heads=heads,
-                               dim_head=dim_head,
-                               attn_dropout=attn_dropout,
-                               ff_dropout=ff_dropout)
+    self.evoformer = Evoformer(
+            dim=(dim_single, dim_msa, dim_pairwise, dim_outer),
+            depth=evoformer_depth,
+            heads=evoformer_head_num,
+            dim_head=evoformer_head_dim,
+            attn_dropout=attn_dropout,
+            ff_dropout=ff_dropout)
+
+    # msa to single activations
+    self.to_single_repr = nn.Linear(dim_msa, dim_single)
 
     # recycling params
-    self.recycling_msa_norm = nn.LayerNorm(dim_single)
+    self.recycling_to_msa_repr = nn.Linear(dim_single, dim_msa) if recycling_single_repr else None
+    self.recycling_pos_linear = nn.Linear(recycling_pos_num_bin, dim_pairwise) if recycling_pos else None
+    if recycling_pos:
+      self.recycling_pos_breaks = torch.linspace(
+          recycling_pos_min_bin,
+          recycling_pos_max_bin,
+          steps=recycling_pos_num_bin)
+    self.recycling_msa_norm = nn.LayerNorm(dim_msa)
+    self.recycling_to_pair_repr = None
     self.recycling_pairwise_norm = nn.LayerNorm(dim_pairwise)
 
-    self.headers = HeaderBuilder.build(dim, headers, parent=self)
+    self.headers = HeaderBuilder.build((dim_single, dim_msa, dim_pairwise), headers, parent=self)
 
   def embeddings(self):
     return dict(token=self.token_emb.weight,
@@ -105,99 +210,65 @@ class Alphafold2(nn.Module):
   def forward(self,
               batch,
               *,
-              sequence_max_input_len=None,
-              sequence_max_step_len=None,
               return_recyclables=False,
               compute_loss=True,
               shard_size=None):
-    seq, mask, seq_embed, seq_index = map(
-        batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
-    msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
-    msa, msa_mask, msa_embed = None, None, None
-    embedds, = map(batch.get, ('embedds',))
+    seq, mask, seq_index = map(
+        batch.get, ('seq', 'mask', 'seq_index'))
+    target_feat, = map(batch.get, ('target_feat',))
+    msa, msa_mask = map(batch.get, ('msa_feat', 'msa_mask'))
     recyclables, = map(batch.get, ('recyclables',))
 
     # variables
     # b, n, device = *seq.shape[:2], seq.device
 
-    assert not (
-        self.disable_token_embed and not exists(seq_embed)
-    ), 'sequence embedding must be supplied if one has disabled token embedding'
-    assert not (
-        self.disable_token_embed and not exists(msa_embed)
-    ), 'msa embedding must be supplied if one has disabled token embedding'
-
     representations = {}
 
-    # embed multiple sequence alignment (msa)
-    if hasattr(self, 'sequence'):
-      embedds, contacts = self.sequence(
-          batch,
-          sequence_max_input_len=sequence_max_input_len,
-          sequence_max_step_len=sequence_max_step_len)
-      representations['mlm'] = dict(representations=embedds, contacts=contacts)
-
-      embedds = rearrange(embedds, 'b l c -> b () l c')
-
-    # if MSA is not passed in, just use the sequence itself
-    if not exists(embedds) and not exists(msa):
-      msa = rearrange(seq, 'b n -> b () n')
-      msa_mask = rearrange(mask, 'b n -> b () n')
-
-    # assert on sequence length
-    assert not exists(msa) or msa.shape[-1] == seq.shape[
-        -1], 'sequence length of MSA and primary sequence must be the same'
-
-    # embed main sequence
-    x = self.token_emb(seq)
-
-    if exists(seq_embed):
-      x += seq_embed
-
-    # embed multiple sequence alignment (msa)
-    if exists(msa):
-      m = self.token_emb(msa)
-
-      if exists(msa_embed):
-        m = m + msa_embed
-
-      # add single representation to msa representation
-      m = m + rearrange(x, 'b n d -> b () n d')
-
-      # get msa_mask to all ones if none was passed
-      msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
-
-    elif exists(embedds):
-      m = self.embedd_project(embedds)
-
-      # get msa_mask to all ones if none was passed
-      msa_mask = default(msa_mask,
-                         lambda: torch.ones_like(embedds[..., -1]).bool())
-    else:
-      m = rearrange(x, 'b n d -> b () n d')
-      msa_mask = rearrange(mask, 'b n -> b () n')
-      #raise Error('either MSA or embeds must be given')
-
-    # derive pairwise representation
-    x, x_mask = self.to_pairwise_repr(x, mask, seq_index)
+    # input embedds
+    # m, m_mask, x, x_mask = self.input_emb(seq, mask, seq_index, msa, msa_mask)
+    x, m, x_mask, m_mask = self.input_emb(target_feat, mask, seq_index, msa, msa_mask)
 
     # add recyclables, if present
     if exists(recyclables):
+      if exists(recyclables.coords):
+        pseudo_beta = pseudo_beta_fn(seq, recyclables.coords)
+        breaks = self.recycling_pos_breaks.to(pseudo_beta.device)
+        dgram = distogram_from_positions(pseudo_beta, breaks)
+        x = x + self.recycling_pos_linear(dgram)
       m[:,
-        0] = m[:, 0] + self.recycling_msa_norm(recyclables.single_msa_repr_row)
+        0] = m[:, 0] + self.recycling_msa_norm(recyclables.msa_first_row_repr)
       x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
+
+    # template
+    if exists(self.template_emb):
+      template_batch = {k: batch[k] for k in batch if k.startswith('template_')}
+      x, m, _, m_mask = self.template_emb(x, x_mask, m, m_mask, template_batch,
+                                          shard_size=shard_size)
+
+    # extra
+    if exists(self.evoformer_extra):
+      # Embed extra MSA features.
+      extra_msa_feat, extra_msa_mask = _create_extra_msa_feature(batch)
+      extra_msa_activations = self.msa_activations_extra(extra_msa_feat)
+      x, _ = self.evoformer_extra(x,
+                                  extra_msa_activations,
+                                  mask=x_mask,
+                                  msa_mask=extra_msa_mask,
+                                  shard_size=shard_size)
 
     # trunk
     x, m = self.evoformer(x,
                           m,
                           mask=x_mask,
-                          msa_mask=msa_mask,
+                          msa_mask=m_mask,
                           shard_size=shard_size)
+
+    s = self.to_single_repr(m[:, 0])
 
     # ready output container
     ret = ReturnValues()
 
-    representations.update(pair=x, single=m[:, 0], single_init=m[:, 0])
+    representations.update(msa=m, pair=x, single=s, single_init=s)
 
     ret.headers = {}
     for name, module, options in self.headers:
@@ -217,9 +288,18 @@ class Alphafold2(nn.Module):
             ret.loss = loss['loss'] * options.get('weight', 1.0)
 
     if return_recyclables:
-      single_msa_repr_row, pairwise_repr = map(
-          torch.detach, (representations['single'], representations['pair']))
-      ret.recyclables = Recyclables(single_msa_repr_row, pairwise_repr)
+      with torch.no_grad():
+        msa_first_row_repr, pairwise_repr = m[:, 0], representations['pair']
+        if exists(self.recycling_to_msa_repr):
+          msa_first_row_repr += self.recycling_to_msa_repr(representations['single'])
+        if exists(self.recycling_to_pair_repr):
+          pass
+        coords = None
+        if 'folding' in ret.headers and 'coords' in ret.headers['folding']:
+          coords = ret.headers['folding']['coords']
+      ret.recyclables = Recyclables(msa_first_row_repr,
+                                    pairwise_repr,
+                                    coords)
 
     return ret.asdict()
 
@@ -245,10 +325,12 @@ class Alphafold2WithRecycling(nn.Module):
     b, n, device = *seq.shape[:2], seq.device
     # FIXME: fake recyclables
     if 'recyclables' not in batch:
-      dim_single, dim_pairwise = embedd_dim_get(self.impl.dim)
+      dim_msa, dim_pairwise = embedd_dim_get(self.impl.dim, 'msa', 'pairwise')
       batch['recyclables'] = Recyclables(
-          single_msa_repr_row=torch.zeros(b, n, dim_single, device=device),
-          pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device))
+          msa_first_row_repr=torch.zeros(b, n, dim_msa, device=device),
+          pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device),
+          coords=torch.zeros(b, n, residue_constants.atom_type_num, 3,
+                             device=device))
 
     ret = ReturnValues()
     if self.training:
