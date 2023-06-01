@@ -191,10 +191,13 @@ def main(args):  # pylint: disable=redefined-outer-name
     with mp.Pool() as p:
       for input_file, results in p.imap(functools.partial(process, args=args),
                                         input_files):
-        pid = output_get_basename(input_file).lower()
+        pid = output_get_basename(input_file)
         for chain, seq, domains, npz in results:
           seq, domains = ''.join(seq), ','.join(domains)
-          fid = f'{pid}_{chain}'
+          if chain and chain != '.':
+            fid = f'{pid}_{chain}'
+          else:
+            fid = pid
 
           if seq in mapping_dict:
             pk, sk_list = mapping_dict[seq]

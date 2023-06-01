@@ -61,8 +61,8 @@ def run_scorer(exe_path, predicted_path, gt_path, terms):
 def read_pairwise_list(f):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     pid, model_f, native_f = line.split('\t')
-    assert os.path.exists(model_f), model_f
-    if os.path.exists(native_f):
+    # assert os.path.exists(model_f), model_f
+    if os.path.exists(native_f) and os.path.exists(model_f):
       yield pid, model_f, native_f
 
 

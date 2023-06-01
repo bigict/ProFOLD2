@@ -66,6 +66,8 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
     coord_exists = batched_gather(residue_constants.restype_atom14_mask,
                                   protein['seq'])
   protein['coord_exists'] = coord_exists
+  if 'coord_mask' in protein:
+    protein['coord_mask'] *= coord_exists
   return protein
 
 

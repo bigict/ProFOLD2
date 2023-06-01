@@ -4,6 +4,7 @@
      ```
      for further help.
 """
+import matplotlib.pyplot as plt
 import torch
 from torch.nn import functional as F
 from einops import rearrange
@@ -54,7 +55,8 @@ def main(args):  # pylint: disable=redefined-outer-name
   # print(s)
 
   blosum62_aa = 'CSTAGPDEQNHRKMILVWYF'
-  # print('  '.join(f'    {a}' for a in blosum62_aa))
+  if args.verbose:
+    print('  '.join(f'    {a}' for a in blosum62_aa))
 
   x = [[0]*len(blosum62_aa) for _ in blosum62_aa]
   y = [[0]*len(blosum62_aa) for _ in blosum62_aa]
@@ -67,7 +69,8 @@ def main(args):  # pylint: disable=redefined-outer-name
       t.append(f'{v:+4.2f}')
       x[i][j] = v
       y[i][j] = blosum62[(aa, bb)]
-    #print('  '.join(t))
+    if args.verbose:
+      print('  '.join(t))
 
   #print(sum(plddt_list)/len(plddt_list))
   #for i in range(len(blosum62_aa)):
@@ -78,6 +81,11 @@ def main(args):  # pylint: disable=redefined-outer-name
     f'{sum(profile_list)/len(profile_list)}',
   ]
   print('\t'.join(fields))
+  if (args.plot_svg_file):
+    with open(args.plot_svg_file, 'w') as f:
+      plt.matshow(-true_bins, **kwargs)
+      plt.savefig(-x, format='svg', dpi=100)
+      plt.close()
 if __name__ == '__main__':
   import argparse
 
@@ -90,6 +98,8 @@ if __name__ == '__main__':
       help='input files (.pth)')
   parser.add_argument('--epsilon', type=float, default=1e-9,
       help='input files (.pth)')
+  parser.add_argument('--plot_svg_file', type=str, default=None,
+      help='output svg file (.svg)')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

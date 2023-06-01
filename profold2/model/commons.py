@@ -156,7 +156,7 @@ class Attention(nn.Module):
 
     # attention
 
-    dots = dots - dots.max(dim=-1, keepdim=True).values
+    # dots = dots - dots.max(dim=-1, keepdim=True).values
     attn = dots.softmax(dim=-1)
     attn = self.dropout(attn)
 
@@ -363,7 +363,7 @@ class OuterMean(nn.Module):
           shard_size=None if self.training else shard_size,
           shard_dim=1,
           cat_dim=1)
-      outer = outer.sum(dim=1) / (mask.sum(dim=1) + self.eps)
+      outer = outer.sum(dim=1) / torch.clamp(mask.sum(dim=1) + self.eps, min=1)
     else:
       outer = outer.mean(dim=1)
 

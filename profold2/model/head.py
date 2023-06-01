@@ -16,27 +16,15 @@ from profold2.utils import *
 logger = logging.getLogger(__name__)
 
 
-def softmax_cross_entropy(logits, labels, mask=None):
+def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
   """Computes softmax cross entropy given logits and one-hot class labels."""
   if not exists(mask):
     mask = 1.0
+  if gammar > 0:  # focal loss enabled.
+    prob = F.softmax(logits, dim=-1)
+    labels = labels.float() * ((1 - prob)**gammar)
   loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
   return loss
-
-
-def softmax_cross_entropy_with_probability(probs, labels, mask=None):
-  """Computes softmax cross entropy given logits and one-hot class labels."""
-  if not exists(mask):
-    mask = 1.0
-  loss = -torch.sum(labels * torch.log(probs) * mask, dim=-1)
-  return loss
-
-
-def softmax_cross_entropy_with_focal(logits, labels, gammar=0, mask=None):
-  prob = F.softmax(logits, dim=-1)
-  if gammar > 0:
-    labels = labels.float() * ((1 - prob)**gammar)
-  return softmax_cross_entropy_with_probability(prob, labels, mask)
 
 
 def softmax_kl_diversity(logits, labels, mask=None):
@@ -345,15 +333,10 @@ class CoevolutionHead(nn.Module):
                            self.mask,
                            device=logits.device)
 
-    if self.focal_loss > 0:
-      errors = softmax_cross_entropy_with_focal(labels=labels,
-                                                logits=logits,
-                                                mask=label_mask,
-                                                gammar=self.focal_loss)
-    else:
-      errors = softmax_cross_entropy(labels=labels,
-                                     logits=logits,
-                                     mask=label_mask)
+    errors = softmax_cross_entropy(labels=labels,
+                                   logits=logits,
+                                   mask=label_mask,
+                                   gammar=self.focal_loss)
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
                         labels.float(), label_mask)
 
@@ -374,10 +357,10 @@ class CoevolutionHead(nn.Module):
     # L1 regularization
     alpha = _make_dynamic_regularization(self.alpha)
     if exists(alpha):
-       r1 = torch.sum(torch.abs(value['wij']), dim=-1)
-       logger.debug('CoevolutionHead.loss.L1(%s): %s',
-                    alpha.tolist(), torch.mean(r1).item())
-       avg_error += torch.mean(alpha[...,None,None] * r1)
+      r1 = torch.sum(torch.abs(value['wij']), dim=-1)
+      logger.debug('CoevolutionHead.loss.L1(%s): %s',
+                   alpha.tolist(), torch.mean(r1).item())
+      avg_error += torch.mean(alpha[...,None,None] * r1)
 
     # L2 regularization
     beta = _make_dynamic_regularization(self.beta)
@@ -460,15 +443,10 @@ class DistogramHead(nn.Module):
                         keepdims=True)
 
       true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
-      if self.focal_loss > 0:
-        errors = softmax_cross_entropy_with_focal(labels=F.one_hot(
-            true_bins, self.num_buckets),
-                                                  logits=logits,
-                                                  gammar=self.focal_loss)
-      else:
-        errors = softmax_cross_entropy(labels=F.one_hot(true_bins,
-                                                        self.num_buckets),
-                                       logits=logits)
+      errors = softmax_cross_entropy(labels=F.one_hot(true_bins,
+                                                      self.num_buckets),
+                                     logits=logits,
+                                     gammar=self.focal_loss)
     else:
       b, l, device = *batch['seq'].shape, batch['seq'].device
       mask = torch.ones((b, l), device=device, dtype=torch.bool)

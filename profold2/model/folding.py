@@ -298,12 +298,14 @@ class StructureModule(nn.Module):
                dim,
                structure_module_depth,
                structure_module_heads,
-               dropout=.0):
+               dropout=.0,
+               position_scale=1.0):
     super().__init__()
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
     assert structure_module_depth >= 1
     self.structure_module_depth = structure_module_depth
+    self.position_scale = position_scale
     with torch_default_dtype(torch.float32):
       self.ipa_block = IPABlock(dim=dim_single,
                                 pairwise_repr_dim=dim_pairwise,
@@ -377,12 +379,14 @@ class StructureModule(nn.Module):
         if self.training or is_last:
           angles = self.to_angles(single_repr,
                                   single_repr_init=single_repr_init)
-          frames = rigids_from_angles(batch['seq'], (rotations, translations),
-                                      l2_norm(angles))
+          frames = rigids_from_angles(
+              batch['seq'],
+              (rotations, translations*self.position_scale),
+              l2_norm(angles))
           coords = rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(
-              dict(frames=(rotations, translations),
+              dict(frames=(rotations, translations*self.position_scale),
                    act=single_repr,
                    atoms=dict(frames=frames, coords=coords, angles=angles)))
 

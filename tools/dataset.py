@@ -96,4 +96,4 @@ if __name__ == '__main__':
 
   logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
-  main(commands[args.command], args)
+  main(commands[args.command][0], args)
