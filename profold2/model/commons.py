@@ -1,5 +1,6 @@
 """A lot of modules in Alphafold2
   """
+import math
 import functools
 
 import torch
@@ -308,6 +309,12 @@ class TriangleMultiplicativeModule(nn.Module):
 
     out = torch.einsum(self.mix_einsum_eq, left, right)
 
+    # FIXME: clamp based on `dtype` and `LayerNorm.eps`
+    #  to avoid overflow, especially when dtype=float16
+    fi = torch.finfo(out.dtype)
+    out = torch.clamp(out,
+                      min=(fi.min + 1) * math.sqrt(self.to_out_norm.eps),
+                      max=(fi.max - 1) * math.sqrt(self.to_out_norm.eps))
     out = self.to_out_norm(out)
     out = out * out_gate
     return self.to_out(out)

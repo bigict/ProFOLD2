@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from profold2.model.commons import init_zero_, embedd_dim_get
 from profold2.model.functional import (l2_norm, quaternion_multiply,
                                        quaternion_to_matrix, rigids_from_angles,
-                                       rigids_to_positions)
+                                       rigids_scale, rigids_to_positions)
 from profold2.utils import (default, exists,
                             torch_allow_tf32, torch_default_dtype)
 
@@ -381,12 +381,13 @@ class StructureModule(nn.Module):
                                   single_repr_init=single_repr_init)
           frames = rigids_from_angles(
               batch['seq'],
-              (rotations, translations*self.position_scale),
+              rigids_scale((rotations, translations), self.position_scale),
               l2_norm(angles))
+          frames = rigids_scale(frames, 1.0 / self.position_scale)
           coords = rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(
-              dict(frames=(rotations, translations*self.position_scale),
+              dict(frames=(rotations, translations),
                    act=single_repr,
                    atoms=dict(frames=frames, coords=coords, angles=angles)))
 

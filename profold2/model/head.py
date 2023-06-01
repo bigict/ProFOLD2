@@ -488,12 +488,14 @@ class FoldingHead(nn.Module):
                fape_max=15,
                fape_z=15,
                dropout=.0,
+               position_scale=1.0,
                **params):
     super().__init__()
     self.struct_module = folding.StructureModule(dim,
                                                  structure_module_depth,
                                                  structure_module_heads,
-                                                 dropout=dropout)
+                                                 dropout=dropout,
+                                                 position_scale=position_scale)
 
     self.fape_min = fape_min
     self.fape_max = fape_max

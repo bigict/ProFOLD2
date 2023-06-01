@@ -448,6 +448,10 @@ def rigids_rotate(frames, mat3x3):
     rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
     return rotations, translations
 
+def rigids_scale(frames, position_scale):
+    rotations, translations = frames
+    return rotations, translations * position_scale
+
 def rigids_from_angles(aatypes, backb_frames, angles):
     """Create rigids from torsion angles
     """

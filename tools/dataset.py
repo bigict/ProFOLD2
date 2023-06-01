@@ -20,7 +20,7 @@ def to_fasta(data, args):  # pylint: disable=redefined-outer-name
     if args.print_fasta:
       for i, pid in enumerate(prot['pid']):
         print(f'>{pid}')
-        print(prot['str_seq'][i])
+        print(prot['str_seq'][i], prot['str_msa'][i][0])
     if args.print_first_only:
       print(prot)
       break
@@ -45,20 +45,26 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
     if 'coord' in prot:
       if n != prot['coord'].shape[1]:
         print(prot['pid'], n, prot['coord'].shape)
+    elif args.coord_required:
+      print(prot['pid'], 'coord required')
     if 'coord_mask' in prot:
       if n != prot['coord_mask'].shape[1]:
         print(prot['pid'], n, prot['coord_mask'].shape)
+    elif args.coord_required:
+      print(prot['pid'], 'coord_mask required')
 
 def checksum_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--msa_required', action='store_true',
                       help='MSA required')
+  parser.add_argument('--coord_required', action='store_true',
+                      help='coord required')
   return parser
 
 def main(work_fn, args):  # pylint: disable=redefined-outer-name
   # get data
   data_loader = dataset.load(data_dir=args.data_dir,
                              data_idx=args.data_idx,
-                             feat_flags=dataset.FEAT_ALL & (~dataset.FEAT_MSA),
+                             feat_flags=dataset.FEAT_ALL,
                              weights=list(weights_from_file(args.data_weights)))
   with timing(f'{args.command}', print):
     work_fn(data_loader, args)
