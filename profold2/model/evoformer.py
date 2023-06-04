@@ -122,13 +122,13 @@ class EvoformerBlock(nn.Module):
         PairwiseAttentionBlock(dim=dim,
                                heads=heads,
                                dim_head=dim_head,
-                               dropout=attn_dropout,
-                               global_column_attn=global_column_attn),
+                               dropout=attn_dropout),
         FeedForward(dim=dim_pairwise, dropout=ff_dropout),
         MsaAttentionBlock(dim=dim,
                           heads=heads,
                           dim_head=dim_head,
-                          dropout=attn_dropout),
+                          dropout=attn_dropout,
+                          global_column_attn=global_column_attn),
         FeedForward(dim=dim_single, dropout=ff_dropout),
     ])
 

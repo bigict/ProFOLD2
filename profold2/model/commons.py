@@ -84,21 +84,31 @@ class FeedForward(nn.Module):
 class Attention(nn.Module):
   """Multi-head Attention
     """
-  def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
+  def __init__(self,
+               dim,
+               heads=8,
+               dim_head=64,
+               dropout=0.,
+               global_query_attn=False):
     super().__init__()
-    inner_dim = dim_head * heads
     self.heads = heads
+    self.dim_head = dim_head
     self.scale = dim_head**-0.5
 
-    self.to_q = nn.Linear(dim, inner_dim, bias=False)
-    self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
-    self.to_out = nn.Linear(inner_dim, dim)
+    dim_inner = dim_head * heads
+    self.to_q = nn.Linear(dim, dim_inner, bias=False)
+    if global_query_attn:
+      self.to_kv = nn.Linear(dim, dim_head * 2, bias=False)
+    else:
+      self.to_kv = nn.Linear(dim, dim_inner * 2, bias=False)
+    self.to_out = nn.Linear(dim_inner, dim)
 
-    self.gating = nn.Linear(dim, inner_dim)
+    self.gating = nn.Linear(dim, dim_inner)
     nn.init.constant_(self.gating.weight, 0.)
     nn.init.constant_(self.gating.bias, 1.)
 
     self.dropout = nn.Dropout(dropout)
+    self.global_query_attn = global_query_attn
     init_zero_(self.to_out)
 
   def forward(self,
@@ -106,9 +116,8 @@ class Attention(nn.Module):
               mask=None,
               attn_bias=None,
               context=None,
-              context_mask=None,
-              tie_dim=None):
-    device, h, has_context = x.device, self.heads, exists(context)
+              context_mask=None):
+    device, h, d = x.device, self.heads, self.dim_head
 
     context = default(context, x)
 
@@ -116,7 +125,7 @@ class Attention(nn.Module):
 
     i, _ = q.shape[-2], k.shape[-2]
 
-    q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h),
+    q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b n h d', d=d),
                   (q, k, v))
 
     # scale
@@ -124,19 +133,21 @@ class Attention(nn.Module):
     q = q * self.scale
 
     # query / key similarities
-    if exists(tie_dim):
+    if self.global_query_attn:
       # as in the paper, for the extra MSAs
       # they average the queries along the rows of the MSAs
       # they named this particular module MSAColumnGlobalAttention
 
-      q, k = map(lambda t: rearrange(t, '(b r) ... -> b r ...', r=tie_dim),
-                 (q, k))
-      q = q.mean(dim=1)
+      k, v = map(lambda t: repeat(t, '... r d-> ... (r h) d', h=h), (k, v))
+      n = q.shape[1]
+      if exists(mask):
+        q = q.sum(dim=1, keepdim=True) / torch.sum(
+            mask[..., None, None], dim=1, keepdim=True)
+      else:
+        q = q.mean(dim=1, keepdim=True)
+      q = repeat(q, 'b i ... -> b (i n) ...', n=n)
 
-      dots = torch.einsum('b h i d, b r h j d -> b r h i j', q, k)
-      dots = rearrange(dots, 'b r ... -> (b r) ...')
-    else:
-      dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+    dots = torch.einsum('b i h d, b j h d -> b h i j', q, k)
 
     # add attention bias,
     # if supplied (for pairwise to msa attention communication)
@@ -148,9 +159,9 @@ class Attention(nn.Module):
 
     if exists(mask):
       mask = default(mask, lambda: torch.ones(1, i, device=device).bool())
-      context_mask = mask if not has_context else default(
+      context_mask = mask if not exists(context) else default(
           context_mask,
-          lambda: torch.ones(1, k.shape[-2], device=device).bool())
+          lambda: torch.ones(1, k.shape[-3], device=device).bool())
       mask_value = -torch.finfo(dots.dtype).max
       mask = mask[:, None, :, None] * context_mask[:, None, None, :]
       dots = dots.masked_fill(~mask.bool(), mask_value)
@@ -163,7 +174,7 @@ class Attention(nn.Module):
 
     # aggregate
 
-    out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
+    out = torch.einsum('b h i j, b j h d -> b h i d', attn, v)
 
     # merge heads
 
@@ -189,7 +200,6 @@ class AxialAttention(nn.Module):
                row_attn=True,
                col_attn=True,
                accept_edges=False,
-               global_query_attn=False,
                **kwargs):
     super().__init__()
     assert not (not row_attn and
@@ -197,7 +207,6 @@ class AxialAttention(nn.Module):
 
     self.row_attn = row_attn
     self.col_attn = col_attn
-    self.global_query_attn = global_query_attn
 
     dim_node, dim_edge = embedd_dim_get(dim)
     self.norm = nn.LayerNorm(dim_node)
@@ -231,12 +240,11 @@ class AxialAttention(nn.Module):
         attn_bias = repeat(attn_bias,
                            'b h i j -> (b x) h i j',
                            x=x.shape[axial_dim])
-      tie_dim = x.shape[axial_dim] if self.global_query_attn else None
 
       x = rearrange(x, input_fold_eq)
       if exists(mask):
         mask = rearrange(mask, mask_fold_axial_eq)
-      out = self.attn(x, mask=mask, attn_bias=attn_bias, tie_dim=tie_dim)
+      out = self.attn(x, mask=mask, attn_bias=attn_bias)
       out = rearrange(out, output_fold_eq, h=h, w=w)
       return out
 
@@ -270,7 +278,7 @@ class TriangleMultiplicativeModule(nn.Module):
 
     self.left_gate = nn.Linear(dim, hidden_dim)
     self.right_gate = nn.Linear(dim, hidden_dim)
-    self.out_gate = nn.Linear(dim, hidden_dim)
+    self.out_gate = nn.Linear(dim, dim)
 
     # initialize all gating to be identity
 
@@ -386,7 +394,6 @@ class PairwiseAttentionBlock(nn.Module):
       heads,
       dim_head,
       dropout=0.,
-      global_column_attn=False,
   ):
     super().__init__()
 
@@ -399,14 +406,12 @@ class PairwiseAttentionBlock(nn.Module):
                                                       row_attn=True,
                                                       col_attn=False,
                                                       accept_edges=True)
-    self.triangle_attention_ingoing = AxialAttention(
-        dim=dim_pairwise,
-        heads=heads,
-        dim_head=dim_head,
-        row_attn=False,
-        col_attn=True,
-        accept_edges=True,
-        global_query_attn=global_column_attn)
+    self.triangle_attention_ingoing = AxialAttention(dim=dim_pairwise,
+                                                     heads=heads,
+                                                     dim_head=dim_head,
+                                                     row_attn=False,
+                                                     col_attn=True,
+                                                     accept_edges=True)
     self.triangle_multiply_outgoing = TriangleMultiplicativeModule(
         dim=dim_pairwise, mix='outgoing')
     self.triangle_multiply_ingoing = TriangleMultiplicativeModule(
@@ -417,8 +422,8 @@ class PairwiseAttentionBlock(nn.Module):
                                                 broadcast_dim=0,
                                                 p=dropout)
     self.dropout_column_fn = functools.partial(shared_dropout,
-                                                broadcast_dim=1,
-                                                p=dropout)
+                                               broadcast_dim=1,
+                                               p=dropout)
 
   def forward(self,
               x,
@@ -430,8 +435,7 @@ class PairwiseAttentionBlock(nn.Module):
       x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
     x = x + self.dropout_rowwise_fn(
-        self.triangle_multiply_outgoing(x, mask=mask),
-        training=self.training)
+        self.triangle_multiply_outgoing(x, mask=mask), training=self.training)
     x = x + self.dropout_rowwise_fn(
         self.triangle_multiply_ingoing(x, mask=mask),
         training=self.training)
@@ -449,7 +453,14 @@ class PairwiseAttentionBlock(nn.Module):
 class MsaAttentionBlock(nn.Module):
   """MsaAttentionBlock
     """
-  def __init__(self, dim, heads, dim_head, dropout=0.):
+  def __init__(
+      self,
+      dim,
+      heads,
+      dim_head,
+      dropout=0.,
+      global_column_attn=False,
+  ):
     super().__init__()
 
     dim_single, dim_pairwise = embedd_dim_get(dim)
@@ -463,7 +474,8 @@ class MsaAttentionBlock(nn.Module):
                                    heads=heads,
                                    dim_head=dim_head,
                                    row_attn=False,
-                                   col_attn=True)
+                                   col_attn=True,
+                                   global_query_attn=global_column_attn)
 
     dropout, _ = embedd_dropout_get(dropout)
     self.dropout_fn = functools.partial(shared_dropout,
@@ -546,8 +558,8 @@ def checkpoint_sequential_nargs(functions, segments, inputs, **kwargs):
     end = start + segment_size - 1
     if torch.is_grad_enabled():
       inputs = checkpoint(run_function(start, end, functions),
-                         *inputs,
-                         preserve_rng_state=preserve)
+                          *inputs,
+                          preserve_rng_state=preserve)
     else:
       inputs = run_function(start, end, functions)(*inputs)
   return run_function(end + 1, len(functions) - 1, functions)(*inputs)
