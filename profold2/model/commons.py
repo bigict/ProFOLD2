@@ -5,6 +5,7 @@ import functools
 
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
@@ -20,6 +21,14 @@ def init_zero_(layer):
   if exists(layer.bias):
     nn.init.constant_(layer.bias, 0.)
 
+def default_list_get(value, n):
+  if isinstance(value, (tuple, list)):
+    assert len(value) <= n
+    value = list(value)
+    while len(value) < n:
+      value = value + [value[-1]]
+    return value
+  return [value] * n
 
 def embedd_dim_get(dim):
   if isinstance(dim, (tuple, list)):
@@ -317,13 +326,13 @@ class TriangleMultiplicativeModule(nn.Module):
 
     out = torch.einsum(self.mix_einsum_eq, left, right)
 
-    # FIXME: clamp based on `dtype` and `LayerNorm.eps`
-    #  to avoid overflow, especially when dtype=float16
+    # FIXME: clamp based on `dtype` to avoid overflow, especially when
+    #  dtype=float16
     fi = torch.finfo(out.dtype)
-    out = torch.clamp(out,
-                      min=(fi.min + 1) * math.sqrt(self.to_out_norm.eps),
-                      max=(fi.max - 1) * math.sqrt(self.to_out_norm.eps))
-    out = self.to_out_norm(out)
+    with autocast(enabled=False):
+      out = torch.clamp(self.to_out_norm(out.float()),
+                        min=fi.min + 1,
+                        max=fi.max - 1)
     out = out * out_gate
     return self.to_out(out)
 

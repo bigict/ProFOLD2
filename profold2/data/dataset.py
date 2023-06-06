@@ -201,7 +201,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
     with self._fileobj(data_idx) as f:
-      self.pids = list(map(lambda x: self._ftext(x).strip().split(), f))
+      self.pids = list(
+          map(lambda x: x.split(),
+              filter(lambda x: len(x) > 0 and not x.startswith('#'),
+                     map(lambda x: self._ftext(x).strip(), f))))
 
     self.mapping = {}
     if self._fstat('mapping.idx'):

@@ -484,6 +484,7 @@ class FoldingHead(nn.Module):
                dim,
                structure_module_depth,
                structure_module_heads,
+               point_value_dim=4,
                fape_min=1e-6,
                fape_max=15,
                fape_z=15,
@@ -494,6 +495,7 @@ class FoldingHead(nn.Module):
     self.struct_module = folding.StructureModule(dim,
                                                  structure_module_depth,
                                                  structure_module_heads,
+                                                 point_value_dim=point_value_dim,
                                                  dropout=dropout,
                                                  position_scale=position_scale)
 

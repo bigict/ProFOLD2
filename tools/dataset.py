@@ -62,9 +62,12 @@ def checksum_add_argument(parser):  # pylint: disable=redefined-outer-name
 
 def main(work_fn, args):  # pylint: disable=redefined-outer-name
   # get data
+  feat_flags = dataset.FEAT_ALL & (~dataset.FEAT_MSA)
+  if hasattr(args, 'msa_required') and args.msa_required:
+    feat_flags = feat_flags | dataset.FEAT_MSA
   data_loader = dataset.load(data_dir=args.data_dir,
                              data_idx=args.data_idx,
-                             feat_flags=dataset.FEAT_ALL,
+                             feat_flags=feat_flags,
                              weights=list(weights_from_file(args.data_weights)))
   with timing(f'{args.command}', print):
     work_fn(data_loader, args)

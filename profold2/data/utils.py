@@ -105,7 +105,8 @@ def weights_from_file(filename_list):
   if filename_list:
     for filename in filename_list.split(','):
       with open(filename, 'r', encoding='utf-8') as f:
-        for line in filter(lambda x: len(x) > 0, map(lambda x: x.strip(), f)):
+        for line in filter(lambda x: len(x) > 0 and not x.startswith('#'),
+                           map(lambda x: x.strip(), f)):
           items = line.split()
           yield float(items[0])
 
