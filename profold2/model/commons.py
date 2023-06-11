@@ -330,11 +330,11 @@ class TriangleMultiplicativeModule(nn.Module):
     #  dtype=float16
     fi = torch.finfo(out.dtype)
     with autocast(enabled=False):
-      out = torch.clamp(self.to_out_norm(out.float()),
-                        min=fi.min + 1,
-                        max=fi.max - 1)
-    out = out * out_gate
-    return self.to_out(out)
+      out = self.to_out_norm(out.float())
+      out = out * out_gate
+      out = self.to_out(out)
+      out = torch.clamp(out, min=fi.min / 16.0, max=fi.max / 16.0)  # 2^4
+    return out
 
 
 # evoformer blocks

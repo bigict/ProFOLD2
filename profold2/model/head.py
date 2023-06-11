@@ -54,6 +54,12 @@ def make_mask(restypes, mask, device=None):
     return m.float()
   return torch.as_tensor([1.0] * num_class, device=device)
 
+def _make_dynamic_errors(errors, batch, num_pivot):
+  if exists(num_pivot) and num_pivot > 0 and 'num_msa' in batch:
+    w = torch.clamp(batch['num_msa'], max=num_pivot) / num_pivot
+    errors = torch.einsum('b ...,b -> b ...', errors, w)
+    return errors, w.tolist()
+  return errors, [1.0]*errors.shape[0]
 
 class ConfidenceHead(nn.Module):
   """Head to predict confidence.
@@ -340,8 +346,9 @@ class CoevolutionHead(nn.Module):
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
                         labels.float(), label_mask)
 
+    errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('CoevolutionHead.loss: %s', avg_error.item())
+    logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error.item())
 
     def _make_dynamic_regularization(w):
       if isinstance(w, float) and w > 0:
@@ -953,7 +960,7 @@ class SequenceProfileGapHead(nn.Module):
   """Head to predict sequence profile (Gap).
     """
 
-  def __init__(self, dim, input_dim=None, single_repr=None):
+  def __init__(self, dim, input_dim=None, single_repr=None, num_pivot=None):
     super().__init__()
     dim, _ = embedd_dim_get(dim)
 
@@ -963,6 +970,7 @@ class SequenceProfileGapHead(nn.Module):
       single_repr = 'struct_module'
     assert single_repr in ('struct_module', 'mlm')
     self.single_repr = single_repr
+    self.num_pivot = None
 
     self.project = nn.Sequential(nn.Linear(input_dim, dim), nn.GELU(),
                                  nn.LayerNorm(dim), nn.Linear(dim, 1))
@@ -992,8 +1000,9 @@ class SequenceProfileGapHead(nn.Module):
                                                           labels,
                                                           reduction='none'),
                        dim=-1)
+    errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('SequenceProfileHead(Gap).loss: %s', avg_error.item())
+    logger.debug('SequenceProfileGapHead(%s).loss: %s', w, avg_error.item())
     return dict(loss=avg_error)
 
 
@@ -1004,7 +1013,8 @@ class SequenceProfileHead(nn.Module):
   def __init__(self,
                dim,
                input_dim=None,
-               single_repr=None):
+               single_repr=None,
+               num_pivot=None):
     super().__init__()
     dim, _ = embedd_dim_get(dim)
 
@@ -1014,6 +1024,7 @@ class SequenceProfileHead(nn.Module):
       single_repr = 'struct_module'
     assert single_repr in ('struct_module', 'mlm')
     self.single_repr = single_repr
+    self.num_pivot = num_pivot
 
     self.project = nn.Sequential(
         nn.Linear(input_dim, dim), nn.GELU(), nn.LayerNorm(dim),
@@ -1047,8 +1058,9 @@ class SequenceProfileHead(nn.Module):
                                   logits=logits,
                                   mask=label_mask)
 
+    errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('SequenceProfileHead.loss: %s', avg_error.item())
+    logger.debug('SequenceProfileHead.loss(%s): %s', w, avg_error.item())
     return dict(loss=avg_error)
 
 
