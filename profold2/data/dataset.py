@@ -189,6 +189,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                data_idx=None,
                max_msa_depth=128,
                max_seq_len=None,
+               data_rm_mask_prob=0.0,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
@@ -198,6 +199,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       self.data_dir = zipfile.ZipFile(self.data_dir)  # pylint: disable=consider-using-with
     self.max_msa_depth = max_msa_depth
     self.max_seq_len = max_seq_len
+    self.data_rm_mask_prob = data_rm_mask_prob
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
     with self._fileobj(data_idx) as f:
@@ -257,10 +259,55 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret.update(self.get_structure_label_npz(pid))
       if 'coord_mask' in ret:
         ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
+      if np.random.random() < self.data_rm_mask_prob:
+        ret = self.data_rm_mask(ret)
     return ret
 
   def __len__(self):
     return len(self.pids)
+
+  def data_rm_mask(self, item):
+    i, k = 0, 0
+
+    item['str_seq'] = list(item['str_seq'])
+    for field in ('str_msa',):
+      if field in item:
+        item['str_msa'][j] = list(item['str_msa'][j])
+    while i < item['mask'].shape[0]:
+      if item['mask'][i]:
+        item['str_seq'][k] = item['str_seq'][i]
+        for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
+                      'coord_plddt'):
+          if field in item:
+            item[field][k] = item[field][i]
+        for field in ('str_msa',):
+          if field in item:
+            for j in range(len(item['str_msa'])):
+              item['str_msa'][j][k] = item['str_msa'][j][i]
+        for field in ('msa', 'del_msa'):
+          if field in item:
+            item[field][:, k, ...] = item[field][:, i, ...]
+        k += 1
+      i += 1
+    logger.debug('data_rm_mask: %s k=%d, i=%d', item['pid'], k, i)
+    assert 0 < k <= i, (k, i)
+    if k < i:
+      item['str_seq'] = item['str_seq'][:k]
+      for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
+                    'coord_plddt'):
+        if field in item:
+          item[field] = item[field][:k]
+      for field in ('str_msa',):
+        if field in item:
+          item['str_msa'][j] = item['str_msa'][j][:k]
+      for field in ('msa', 'del_msa'):
+        if field in item:
+          item[field] = item[field][:, :k, ...]
+    item['str_seq'] = ''.join(item['str_seq'])
+    for field in ('str_msa',):
+      if field in item:
+        item['str_msa'][j] = ''.join(item['str_msa'][j])
+    return item
 
   @contextlib.contextmanager
   def _fileobj(self, filename):
@@ -633,6 +680,7 @@ def pad_for_batch(items, batch_length, dtype):
 
 def load(data_dir,
          data_idx=None,
+         data_rm_mask_prob=0.0,
          min_crop_len=None,
          max_crop_len=None,
          crop_probability=0,
@@ -653,6 +701,7 @@ def load(data_dir,
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
+                              data_rm_mask_prob=data_rm_mask_prob,
                               max_msa_depth=max_msa_depth,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))

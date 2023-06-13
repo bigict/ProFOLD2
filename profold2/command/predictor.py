@@ -43,7 +43,7 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
         yield fasta_name, fasta_str
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
-  kwargs = {'pin_memory': True}
+  kwargs = {'pin_memory': True, 'shuffle': False}
   if exists(args.data_dir):
     if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
       kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)

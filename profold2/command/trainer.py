@@ -58,6 +58,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
+        data_rm_mask_prob=args.data_rm_mask_prob,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
@@ -359,6 +360,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
+  parser.add_argument('--data_rm_mask_prob', type=float, default=0.0,
+      help='remove masked amino acid with probability DATA_RM_MASK_PROB '
+           'default=0.0')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
           'instead of domain, default=0.0')
