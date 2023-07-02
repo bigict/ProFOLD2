@@ -1,4 +1,5 @@
 import collections
+from inspect import isfunction
 
 import numpy as np
 import torch
@@ -46,6 +47,9 @@ def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0,
     if not exists(shard_size):
         return run_fn(*sharded_args)
 
+    if isfunction(cat_dim):
+      return cat_dim(run_chunk(*sharded_args))
+    assert isinstance(cat_dim, int)
     return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
 
 """

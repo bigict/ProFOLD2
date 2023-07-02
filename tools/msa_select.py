@@ -4,6 +4,7 @@
      ```
      for further help.
 """
+import os
 import contextlib
 import functools
 import logging
@@ -54,7 +55,10 @@ class MsaDataset:
 
   @contextlib.contextmanager
   def _fileobj(self, filename):
-    if isinstance(self.data_dir, zipfile.ZipFile):
+    if os.path.isabs(filename):
+      with open(filename, mode='rb') as f:
+        yield f
+    elif isinstance(self.data_dir, zipfile.ZipFile):
       with self.data_dir.open(filename, 'r') as f:
         yield f
     else:
@@ -150,7 +154,7 @@ def main(args):  # pylint: disable=redefined-outer-name
   level = logging.DEBUG if args.verbose else logging.INFO
   logging.basicConfig(format=fmt, level=level)
 
-  dataset = MsaDataset(args.data)
+  dataset = MsaDataset(args.data, data_idx=args.data_idx)
   if args.weights:
     weights = np.array(list(weights_from_file(args.weights)))
     weights = weights / np.sum(weights)
@@ -192,6 +196,7 @@ if __name__ == '__main__':
                       default='.',
                       help='Output directory, default=\'.\'')
   parser.add_argument('-t', '--data', type=str, required=True, help='dataset')
+  parser.add_argument('--data_idx', type=str, required=True, help='dataset idx')
   parser.add_argument('-w',
                       '--weights',
                       type=str,

@@ -85,8 +85,9 @@ class Alphafold2(nn.Module):
       self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
 
     # main trunk modules
-    self.evoformer = Evoformer(dim=dim,
-                               depth=depth,
+    self.evoformer = Evoformer(depth=depth,
+                               dim_msa=dim_single,
+                               dim_pairwise=dim_pairwise,
                                heads=heads,
                                dim_head=dim_head,
                                attn_dropout=attn_dropout,

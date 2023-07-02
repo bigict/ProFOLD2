@@ -68,6 +68,7 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
   data_loader = dataset.load(data_dir=args.data_dir,
                              data_idx=args.data_idx,
                              data_rm_mask_prob=args.data_rm_mask_prob,
+                             msa_as_seq_prob=args.msa_as_seq_prob,
                              feat_flags=feat_flags,
                              weights=list(weights_from_file(args.data_weights)))
   with timing(f'{args.command}', print):
@@ -105,6 +106,10 @@ if __name__ == '__main__':
                       type=float,
                       default=0.0,
                       help='data_rm_mask')
+  parser.add_argument('--msa_as_seq_prob',
+                      type=float,
+                      default=0.0,
+                      help='msa_as_mask')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   args = parser.parse_args()
 

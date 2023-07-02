@@ -54,9 +54,10 @@ def make_mask(restypes, mask, device=None):
     return m.float()
   return torch.as_tensor([1.0] * num_class, device=device)
 
-def _make_dynamic_errors(errors, batch, num_pivot):
+def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
   if exists(num_pivot) and num_pivot > 0 and 'num_msa' in batch:
     w = torch.clamp(batch['num_msa'], max=num_pivot) / num_pivot
+    w = torch.pow(w, alpha)
     errors = torch.einsum('b ...,b -> b ...', errors, w)
     return errors, w.tolist()
   return errors, [1.0]*errors.shape[0]
@@ -476,6 +477,11 @@ class DistogramHead(nn.Module):
       else:
         square_weight = plddt_weight
 
+    if 'loss.distogram.w' in batch:
+      logger.debug('DistogramHead.loss.w: %s', batch['loss.distogram.w'].tolist())
+      errors = torch.einsum('b ...,b -> b ...',
+                            errors,
+                            batch['loss.distogram.w'])
     avg_error = functional.masked_mean(value=errors * square_weight,
                                        mask=square_mask,
                                        epsilon=1e-6)
@@ -535,6 +541,11 @@ class FoldingHead(nn.Module):
             rearrange(batch['coord_plddt'][..., ca_idx], '... i -> ... i ()'),
             rearrange(batch['coord_plddt'][..., ca_idx], '... j -> ... () j'))
 
+      if 'loss.folding.w' in batch:
+        logger.debug('FoldingHead.loss.w: %s', batch['loss.folding.w'].tolist())
+        wij = rearrange(batch['loss.folding.w'], '... -> ... () ()')
+        dij_weight = dij_weight * wij if exists(dij_weight) else wij
+
       for i, pred_frames in enumerate(pred_frames_list):
         with torch.no_grad():
           true_frames = default(gt_frames, pred_frames)
@@ -587,6 +598,10 @@ class FoldingHead(nn.Module):
                       '... i -> ... i ()'),
             rearrange(mask_to_fape_shape(batch['coord_plddt']),
                       '... j -> ... () j'))
+      if 'loss.folding.w' in batch:
+        wij = rearrange(batch['loss.folding.w'], '... -> ... () ()')
+        dij_weight = dij_weight * wij if exists(dij_weight) else wij
+
       with torch.no_grad():
         true_frames = default(true_frames, pred_frames)
         true_points = default(true_points, pred_points)

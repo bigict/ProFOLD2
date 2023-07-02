@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
+from einops import repeat
 
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
@@ -22,13 +23,12 @@ from profold2.utils import default, exists, timing
 
 logger = logging.getLogger(__file__)
 
-
 FEAT_PDB = 0x01
 FEAT_MSA = 0x02
 FEAT_ALL = 0xff
 
 
-def _make_msa_features(sequences, max_msa_depth=None):
+def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
   """Constructs a feature dict of MSA features."""
 
   def parse_a4m(sequences):
@@ -49,10 +49,15 @@ def _make_msa_features(sequences, max_msa_depth=None):
     return aligned_sequences, deletion_matrix
 
   msa_depth = len(sequences)
+  if 0 < msa_idx < msa_depth:
+    t = sequences[msa_idx]
+    sequences[msa_idx] = sequences[1]
+    sequences[1] = t
   if exists(max_msa_depth) and len(sequences) > max_msa_depth:
-    sequences = sequences[:1] + list(
-        np.random.choice(sequences, size=max_msa_depth -
-                         1, replace=False) if max_msa_depth > 1 else [])
+    n = 2 if 0 < msa_idx < msa_depth else 1
+    sequences = sequences[:n] + list(
+        np.random.choice(sequences[1:], size=max_msa_depth -
+                         n, replace=False) if max_msa_depth > n else [])
   msa, del_matirx = parse_a4m(sequences)
 
   int_msa = []
@@ -108,9 +113,32 @@ def _parse_seq_index(description, input_sequence, seq_index):
   return seq_index
 
 
+def _make_seq_features(sequence, description, max_seq_len=None):
+  residue_index = torch.arange(len(sequence), dtype=torch.int)
+  residue_index = _parse_seq_index(description, sequence, residue_index)
+
+  sequence = sequence[:max_seq_len]
+  residue_index = residue_index[:max_seq_len]
+
+  seq = torch.tensor(residue_constants.sequence_to_onehot(
+      sequence=sequence,
+      mapping=residue_constants.restype_order_with_x,
+      map_unknown_to_x=True),
+                     dtype=torch.int).argmax(-1)
+  #residue_index = torch.arange(len(sequence), dtype=torch.int)
+  str_seq = ''.join(
+      map(
+          lambda a: a if a in residue_constants.restype_order_with_x else
+          residue_constants.restypes_with_x[-1], sequence))
+  mask = torch.ones(len(sequence), dtype=torch.bool)
+
+  return dict(seq=seq, seq_index=residue_index, str_seq=str_seq, mask=mask)
+
+
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
+
   def __init__(self, sequences, descriptions=None, msa=None):
     self.sequences = sequences
     self.descriptions = descriptions
@@ -184,12 +212,14 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 class ProteinStructureDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from a zip or filesystem
    """
+
   def __init__(self,
                data_dir,
                data_idx=None,
                max_msa_depth=128,
                max_seq_len=None,
                data_rm_mask_prob=0.0,
+               msa_as_seq_prob=0.0,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
@@ -200,11 +230,13 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.max_msa_depth = max_msa_depth
     self.max_seq_len = max_seq_len
     self.data_rm_mask_prob = data_rm_mask_prob
+    self.msa_as_seq_prob = msa_as_seq_prob
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
     with self._fileobj(data_idx) as f:
       self.pids = list(
-          map(lambda x: x.split(),
+          map(
+              lambda x: x.split(),
               filter(lambda x: len(x) > 0 and not x.startswith('#'),
                      map(lambda x: self._ftext(x).strip(), f))))
 
@@ -252,15 +284,23 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       pkey = self.mapping[pid] if pid in self.mapping else pid
       seq_feats = self.get_seq_features(pkey)
 
-      ret = dict(pid=pid, resolu=self.get_resolution(pid), **seq_feats)
+      ret = dict(pid=pid,
+                 msa_idx=0,
+                 resolu=self.get_resolution(pid),
+                 **seq_feats)
       if self.feat_flags & FEAT_MSA:
         ret.update(self.get_msa_features_new(pkey))
       if self.feat_flags & FEAT_PDB:
         ret.update(self.get_structure_label_npz(pid))
-      if 'coord_mask' in ret:
-        ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
-      if np.random.random() < self.data_rm_mask_prob:
+
+      if 'msa_idx' in ret and ret['msa_idx'] != 0:
+        ret = self.msa_as_seq(ret, ret['msa_idx'])
+      elif np.random.random() < self.data_rm_mask_prob:
         ret = self.data_rm_mask(ret)
+
+      # We need all the amino acids!
+      # if 'coord_mask' in ret:
+      #   ret['mask'] = torch.sum(ret['coord_mask'], dim=-1) > 0
     return ret
 
   def __len__(self):
@@ -272,7 +312,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     item['str_seq'] = list(item['str_seq'])
     for field in ('str_msa',):
       if field in item:
-        item['str_msa'][j] = list(item['str_msa'][j])
+        for j in range(len(item['str_msa'])):
+          item['str_msa'][j] = list(item['str_msa'][j])
     while i < item['mask'].shape[0]:
       if item['mask'][i]:
         item['str_seq'][k] = item['str_seq'][i]
@@ -299,14 +340,101 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           item[field] = item[field][:k]
       for field in ('str_msa',):
         if field in item:
-          item['str_msa'][j] = item['str_msa'][j][:k]
+          for j in range(len(item['str_msa'])):
+            item['str_msa'][j] = item['str_msa'][j][:k]
       for field in ('msa', 'del_msa'):
         if field in item:
           item[field] = item[field][:, :k, ...]
     item['str_seq'] = ''.join(item['str_seq'])
     for field in ('str_msa',):
       if field in item:
-        item['str_msa'][j] = ''.join(item['str_msa'][j])
+        for j in range(len(item['str_msa'])):
+          item['str_msa'][j] = ''.join(item['str_msa'][j])
+    return item
+
+  def msa_as_seq(self, item, idx):
+    assert idx > 0
+    assert 'str_msa' in item and 'del_msa' in item
+    assert len(item['str_seq']) == len(item['str_msa'][0]), (
+        idx, item['pid'], item['str_seq'], item['str_msa'][0])
+
+    if 'coord' in item:
+      assert item['seq'].shape[0] == item['coord'].shape[0], (item['pid'],)
+
+    # swap(msa[1], msa[idx])
+    assert len(item['str_msa'][0]) == len(item['str_msa'][1])
+    assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
+                                                   item['str_msa'][0],
+                                                   item['str_msa'][1])
+    item['str_msa'][0] = item['str_msa'][1]
+    item['str_msa'][1] = item['str_seq']
+    assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
+                                                   item['str_msa'][0],
+                                                   item['str_msa'][1])
+    item['str_seq'] = item['str_msa'][0]
+    assert item['str_seq'] == item['str_msa'][0]
+
+    i, new_order = 0, []
+
+    while i < len(item['str_seq']):
+      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+        new_order.append(i)
+      i += 1
+    logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
+                 len(new_order), i)
+    assert 0 < len(new_order) <= i, (len(new_order), i)
+
+    # Update seq related feats
+    if len(new_order) < i:
+      item['str_seq'] = ''.join(item['str_seq'][k] for k in new_order)
+
+      for field in ('str_msa',):
+        if field in item:
+          for j in range(len(item['str_msa'])):
+            item['str_msa'][j] = ''.join(
+                item['str_msa'][j][k] for k in new_order)
+
+    pid = item['pid']
+    item['pid'] = f'{pid}@{idx}'
+    item.update(
+        _make_seq_features(item['str_seq'],
+                           item['pid'],
+                           max_seq_len=self.max_seq_len))
+    # Update tensors
+    if len(new_order) < i:
+      new_order = torch.as_tensor(new_order)
+
+      for field in ('coord', 'coord_mask', 'coord_plddt'):
+        if field in item:
+          item[field] = torch.index_select(item[field], 0, new_order)
+      for field in ('msa', 'del_msa'):
+        if field in item:
+          item[field] = torch.index_select(item[field], 1, new_order)
+    new_order = None
+
+    # Apply new coord_mask based on aatypes
+    coord_exists = torch.gather(
+        torch.from_numpy(residue_constants.restype_atom14_mask), 0,
+        repeat(item['seq'],
+               'i -> i n',
+               n=residue_constants.restype_atom14_mask.shape[-1]))
+    for field in ('coord', 'coord_mask', 'coord_plddt'):
+      if field in item:
+        item[field] = torch.einsum('i n ...,i n -> i n ...', item[field],
+                                   coord_exists)
+    # Delete coords if all are invalid.
+    ca_idx = residue_constants.atom_order['CA']
+    if 'coord_mask' in item and not torch.any(item['coord_mask'][:,ca_idx]):
+      for field in ('coord', 'coord_mask', 'coord_plddt'):
+        if field in item:
+          del item[field]
+
+    # Fix seq_index
+    del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+    item['seq_index'] = item['seq_index'] + del_seq
+    if 'resolu' in item:
+      item['resolu'] = None  # delete it !
+
     return item
 
   @contextlib.contextmanager
@@ -345,7 +473,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     source = self.msa_list[k]
     with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
       sequences = list(map(lambda x: self._ftext(x).strip(), f))
-    return _make_msa_features(sequences, max_msa_depth=self.max_msa_depth)
+
+    ret = {'msa_idx': 0}
+    if len(sequences) > 1 and np.random.random() < self.msa_as_seq_prob:
+      n = len(sequences)
+      if exists(self.max_msa_depth):
+        n = min(n, self.max_msa_depth)
+      w = np.power(np.array([1.0 / p for p in range(1, n)]), 0.75)
+      w /= np.sum(w)
+      ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
+    ret.update(_make_msa_features(sequences,
+                                  msa_idx=ret['msa_idx'],
+                                  max_msa_depth=self.max_msa_depth))
+    return ret
 
   def get_structure_label_npz(self, protein_id):
     if self._fstat(f'{self.pdb_dir}/{protein_id}.npz'):
@@ -370,26 +510,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     input_sequence = input_seqs[0]
     input_description = input_descs[0]
 
-    residue_index = torch.arange(len(input_sequence), dtype=torch.int)
-    residue_index = _parse_seq_index(input_description, input_sequence,
-                                     residue_index)
-
-    input_sequence = input_sequence[:self.max_seq_len]
-    residue_index = residue_index[:self.max_seq_len]
-
-    seq = torch.tensor(residue_constants.sequence_to_onehot(
-        sequence=input_sequence,
-        mapping=residue_constants.restype_order_with_x,
-        map_unknown_to_x=True),
-                       dtype=torch.int).argmax(-1)
-    #residue_index = torch.arange(len(input_sequence), dtype=torch.int)
-    str_seq = ''.join(
-        map(
-            lambda a: a if a in residue_constants.restype_order_with_x else
-            residue_constants.restypes_with_x[-1], input_sequence))
-    mask = torch.ones(len(input_sequence), dtype=torch.bool)
-
-    return dict(seq=seq, seq_index=residue_index, str_seq=str_seq, mask=mask)
+    return _make_seq_features(input_sequence,
+                              input_description,
+                              max_seq_len=self.max_seq_len)
 
   @staticmethod
   def batch_clips_fn(batch,
@@ -445,10 +568,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
         return v + _cascade_sampler(weights[v:w], width=width)
 
-      def _domain_next(weights,
-                       i,
-                       min_len=None,
-                       max_len=None):
+      def _domain_next(weights, i, min_len=None, max_len=None):
         min_len, max_len = default(min_len, 80), default(max_len, 255)
 
         direction = np.random.randint(2)
@@ -560,8 +680,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if field in batch[k]:
           batch[k][field] = batch[k][field][:, i:j, ...]
 
-    fields = ('pid', 'resolu', 'seq', 'seq_index', 'mask', 'str_seq')
-    pids, resolutions, seqs, seqs_idx, masks, str_seqs = list(
+    fields = ('pid', 'resolu', 'seq', 'seq_index', 'mask', 'str_seq', 'msa_idx')
+    pids, resolutions, seqs, seqs_idx, masks, str_seqs, msa_idx = list(
         zip(*[[b[k] for k in fields] for b in batch]))
     lengths = tuple(len(s) for s in str_seqs)
     max_batch_len = max(lengths)
@@ -571,6 +691,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
 
     ret = dict(pid=pids,
+               msa_idx=torch.as_tensor(msa_idx),
                resolution=resolutions,
                seq=padded_seqs,
                seq_index=padded_seqs_idx,
@@ -681,6 +802,7 @@ def pad_for_batch(items, batch_length, dtype):
 def load(data_dir,
          data_idx=None,
          data_rm_mask_prob=0.0,
+         msa_as_seq_prob=0.0,
          min_crop_len=None,
          max_crop_len=None,
          crop_probability=0,
@@ -702,6 +824,7 @@ def load(data_dir,
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
                               data_rm_mask_prob=data_rm_mask_prob,
+                              msa_as_seq_prob=msa_as_seq_prob,
                               max_msa_depth=max_msa_depth,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))
