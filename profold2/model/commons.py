@@ -250,7 +250,7 @@ class AxialAttention(nn.Module):
       output_fold_eq = '(b h) w d -> b h w d'
 
     def run_attn(x, mask, attn_bias):
-      _, h, w, _ = x.shape
+      b, h, w, _ = x.shape
 
       if exists(attn_bias):
         attn_bias = repeat(attn_bias,
@@ -261,7 +261,7 @@ class AxialAttention(nn.Module):
       if exists(mask):
         mask = rearrange(mask, mask_fold_axial_eq)
       out = self.attn(x, mask=mask, attn_bias=attn_bias)
-      out = rearrange(out, output_fold_eq, h=h, w=w)
+      out = rearrange(out, output_fold_eq, b=b)
       return out
 
     attn_bias = None

@@ -24,7 +24,7 @@ import logging
 @contextlib.contextmanager
 def tmpdir_manager(base_dir: Optional[str] = None):
   """Context manager that deletes a temporary directory on exit."""
-  tmpdir = tempfile.mkdtemp(prefix=f'tmp{os.getpid()}', dir=base_dir)
+  tmpdir = tempfile.mkdtemp(dir=base_dir)
   try:
     yield tmpdir
   finally:

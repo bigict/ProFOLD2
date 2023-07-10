@@ -436,7 +436,7 @@ def sample_msa(protein, max_depth, keep_extra=True, is_training=True):
 def crop_extra_msa(protein, max_depth=None, is_training=True):
   del is_training
   if exists(max_depth):
-    msa_depth, device = protein['extra_msa'].shape[0], protein[
+    msa_depth, device = protein['extra_msa'].shape[1], protein[
         'extra_msa'].device
     index_order = torch.full((1,), 0, device=device)
     if msa_depth > 1:

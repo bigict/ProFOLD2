@@ -3066,6 +3066,9 @@ def save_model(args):
               'fape_max': 10.0,
               'fape_z': 10.0}, {'weight', 0.4}),
           ('lddt', {'num_channels': 128}, {'weights': 0.01}),
+          ('metric', {'cutoff':8}, {}),
+          ('tmscore', {}, {}),
+          ('confidence', {}, {}),
   ]
 
   model_dim=(384, 128)
@@ -3163,7 +3166,7 @@ def save_model(args):
                     model_recycling_pos=model_recycling_pos,
                     headers=headers,
                     model=evoformer_stack.state_dict()),
-        os.path.join(args.output, f'args.model_name.pth'))
+        os.path.join(args.output, f'{args.model_name}.pth'))
 
 if __name__ == '__main__':
   import argparse
