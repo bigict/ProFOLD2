@@ -56,7 +56,7 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
   if exists(max_msa_depth) and len(sequences) > max_msa_depth:
     n = 2 if 0 < msa_idx < msa_depth else 1
     sequences = sequences[:n] + list(
-        np.random.choice(sequences[1:], size=max_msa_depth -
+        np.random.choice(sequences[n:], size=max_msa_depth -
                          n, replace=False) if max_msa_depth > n else [])
   msa, del_matirx = parse_a4m(sequences)
 
