@@ -7,6 +7,7 @@
 import os
 import sys
 import io
+import re
 import subprocess
 
 import pandas as pd
@@ -46,14 +47,49 @@ def parse_deepscore_output(src, terms):
   all_scores['length'] = float(lines[length_line].split('length=')[-1].strip())
   return {k: all_scores[key_name[k]] for k in terms}
 
+def parse_tmalign_output(src, terms):
+  del terms
+  attr_parsers = {
+      'length1':
+          (int,
+           re.compile('Length of Chain_1:\\s*(?P<value>(\\d+))\\s*residues')),
+      'length2':
+          (int,
+           re.compile('Length of Chain_2:\\s*(?P<value>(\\d+))\\s*residues')),
+      'tmscore1': (
+          float,
+          re.compile(
+              'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
+          )),
+      'tmscore2': (
+          float,
+          re.compile(
+              'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
+          )),
+  }
+  all_scores = {}
+  for line in map(lambda x: x.strip(), src.splitlines()):
+    for key, (trans, p) in attr_parsers.items():
+      m = p.match(line)
+      if m:
+        all_scores[key] = trans(m.group('value'))
+  key_name = dict(tmscore=('tmscore1', 'tmscore2', max),
+                  length=('length1', 'length2', min))
+  return {
+      k: f(all_scores[v1], all_scores[v2])  # pylint: disable=not-callable
+      for k, (v1, v2, f) in key_name.items()
+  }
 
 def run_scorer(exe_path, predicted_path, gt_path, terms):
   scorer_process = subprocess.run([exe_path, predicted_path, gt_path],
                                   stdout=subprocess.PIPE, check=True)
   f = io.TextIOWrapper(io.BytesIO(scorer_process.stdout))
-  if 'Deep' in os.path.basename(exe_path):
+  exe_name, _ = os.path.splitext(os.path.basename(exe_path))
+  if exe_name == 'DeepScore':
     # DeepScore
     return parse_deepscore_output(f.read(), terms)
+  elif exe_name == 'TMalign':
+    return parse_tmalign_output(f.read(), terms)
   # TMScore
   return parse_tmscore_output(f.read(), terms)
 
