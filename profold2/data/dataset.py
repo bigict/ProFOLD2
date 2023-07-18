@@ -134,6 +134,30 @@ def _make_seq_features(sequence, description, max_seq_len=None):
 
   return dict(seq=seq, seq_index=residue_index, str_seq=str_seq, mask=mask)
 
+def _make_feats_shrinked(item,
+                         new_order,
+                         seq_feats=None,
+                         msa_feats=None):
+  # Update seq related feats
+  item['str_seq'] = ''.join(item['str_seq'][k] for k in new_order)
+
+  for field in ('str_msa',):
+    if field in item:
+      for j in range(len(item['str_msa'])):
+        item['str_msa'][j] = ''.join(
+            item['str_msa'][j][k] for k in new_order)
+
+  # Update tensors
+  new_order = torch.as_tensor(new_order)
+
+  for field in default(seq_feats, ('coord', 'coord_mask', 'coord_plddt')):
+    if field in item:
+      item[field] = torch.index_select(item[field], 0, new_order)
+  for field in default(msa_feats, ('msa', 'del_msa')):
+    if field in item:
+      item[field] = torch.index_select(item[field], 1, new_order)
+
+  return item
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
@@ -307,49 +331,21 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return len(self.pids)
 
   def data_rm_mask(self, item):
-    i, k = 0, 0
+    i, new_order = 0, []
 
-    item['str_seq'] = list(item['str_seq'])
-    for field in ('str_msa',):
-      if field in item:
-        for j in range(len(item['str_msa'])):
-          item['str_msa'][j] = list(item['str_msa'][j])
-    while i < item['mask'].shape[0]:
-      if item['mask'][i]:
-        item['str_seq'][k] = item['str_seq'][i]
-        for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
-                      'coord_plddt'):
-          if field in item:
-            item[field][k] = item[field][i]
-        for field in ('str_msa',):
-          if field in item:
-            for j in range(len(item['str_msa'])):
-              item['str_msa'][j][k] = item['str_msa'][j][i]
-        for field in ('msa', 'del_msa'):
-          if field in item:
-            item[field][:, k, ...] = item[field][:, i, ...]
-        k += 1
+    while i < item['coord_mask'].shape[0]:
+      if torch.any(item['coord_mask'][i]):
+        new_order.append(i)
       i += 1
-    logger.debug('data_rm_mask: %s k=%d, i=%d', item['pid'], k, i)
-    assert 0 < k <= i, (k, i)
-    if k < i:
-      item['str_seq'] = item['str_seq'][:k]
-      for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
-                    'coord_plddt'):
-        if field in item:
-          item[field] = item[field][:k]
-      for field in ('str_msa',):
-        if field in item:
-          for j in range(len(item['str_msa'])):
-            item['str_msa'][j] = item['str_msa'][j][:k]
-      for field in ('msa', 'del_msa'):
-        if field in item:
-          item[field] = item[field][:, :k, ...]
-    item['str_seq'] = ''.join(item['str_seq'])
-    for field in ('str_msa',):
-      if field in item:
-        for j in range(len(item['str_msa'])):
-          item['str_msa'][j] = ''.join(item['str_msa'][j])
+    logger.debug('data_rm_mask: %s k=%d, i=%d', item['pid'], len(new_order), i)
+
+    assert 0 < len(new_order) <= i, (len(new_order), i)
+    if len(new_order) < i:
+      item = _make_feats_shrinked(item,
+                                  new_order,
+                                  seq_feats=('seq', 'seq_index', 'mask',
+                                             'coord', 'coord_mask',
+                                             'coord_plddt'))
     return item
 
   def msa_as_seq(self, item, idx):
@@ -384,33 +380,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                  len(new_order), i)
     assert 0 < len(new_order) <= i, (len(new_order), i)
 
-    # Update seq related feats
     if len(new_order) < i:
-      item['str_seq'] = ''.join(item['str_seq'][k] for k in new_order)
+      item = _make_feats_shrinked(item, new_order)
 
-      for field in ('str_msa',):
-        if field in item:
-          for j in range(len(item['str_msa'])):
-            item['str_msa'][j] = ''.join(
-                item['str_msa'][j][k] for k in new_order)
-
+    # Renew seq related feats
     pid = item['pid']
     item['pid'] = f'{pid}@{idx}'
     item.update(
         _make_seq_features(item['str_seq'],
                            item['pid'],
                            max_seq_len=self.max_seq_len))
-    # Update tensors
-    if len(new_order) < i:
-      new_order = torch.as_tensor(new_order)
 
-      for field in ('coord', 'coord_mask', 'coord_plddt'):
-        if field in item:
-          item[field] = torch.index_select(item[field], 0, new_order)
-      for field in ('msa', 'del_msa'):
-        if field in item:
-          item[field] = torch.index_select(item[field], 1, new_order)
-    new_order = None
 
     # Apply new coord_mask based on aatypes
     coord_exists = torch.gather(
