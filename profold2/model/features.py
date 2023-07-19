@@ -66,6 +66,8 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
     coord_exists = batched_gather(residue_constants.restype_atom14_mask,
                                   protein['seq'])
   protein['coord_exists'] = coord_exists
+  if 'coord_mask' in protein:
+    protein['coord_mask'] *= coord_exists
   return protein
 
 
@@ -83,6 +85,17 @@ def make_coord_plddt(protein,
     protein['coord_plddt_use_weighted_mask'] = use_weighted_mask
   return protein
 
+@take1st
+def make_loss_weight(protein,
+                     distogram_w=.5,
+                     folding_w=.0,
+                     is_training=True):
+  assert distogram_w <= 1.0 and folding_w <= 1.0
+  if is_training and 'msa_idx' in protein:
+    mask = (protein['msa_idx'] == 0)
+    protein['loss.distogram.w'] = mask * (1.0 - distogram_w) + distogram_w
+    protein['loss.folding.w'] = mask * (1.0 - folding_w) + folding_w
+  return protein
 
 @take1st
 def make_coord_alt(protein, is_training=True):

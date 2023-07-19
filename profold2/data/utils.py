@@ -16,7 +16,7 @@ def domain_parser(ca_coord,
                   max_len=255,
                   alpha=0.43,
                   cutoff=8.0,
-                  epsilon=1e-8):
+                  epsilon=1e-5):
   n = ca_mask.shape[0]
   ca_dist = torch.cdist(ca_coord, ca_coord) < cutoff
   ca_dist_mask = rearrange(ca_mask, 'n -> () n') * rearrange(
@@ -30,14 +30,14 @@ def domain_parser(ca_coord,
       positions.append(i)
       weights.append(
           torch.sum(ca_dist[i:q, p:i, ...] * ca_dist_mask[i:q, p:i, ...]) /
-          ((ll) * (lr)**alpha))
+          ((ll * lr)**alpha))
   assert len(positions) == len(weights)
 
   p = torch.full((n,), (min(weights) + epsilon) if weights else 1.0)
   for i, j in enumerate(positions):
     p[j] = weights[i] + epsilon
 
-  p = 1.0 / (p * torch.sum(1.0 / p))
+  p = 1.0 / (p * torch.sum(1.0 / p) + epsilon)
   return p
 
 
@@ -105,7 +105,8 @@ def weights_from_file(filename_list):
   if filename_list:
     for filename in filename_list.split(','):
       with open(filename, 'r', encoding='utf-8') as f:
-        for line in filter(lambda x: len(x) > 0, map(lambda x: x.strip(), f)):
+        for line in filter(lambda x: len(x) > 0 and not x.startswith('#'),
+                           map(lambda x: x.strip(), f)):
           items = line.split()
           yield float(items[0])
 

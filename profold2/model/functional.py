@@ -1,4 +1,5 @@
 import collections
+from inspect import isfunction
 
 import numpy as np
 import torch
@@ -46,6 +47,9 @@ def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0,
     if not exists(shard_size):
         return run_fn(*sharded_args)
 
+    if isfunction(cat_dim):
+      return cat_dim(run_chunk(*sharded_args))
+    assert isinstance(cat_dim, int)
     return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
 
 """
@@ -447,6 +451,10 @@ def rigids_rotate(frames, mat3x3):
     rotations, translations = frames
     rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
     return rotations, translations
+
+def rigids_scale(frames, position_scale):
+    rotations, translations = frames
+    return rotations, translations * position_scale
 
 def rigids_from_angles(aatypes, backb_frames, angles):
     """Create rigids from torsion angles

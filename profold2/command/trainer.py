@@ -54,11 +54,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         batch['seq'].shape[1] < args.max_protein_len)
 
   def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
+      data_msa_as_seq_prob=0.0,
       data_filter=data_cond):
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
-        max_msa_size=args.max_msa_size,
+        data_rm_mask_prob=args.data_rm_mask_prob,
+        msa_as_seq_prob=data_msa_as_seq_prob,
+        max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
@@ -73,19 +76,24 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     return cycling(data_loader, data_filter)
 
   train_data = create_cycling_data(args.train_data,
-      weights=args.train_data_weights, data_idx=args.train_idx)
+      data_idx=args.train_idx,
+      weights=args.train_data_weights,
+      data_msa_as_seq_prob=args.train_msa_as_seq_prob)
   if args.tuning_data:
     tuning_data = create_cycling_data(args.tuning_data,
-        weights=args.tuning_data_weights, data_idx=args.tuning_idx)
+        data_idx=args.tuning_idx,
+        weights=args.tuning_data_weights,
+        data_msa_as_seq_prob=args.tuning_msa_as_seq_prob)
   if args.fake_data:
     fake_data = create_cycling_data(args.fake_data,
-        weights=args.fake_data_weights, data_idx=args.fake_idx)
+        data_idx=args.fake_idx,
+        weights=args.fake_data_weights)
 
   if args.eval_data:
     eval_loader = dataset.load(
         data_dir=args.eval_data,
         data_idx=args.eval_idx,
-        max_msa_size=args.max_msa_size,
+        max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
@@ -242,14 +250,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   for it in range(global_step, args.num_batches):
     _step(train_data, it, writer, stage='train')
 
-    if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
-        worker.is_master()):
-      # Save a checkpoint every N iters.
-      checkpoint_manager.save(it)
-
-      # Add embeddings
-      writer_add_embeddings(writer, model, it)
-
     if (args.tuning_data and
         args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
       _step(tuning_data, it, writer, stage='tuning',
@@ -261,6 +261,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       _step(fake_data, it, writer, stage='fake',
           batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))
+
+    if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
+        worker.is_master()):
+      # Save a checkpoint every N iters.
+      checkpoint_manager.save(it)
+
+      # Add embeddings
+      writer_add_embeddings(writer, model, it)
 
     if (args.eval_data and worker.is_master() and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -347,23 +355,32 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('--max_msa_size', type=int, default=128,
-      help='sampling MSAs with depth<=SIZE, default=128')
+  parser.add_argument('--max_msa_size', type=int, default=1024,
+      help='sampling MSAs with depth<=SIZE, default=1024')
   parser.add_argument('--min_crop_len', type=int, default=80,
-      help='filter out proteins whose length<LEN, default=80')
+      help='do not crop protein whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
-      help='filter out proteins whose length>LEN, default=255')
+      help='crop protein whose length>LEN, default=255')
   parser.add_argument('--crop_algorithm', type=str, default='random',
       choices=['random', 'domain'],
       help='type of crop algorithm')
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
-  parser.add_argument('--random_seed', type=int, default=None,
-      help='random seed, default=None')
+  parser.add_argument('--data_rm_mask_prob', type=float, default=0.0,
+      help='remove masked amino acid with probability DATA_RM_MASK_PROB '
+           'default=0.0')
+  parser.add_argument('--train_msa_as_seq_prob', type=float, default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
+           'default=0.0')
+  parser.add_argument('--tuning_msa_as_seq_prob', type=float, default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
+           'default=0.0')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
           'instead of domain, default=0.0')
+  parser.add_argument('--random_seed', type=int, default=None,
+      help='random seed, default=None')
 
   parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
       help='the maximum number of checkpoints to keep, default=5')

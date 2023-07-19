@@ -43,7 +43,7 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
         yield fasta_name, fasta_str
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
-  kwargs = {'pin_memory': True}
+  kwargs = {'pin_memory': True, 'shuffle': False}
   if exists(args.data_dir):
     if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
       kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
@@ -51,7 +51,7 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
     return dataset.load(
         data_dir=args.data_dir,
         data_idx=args.data_idx,
-        max_msa_size=args.max_msa_size,
+        max_msa_depth=args.max_msa_size,
         num_workers=args.num_workers, **kwargs)
 
   sequences, descriptions, msa = [], [], []

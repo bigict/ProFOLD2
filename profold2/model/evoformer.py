@@ -2,11 +2,11 @@
  """
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from einops import rearrange
 
 from profold2.model.commons import (Attention,
                                     checkpoint_sequential_nargs,
-                                    embedd_dim_get,
                                     FeedForward,
                                     MsaAttentionBlock,
                                     PairwiseAttentionBlock)
@@ -109,7 +109,8 @@ class EvoformerBlock(nn.Module):
    """
   def __init__(self,
                *,
-               dim,
+               dim_msa,
+               dim_pairwise,
                heads,
                dim_head,
                attn_dropout,
@@ -117,19 +118,20 @@ class EvoformerBlock(nn.Module):
                global_column_attn=False):
     super().__init__()
 
-    dim_single, dim_pairwise = embedd_dim_get(dim)
     self.layer = nn.ModuleList([
-        PairwiseAttentionBlock(dim=dim,
+        PairwiseAttentionBlock(dim_msa=dim_msa,
+                               dim_pairwise=dim_pairwise,
                                heads=heads,
                                dim_head=dim_head,
-                               dropout=attn_dropout,
-                               global_column_attn=global_column_attn),
+                               dropout=attn_dropout),
         FeedForward(dim=dim_pairwise, dropout=ff_dropout),
-        MsaAttentionBlock(dim=dim,
+        MsaAttentionBlock(dim_msa=dim_msa,
+                          dim_pairwise=dim_pairwise,
                           heads=heads,
                           dim_head=dim_head,
-                          dropout=attn_dropout),
-        FeedForward(dim=dim_single, dropout=ff_dropout),
+                          dropout=attn_dropout,
+                          global_column_attn=global_column_attn),
+        FeedForward(dim=dim_msa, dropout=ff_dropout),
     ])
 
   def forward(self, inputs, shard_size=None):
@@ -141,7 +143,9 @@ class EvoformerBlock(nn.Module):
     m = msa_ff(m) + m
 
     # pairwise attention and transition
-    x = attn(x, mask=mask, msa_repr=m, msa_mask=msa_mask, shard_size=shard_size)
+    with autocast(enabled=False):
+      x = attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
+               shard_size=shard_size)
     x = ff(x) + x
 
     return x, m, mask, msa_mask

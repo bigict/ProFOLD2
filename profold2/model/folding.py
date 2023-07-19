@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from profold2.model.commons import init_zero_, embedd_dim_get
 from profold2.model.functional import (l2_norm, quaternion_multiply,
                                        quaternion_to_matrix, rigids_from_angles,
-                                       rigids_to_positions)
+                                       rigids_scale, rigids_to_positions)
 from profold2.utils import (default, exists,
                             torch_allow_tf32, torch_default_dtype)
 
@@ -37,6 +37,7 @@ class InvariantPointAttention(nn.Module):
                point_value_dim=4,
                pairwise_repr_dim=None,
                require_pairwise_repr=True,
+               qkv_use_bias=False,
                eps=1e-8):
     super().__init__()
     self.eps = eps
@@ -49,9 +50,9 @@ class InvariantPointAttention(nn.Module):
     # qkv projection for scalar attention (normal)
     self.scalar_attn_logits_scale = (num_attn_logits * scalar_key_dim)**-0.5
 
-    self.to_scalar_q = nn.Linear(dim, scalar_key_dim * heads, bias=False)
-    self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias=False)
-    self.to_scalar_v = nn.Linear(dim, scalar_value_dim * heads, bias=False)
+    self.to_scalar_q = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
+    self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
+    self.to_scalar_v = nn.Linear(dim, scalar_value_dim * heads, bias=qkv_use_bias)
 
     # qkv projection for point attention (coordinate and orientation aware)
     point_weight_init_value = torch.log(
@@ -61,9 +62,9 @@ class InvariantPointAttention(nn.Module):
     self.point_attn_logits_scale = ((num_attn_logits * point_key_dim) *
                                     (9 / 2))**-0.5
 
-    self.to_point_q = nn.Linear(dim, point_key_dim * heads * 3, bias=False)
-    self.to_point_k = nn.Linear(dim, point_key_dim * heads * 3, bias=False)
-    self.to_point_v = nn.Linear(dim, point_value_dim * heads * 3, bias=False)
+    self.to_point_q = nn.Linear(dim, point_key_dim * heads * 3, bias=qkv_use_bias)
+    self.to_point_k = nn.Linear(dim, point_key_dim * heads * 3, bias=qkv_use_bias)
+    self.to_point_v = nn.Linear(dim, point_value_dim * heads * 3, bias=qkv_use_bias)
 
     # pairwise representation projection to attention bias
     pairwise_repr_dim = default(pairwise_repr_dim,
@@ -270,17 +271,18 @@ class AngleNet(nn.Module):
   def __init__(self, dim, channel=128, num_blocks=2):
     super().__init__()
 
-    self.projection = nn.Linear(dim, dim)
+    self.projection = nn.Linear(dim, channel)
+    self.projection_init = nn.Linear(dim, channel)
 
     self.blocks = nn.Sequential(
-        *[AngleNetBlock(dim, channel) for _ in range(num_blocks)])
+        *[AngleNetBlock(channel, channel) for _ in range(num_blocks)])
 
-    self.to_groups = nn.Linear(dim, 14)
+    self.to_groups = nn.Linear(channel, 14)
 
   def forward(self, single_repr, single_repr_init=None):
-    act = self.projection(single_repr)
+    act = self.projection(F.relu(single_repr))
     if exists(single_repr_init):
-      act += self.projection(single_repr_init)
+      act += self.projection_init(F.relu(single_repr_init))
 
     # Mapping with some angle residual blocks
     act = self.blocks(act)
@@ -298,17 +300,21 @@ class StructureModule(nn.Module):
                dim,
                structure_module_depth,
                structure_module_heads,
-               dropout=.0):
+               dropout=.0,
+               position_scale=1.0,
+               **kwargs):
     super().__init__()
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
     assert structure_module_depth >= 1
     self.structure_module_depth = structure_module_depth
+    self.position_scale = position_scale
     with torch_default_dtype(torch.float32):
       self.ipa_block = IPABlock(dim=dim_single,
                                 pairwise_repr_dim=dim_pairwise,
                                 heads=structure_module_heads,
-                                dropout=dropout)
+                                dropout=dropout,
+                                **kwargs)
 
       self.to_affine_update = nn.Linear(dim_single, 6)
 
@@ -377,8 +383,11 @@ class StructureModule(nn.Module):
         if self.training or is_last:
           angles = self.to_angles(single_repr,
                                   single_repr_init=single_repr_init)
-          frames = rigids_from_angles(batch['seq'], (rotations, translations),
-                                      l2_norm(angles))
+          frames = rigids_from_angles(
+              batch['seq'],
+              rigids_scale((rotations, translations), self.position_scale),
+              l2_norm(angles))
+          frames = rigids_scale(frames, 1.0 / self.position_scale)
           coords = rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(

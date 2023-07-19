@@ -37,7 +37,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = dataset.load(
       data_dir=args.eval_data,
       data_idx=args.eval_idx,
-      max_msa_size=args.max_msa_size,
+      max_msa_depth=args.max_msa_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -141,8 +141,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='filter out proteins whose length<LEN, default=0')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('--max_msa_size', type=int, default=512,
-      help='filter out msas whose size>SIZE, default=512')
+  parser.add_argument('--max_msa_size', type=int, default=1024,
+      help='filter out msas whose size>SIZE, default=1024')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN, default=None')
   parser.add_argument('--max_crop_len', type=int, default=None,
