@@ -18,7 +18,7 @@ from einops import repeat
 
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
-from profold2.data.utils import domain_parser
+from profold2.data.utils import compose_pid, decompose_pid, domain_parser
 from profold2.utils import default, exists, timing
 
 logger = logging.getLogger(__file__)
@@ -242,6 +242,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                data_idx=None,
                max_msa_depth=128,
                max_seq_len=None,
+               pseudo_linker_prob=0.0,
                data_rm_mask_prob=0.0,
                msa_as_seq_prob=0.0,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
@@ -253,6 +254,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       self.data_dir = zipfile.ZipFile(self.data_dir)  # pylint: disable=consider-using-with
     self.max_msa_depth = max_msa_depth
     self.max_seq_len = max_seq_len
+    self.pseudo_linker_prob = pseudo_linker_prob
     self.data_rm_mask_prob = data_rm_mask_prob
     self.msa_as_seq_prob = msa_as_seq_prob
     self.feat_flags = feat_flags
@@ -280,6 +282,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           k, v = line.split()
           self.resolu[k] = float(v)
 
+    self.chain_list = {}
+    if self._fstat('chain.idx'):
+      with self._fileobj('chain.idx') as f:
+        for line in filter(lambda x: len(x) > 0,
+                           map(lambda x: self._ftext(x).strip(), f)):
+          chains = line.split()
+          self.chain_list[chains[0]] = chains[1:]
+
     self.fasta_dir = 'fasta'
 
     self.pdb_dir = 'npz'
@@ -305,22 +315,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       pids = self.pids[idx]
       pid = pids[np.random.randint(len(pids))]
 
-      pkey = self.mapping[pid] if pid in self.mapping else pid
-      seq_feats = self.get_seq_features(pkey)
+      if np.random.random() < self.pseudo_linker_prob:
+        chains = self.get_chain_list(pid)
+      else:
+        chains = None
 
-      ret = dict(pid=pid,
-                 msa_idx=0,
-                 resolu=self.get_resolution(pid),
-                 **seq_feats)
-      if self.feat_flags & FEAT_MSA:
-        ret.update(self.get_msa_features_new(pkey))
-      if self.feat_flags & FEAT_PDB:
-        ret.update(self.get_structure_label_npz(pid))
-
-      if 'msa_idx' in ret and ret['msa_idx'] != 0:
-        ret = self.msa_as_seq(ret, ret['msa_idx'])
-      elif np.random.random() < self.data_rm_mask_prob:
-        ret = self.data_rm_mask(ret)
+      if not exists(chains) or len(chains) == 1:
+        ret = self.get_monomer(pid)
+      else:
+        ret = self.get_complex(pid, chains)
 
       # We need all the amino acids!
       # if 'coord_mask' in ret:
@@ -331,21 +334,23 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return len(self.pids)
 
   def data_rm_mask(self, item):
-    i, new_order = 0, []
+    if 'coord_mask' in item:
+      i, new_order = 0, []
 
-    while i < item['coord_mask'].shape[0]:
-      if torch.any(item['coord_mask'][i]):
-        new_order.append(i)
-      i += 1
-    logger.debug('data_rm_mask: %s k=%d, i=%d', item['pid'], len(new_order), i)
+      while i < item['coord_mask'].shape[0]:
+        if torch.any(item['coord_mask'][i]):
+          new_order.append(i)
+        i += 1
+      logger.debug('data_rm_mask: %s k=%d, i=%d',
+                   item['pid'], len(new_order), i)
 
-    assert 0 < len(new_order) <= i, (len(new_order), i)
-    if len(new_order) < i:
-      item = _make_feats_shrinked(item,
-                                  new_order,
-                                  seq_feats=('seq', 'seq_index', 'mask',
-                                             'coord', 'coord_mask',
-                                             'coord_plddt'))
+      assert 0 < len(new_order) <= i, (len(new_order), i)
+      if len(new_order) < i:
+        item = _make_feats_shrinked(item,
+                                    new_order,
+                                    seq_feats=('seq', 'seq_index', 'mask',
+                                               'coord', 'coord_mask',
+                                               'coord_plddt'))
     return item
 
   def msa_as_seq(self, item, idx):
@@ -444,8 +449,102 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       return line.decode(encoding)
     return line
 
+  def get_monomer(self, pid):
+    pkey = self.mapping[pid] if pid in self.mapping else pid
+    seq_feats = self.get_seq_features(pkey)
+
+    ret = dict(pid=pid,
+               msa_idx=0,
+               resolu=self.get_resolution(pid),
+               **seq_feats)
+    if self.feat_flags & FEAT_MSA:
+      ret.update(self.get_msa_features_new(pkey))
+    if self.feat_flags & FEAT_PDB:
+      ret.update(self.get_structure_label_npz(pid))
+
+    if 'msa_idx' in ret and ret['msa_idx'] != 0:
+      ret = self.msa_as_seq(ret, ret['msa_idx'])
+    elif np.random.random() < self.data_rm_mask_prob:
+      ret = self.data_rm_mask(ret)
+    return ret
+
+  def get_complex(self, protein_id, chains):
+    assert len(chains) > 1
+
+    pid, chain = decompose_pid(protein_id)
+    assert chain in chains
+
+    # shuffle the chains
+    np.random.shuffle(chains)
+
+    seq_index_offset, seq_index_gap = 0, 128
+    # Concat all the feats
+    ret = {}
+    for idx, chain in enumerate(chains):
+      feat = self.get_monomer(compose_pid(pid, chain))
+      # Sequence related
+      for field in ('str_seq',):
+        ret[field] = ret.get(field, '') + feat[field]
+      for field in ('seq', 'mask', 'coord', 'coord_mask'):
+        if field not in ret:
+          ret[field] = feat[field]
+        else:
+          ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+      for field in ('seq_index',):
+        seq_index = feat['seq_index'] + seq_index_offset
+        if 'seq_index' not in ret:
+          ret['seq_index'] = seq_index
+        else:
+          ret['seq_index'] = torch.cat((ret['seq_index'], seq_index), dim=0)
+        seq_index_offset = seq_index[-1] + seq_index_gap
+      ret['resolu'] = feat['resolu']
+      # MSA related
+      if self.feat_flags & FEAT_MSA:
+        for field in ('msa_idx', 'num_msa'):
+          ret[field] = max(ret.get(field, 0), feat[field])
+        m, n = len(ret.get('str_msa', [])), len(feat['str_msa'])
+        gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
+        if 0 < m < n:
+          seq_len = len(ret['str_msa'][0])
+          ret['str_msa'] += ['-'*seq_len]*(n - m)
+          ret['msa'] = torch.cat(
+              (ret['msa'], torch.full((n - m, seq_len), gap_idx)), dim=0)
+          ret['del_msa'] = torch.cat(
+              (ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0)
+        elif 0 < n < m:
+          seq_len = len(feat['str_msa'][0])
+          feat['str_msa'] += ['-'*seq_len]*(m - n)
+          feat['msa'] = torch.cat(
+              (feat['msa'], torch.full((m - n, seq_len), gap_idx)), dim=0)
+          feat['del_msa'] = torch.cat(
+              (feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0)
+        # Rand permute msa relate feat
+        if 'str_msa' not in ret:
+          ret['str_msa'] = feat['str_msa']
+        else:
+          for i in range(max(m, n)):
+            ret['str_msa'][i] += feat['str_msa'][i]
+        for field in ('msa', 'del_msa'):
+          if field not in ret:
+            ret[field] = feat[field]
+          else:
+            ret[field] = torch.cat((ret[field], feat[field]), dim=1)
+        # Update chain_id
+        if feat['msa_idx'] > 0:
+          msa_idx = feat['msa_idx']
+          chains[idx] = f'{chain}@{msa_idx}'
+    ret['pid'] = compose_pid(pid, ','.join(chains))
+
+    return ret
+
+  def get_chain_list(self, protein_id):
+    pid, _ = decompose_pid(protein_id)
+    if pid in self.chain_list:
+      return list(self.chain_list[pid])  # shallow copy
+    return None
+
   def get_resolution(self, protein_id):
-    pid = protein_id.split('_')
+    pid, _ = decompose_pid(protein_id)
     return self.resolu.get(pid[0], None)
 
   def get_msa_features_new(self, protein_id):
@@ -459,7 +558,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       n = len(sequences)
       if exists(self.max_msa_depth):
         n = min(n, self.max_msa_depth)
-      w = np.power(np.array([1.0 / p for p in range(1, n)]), 0.75)
+      w = np.power(np.array([1.0 / p for p in range(1, n)]), 1.0 / 3.0)
       w /= np.sum(w)
       ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
     ret.update(_make_msa_features(sequences,
@@ -781,6 +880,7 @@ def pad_for_batch(items, batch_length, dtype):
 
 def load(data_dir,
          data_idx=None,
+         pseudo_linker_prob=0.0,
          data_rm_mask_prob=0.0,
          msa_as_seq_prob=0.0,
          min_crop_len=None,
@@ -803,6 +903,7 @@ def load(data_dir,
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
+                              pseudo_linker_prob=pseudo_linker_prob,
                               data_rm_mask_prob=data_rm_mask_prob,
                               msa_as_seq_prob=msa_as_seq_prob,
                               max_msa_depth=max_msa_depth,
