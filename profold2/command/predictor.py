@@ -51,6 +51,7 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
     return dataset.load(
         data_dir=args.data_dir,
         data_idx=args.data_idx,
+        pseudo_linker_prob=args.pseudo_linker_prob,
         max_msa_depth=args.max_msa_size,
         num_workers=args.num_workers, **kwargs)
 
@@ -79,9 +80,10 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
         num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
-  return torch.utils.data.DataLoader(data,
-                                     collate_fn=ProteinSequenceDataset.collate_fn,
-                                     num_workers=args.num_workers, **kwargs)
+  return torch.utils.data.DataLoader(
+      data,
+      collate_fn=ProteinSequenceDataset.collate_fn,
+      num_workers=args.num_workers, **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
   from profold2.relax import relax  # pylint: disable=import-outside-toplevel
@@ -210,10 +212,10 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
       # Rank by model confidence and write out relaxed PDBs in rank order.
       ranked_order = []
-      for idx, (model_name, _) in enumerate(
+      for i, (model_name, _) in enumerate(
           sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)):
         ranked_order.append(model_name)
-        ranked_output_path = os.path.join(output_dir, f'ranked_{idx}.pdb')
+        ranked_output_path = os.path.join(output_dir, f'ranked_{i}.pdb')
         with open(ranked_output_path, 'w', encoding='utf-8') as f:
           if exists(amber_relaxer):
             f.write(relaxed_pdbs[model_name])
@@ -244,6 +246,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='load data from dataset, default=None')
   parser.add_argument('--data_idx', type=str, default=None,
       help='dataset idx, default=None')
+  parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
+      help='enable loading complex data, default=0.0')
 
   parser.add_argument('--models', type=str, nargs='+',
       metavar='[MODEL_NAME=]MODEL_PATH',

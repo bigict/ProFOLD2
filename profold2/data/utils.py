@@ -11,6 +11,15 @@ from profold2.common import protein, residue_constants
 from profold2.utils import exists
 
 
+def decompose_pid(pid):
+  k = pid.find('_')
+  if k != -1:
+    return pid[:k], pid[k+1:]
+  return pid, None
+
+def compose_pid(pid, chain):
+  return f'{pid}_{chain}' if chain else f'{pid}'
+
 def domain_parser(ca_coord,
                   ca_mask,
                   max_len=255,
@@ -138,7 +147,14 @@ def pdb_from_prediction(batch, headers, idx=None):
         residue_constants.restype_order_with_x.get(
             aa, residue_constants.unk_restype_index) for aa in str_seq
     ])
-    features = dict(aatype=aatype, residue_index=np.arange(seq_len))
+    if 'seq_index' in batch and exists(batch['seq_index'][b]):
+      seq_index = batch['seq_index'][b].detach().cpu().numpy()
+    else:
+      seq_index = np.arange(seq_len)
+    features = {
+        'aatype': aatype,
+        'residue_index': seq_index,
+    }
 
     coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
