@@ -367,7 +367,8 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
     # First atom: point on x-y-plane
     # Second atom: point on negative x-axis
     # Third atom: origin
-    torsion_frames = rigids_from_3x3(torsion_points, indices=(2, 1, 0))
+    # torsion_frames = rigids_from_3x3(torsion_points, indices=(1, 2, 0))
+    torsion_frames = rotations_from_vecs(torsion_points[...,2,:] - torsion_points[...,1,:], torsion_points[...,0,:] - torsion_points[...,2,:]), torsion_points[...,2,:]
 
     # Compute the position of the forth atom in this frame (y and z coordinate
     # define the chi angle)
@@ -386,11 +387,23 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
             'g -> g ()')
 
     # Create alternative angles for ambiguous atom names.
-    chi_is_ambiguous = batched_gather(np.asarray(residue_constants.chi_pi_periodic), aatypes)
+    chi_is_ambiguous = batched_gather(
+        np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32), aatypes)
     mirror_ambiguous = torch.cat((
-            torch.ones(aatypes.shape + (3,), device=aatypes.device),
+            torch.ones(aatypes.shape + (3,), dtype=torch.float32, device=aatypes.device),
             1 - 2*chi_is_ambiguous), dim=-1)
     torsion_angles_alt = torsion_angles * mirror_ambiguous[...,None]
+    if placeholder_for_undefined:
+      # Add placeholder torsions in place of undefined torsion angles
+      # (e.g. N-terminus pre-omega)
+      placeholder_torsions = torch.stack([
+          torch.ones(torsion_angles.shape[:-1], device=torsion_angles.device),
+          torch.zeros(torsion_angles.shape[:-1], device=torsion_angles.device)
+      ], dim=-1)
+      torsion_angles = torsion_angles * torsion_angles_mask[
+          ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
+      torsion_angles_alt = torsion_angles_alt * torsion_angles_mask[
+          ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
 
     return dict(torsion_angles=torsion_angles,
             torsion_angles_mask=torsion_angles_mask,
@@ -453,8 +466,8 @@ def rigids_to_positions(frames, aatypes):
     # Shape (b, l, 14, 8)
     group_mask = F.one_hot(group_idx, num_classes=8).float()
 
-    rotations = torch.einsum('b l m n,b l n h w->b l m h w', group_mask, rotations)
-    translations = torch.einsum('b l m n,b l n h->b l m h', group_mask, translations)
+    rotations = torch.einsum('... i m n,... i n h w->... i m h w', group_mask, rotations)
+    translations = torch.einsum('... i m n,... i n h->... i m h', group_mask, translations)
 
     # Gather the literature atom positions for each residue.
     # Shape (b, l, 14, 3)

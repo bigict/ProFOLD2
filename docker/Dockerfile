@@ -10,7 +10,10 @@ SHELL ["/bin/bash", "-c"]
 RUN apt-key del 7fa2af80
 RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/3bf863cc.pub
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      cuda-command-line-tools-$(echo ${CUDA/./-}|awk -F '.' '{print $1}') \
+      cuda-command-line-tools-$(cut -f1,2 -d- <<< ${CUDA//./-}) \
+      hmmer \
+      kalign \
+      tzdata \
       wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,11 +28,12 @@ RUN wget -q -P /tmp \
 ENV PATH="${conda_home}/bin:${PATH}"
 RUN conda update -qy conda \
     && conda install -ky -c conda-forge -c bioconda \
+      hhsuite \
       openmm=7.7.0 \
       pytorch=1.9.1 cudatoolkit=${CUDA_VERSION} \
       pdbfixer \
       pip \
-      python=3.7
+      python=3.8
 
 
 ENV profold_home=/app/profold2
@@ -58,6 +62,6 @@ WORKDIR ${profold_home}
 RUN echo -e "#!/bin/bash\n\
 cd ${profold_home}\n\
 ldconfig\n\
-python -m torch.distributed.launch --nproc_per_node=auto main.py predict \$@"> /app/run_profold.sh \
+python main.py --nnodes=1 --init_method=file:///tmp/profold2.dist predict \$@"> /app/run_profold.sh \
     && chmod +x /app/run_profold.sh
 ENTRYPOINT ["/app/run_profold.sh"]
