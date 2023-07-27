@@ -288,7 +288,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         for line in filter(lambda x: len(x) > 0,
                            map(lambda x: self._ftext(x).strip(), f)):
           chains = line.split()
-          self.chain_list[chains[0]] = chains[1:]
+          if chains[0] in self.chain_list:
+            self.chain_list[chains[0]].append(chains[1:])
+          else:
+            self.chain_list[chains[0]] = [chains[1:]]
 
     self.fasta_dir = 'fasta'
 
@@ -538,9 +541,13 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return ret
 
   def get_chain_list(self, protein_id):
-    pid, _ = decompose_pid(protein_id)
+    pid, chain = decompose_pid(protein_id)
     if pid in self.chain_list:
-      return list(self.chain_list[pid])  # shallow copy
+      chain_group = self.chain_list[pid]
+      for g in chain_group:
+        if chain in g:
+          return g
+      logger.error('get_chain_list: %s not found.', protein_id)
     return None
 
   def get_resolution(self, protein_id):

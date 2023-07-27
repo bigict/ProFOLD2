@@ -209,7 +209,7 @@ def main(args):  # pylint: disable=redefined-outer-name
               if args.ignore_domain_parser:
                 f.write(f'>{fid}\n')
               else:
-                f.write(f'>{fid} {domains}\n')
+                f.write(f'>{fid} domains:{domains}\n')
               f.write(seq)
 
           np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
