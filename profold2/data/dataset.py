@@ -546,7 +546,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       chain_group = self.chain_list[pid]
       for g in chain_group:
         if chain in g:
-          return g
+          return list(g)  # shallow copy
       logger.error('get_chain_list: %s not found.', protein_id)
     return None
 
