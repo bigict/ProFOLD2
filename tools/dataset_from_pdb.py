@@ -206,7 +206,10 @@ def main(args):  # pylint: disable=redefined-outer-name
             mapping_dict[seq] = (fid, set([fid]))
             with open(os.path.join(args.output, 'fasta', f'{fid}.fasta'),
                       'w') as f:
-              f.write(f'>{fid} {domains}\n')
+              if args.ignore_domain_parser:
+                f.write(f'>{fid}\n')
+              else:
+                f.write(f'>{fid} domains:{domains}\n')
               f.write(seq)
 
           np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
@@ -239,6 +242,8 @@ if __name__ == '__main__':
   parser.add_argument('--mapping_idx', type=str, default=None,
                       help='bc-out.100')
   parser.add_argument('--add_plddt', action='store_true', help='add plddt')
+  parser.add_argument('--ignore_domain_parser', action='store_true',
+                      help='ignore domain parser')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   parser.add_argument('input_files', metavar='file', type=str, nargs='+',
                       help='input files')

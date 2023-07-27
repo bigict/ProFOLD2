@@ -84,16 +84,19 @@ def cif2pdb(mmcif_file, pdb_file):
 
 def pdb2cif(pdb_file, mmcif_file):
   io = MMCIFIO()
-  io.set_structure(pdb_get_structure(pdb_file))
+  try:
+    io.set_structure(pdb_get_structure(pdb_file))
 
-  if mmcif_file.suffix == '.gz':
-    with gzip.open(mmcif_file, 'wt') as f:
-      io.save(f)
-  else:
-    with open(mmcif_file, 'w') as f:
-      io.save(f)
+    if mmcif_file.suffix == '.gz':
+      with gzip.open(mmcif_file, 'wt') as f:
+        io.save(f)
+    else:
+      with open(mmcif_file, 'w') as f:
+        io.save(f)
 
-  logger.info(mmcif_file)
+    logger.info(mmcif_file)
+  except Exception as e:
+    logger.error(mmcif_file)
   return pdb_file
 
 def read_pairwise_list(f, output):
