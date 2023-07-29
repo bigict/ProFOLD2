@@ -86,10 +86,7 @@ def make_coord_plddt(protein,
   return protein
 
 @take1st
-def make_loss_weight(protein,
-                     distogram_w=.5,
-                     folding_w=.0,
-                     is_training=True):
+def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
   assert distogram_w <= 1.0 and folding_w <= 1.0
   if is_training and 'msa_idx' in protein:
     mask = (protein['msa_idx'] == 0)
@@ -196,15 +193,35 @@ def make_seq_profile_pairwise(protein,
 
 
 @take1st
-def make_bert_mask(protein, fraction=0.12, is_training=True):
-  if is_training:
+def make_bert_mask(protein,
+                   fraction=None,
+                   span_mean=None,
+                   span_min=None,
+                   span_max=None,
+                   is_training=True):
+  if is_training and (exists(fraction) or exists(span_mean)):
     masked_shape = protein['seq'].shape
     mask = protein['mask']
-    masked_position = torch.rand(masked_shape, device=mask.device) < fraction
+
+    if exists(fraction):  # vanilla BERT masking
+      masked_position = torch.rand(masked_shape, device=mask.device) < fraction
+    elif exists(span_mean): # SpanBERT-like masking
+      b, n = masked_shape[:2]
+      span_num = torch.poisson(torch.full((b,), span_mean, device=mask.device))
+      if exists(span_min) or exists(span_max):
+        span_num = torch.clamp(span_num, min=span_min, max=span_max)
+      span_num = torch.clamp(span_num, max=n - 1)
+      span_i = torch.rand((b,), device=mask.device) * (n - span_num)
+      span_j = span_i + span_num
+      masked_position = torch.zeros(masked_shape, device=mask.device)
+      for k in range(b):
+        i, j = int(span_i[k]), int(span_j[k])
+        masked_position[k, i:j] = 1
+
     protein['bert_mask'] = masked_position * mask
     protein['true_seq'] = torch.clone(protein['seq'])
     protein['seq'] = protein['seq'].masked_fill(
-        masked_position, residue_constants.unk_restype_index)
+        masked_position.bool(), residue_constants.unk_restype_index)
   return protein
 
 
