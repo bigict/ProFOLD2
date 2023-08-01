@@ -472,12 +472,12 @@ def kabsch_numpy(x, y):
 
 def rmsd_torch(x, y):
   """ Assumes x,y are both (B x D x N). See below for wrapper. """
-  return torch.sqrt(torch.mean((x - y)**2, axis=(-1, -2)))
+  return torch.sqrt(torch.mean(torch.sum((x - y)**2, dim=1)))
 
 
 def rmsd_numpy(x, y):
   """ Assumes x,y are both (B x D x N). See below for wrapper. """
-  return np.sqrt(np.mean((x - y)**2, axis=(-1, -2)))
+  return np.sqrt(np.mean(np.sum((x - y)**2, axis=1)))
 
 
 def gdt_torch(x, y, cutoffs, weights=None):
