@@ -133,12 +133,9 @@ class Attention(nn.Module):
 
     q, k, v = (self.to_q(x), *self.to_kv(m).chunk(2, dim=-1))
 
-    # scale
-    q = q * self.scale
-
     i, n = q.shape[-2], k.shape[-2]
 
-    q, k, v = map(lambda t: rearrange(t, '... i (h d) -> ... i h d', d=d),
+    q, k, v = map(lambda t: rearrange(t, '... i (h d) -> ... h i d', d=d),
                   (q, k, v))
 
 
@@ -154,36 +151,54 @@ class Attention(nn.Module):
                       dim=1) / (torch.sum(mask[..., None, None], dim=1) + 1e-10)
       else:
         q = q.mean(dim=1)
-      q = repeat(q, '... h d -> ... n h d', n=n)
-
-    dots = torch.einsum('... i h d,... j h d -> ... h i j', q, k)
-
-    # add attention bias,
-    # if supplied (for pairwise to msa attention communication)
-
-    if exists(attn_bias):
-      dots = dots + attn_bias
+      q = repeat(q, '... h d -> ... h i d', i=n)
 
     # masking
-
+    attn_mask, mask_value = None, -torch.finfo(q.dtype).max
     if exists(mask):
       mask = default(mask, lambda: torch.ones(1, i, device=device))
       context_mask = mask if not exists(context) else default(
           context_mask,
           lambda: torch.ones(1, k.shape[-3], device=device))
-      mask_value = -torch.finfo(dots.dtype).max
-      mask = rearrange(mask.bool(), '... i -> ... () i ()') * rearrange(
+      attn_mask = rearrange(mask.bool(), '... i -> ... () i ()') * rearrange(
           context_mask.bool(), '... j -> ... () () j')
-      dots = dots.masked_fill(~mask.bool(), mask_value)
+      assert attn_mask.dtype == torch.bool
+      
+    # pytorch 2.0+
+    if hasattr(F, 'scaled_dot_product_attention'):
+      if exists(attn_mask) and exists(attn_bias):
+        attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
+      elif exists(attn_bias):
+        attn_mask = attn_bias
+      # See: https://github.com/pytorch/pytorch/issues/96099
+      # with torch.backends.cuda.sdp_kernel(enable_flash=False):
+      dropout_p = self.dropout.p if self.training else 0.0
+      out = F.scaled_dot_product_attention(
+          q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
+    else:
+      # scale
+      q = q * self.scale
 
-    # attention
+      dots = torch.einsum('... h i d,... h j d -> ... h i j', q, k)
 
-    # dots = dots - dots.max(dim=-1, keepdim=True).values
-    attn = F.softmax(dots, dim=-1)
-    attn = self.dropout(attn)
+      # add attention bias,
+      # if supplied (for pairwise to msa attention communication)
 
-    # aggregate
-    out = torch.einsum('... h i j, ... j h d -> ... h i d', attn, v)
+      if exists(attn_bias):
+        dots = dots + attn_bias
+
+      # masking
+      if exists(attn_mask):
+        dots = dots.masked_fill(~attn_mask, mask_value)
+
+      # attention
+
+      # dots = dots - dots.max(dim=-1, keepdim=True).values
+      attn = F.softmax(dots, dim=-1)
+      attn = self.dropout(attn)
+
+      # aggregate
+      out = torch.einsum('... h i j, ... h j d -> ... h i d', attn, v)
 
     # merge heads
     out = rearrange(out, '... h i d -> ... i (h d)')

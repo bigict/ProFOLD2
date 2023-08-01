@@ -489,6 +489,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       for field in ('str_seq',):
         ret[field] = ret.get(field, '') + feat[field]
       for field in ('seq', 'mask', 'coord', 'coord_mask'):
+        assert field in feat, (field, pid, chain)
         if field not in ret:
           ret[field] = feat[field]
         else:
