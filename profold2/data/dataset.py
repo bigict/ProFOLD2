@@ -556,6 +556,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return self.resolu.get(pid[0], None)
 
   def get_msa_features_new(self, protein_id):
+    def _aligned_ratio(msa, n):
+      return 1. - msa.count('-') / n
+
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
     with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
@@ -563,11 +566,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     ret = {'msa_idx': 0}
     if len(sequences) > 1 and np.random.random() < self.msa_as_seq_prob:
-      n = len(sequences)
+      m, n = len(sequences[0]), len(sequences)
       if exists(self.max_msa_depth):
         n = min(n, self.max_msa_depth)
       w = np.power(np.array([1.0 / p for p in range(1, n)]), 1.0 / 3.0)
-      w /= np.sum(w)
+
+      v = np.asarray([_aligned_ratio(s, m) for s in sequences[1:n]])
+      w *= v
+
+      w /= (np.sum(w) + 1e-10)
       ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
     ret.update(_make_msa_features(sequences,
                                   msa_idx=ret['msa_idx'],
