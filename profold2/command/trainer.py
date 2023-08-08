@@ -88,7 +88,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   if args.fake_data:
     fake_data = create_cycling_data(args.fake_data,
         data_idx=args.fake_idx,
-        weights=args.fake_data_weights)
+        weights=args.fake_data_weights,
+        data_msa_as_seq_prob=args.fake_msa_as_seq_prob)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -377,6 +378,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
   parser.add_argument('--tuning_msa_as_seq_prob', type=float, default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
+           'default=0.0')
+  parser.add_argument('--fake_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,

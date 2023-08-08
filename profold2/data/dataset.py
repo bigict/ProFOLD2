@@ -112,6 +112,19 @@ def _parse_seq_index(description, input_sequence, seq_index):
 
   return seq_index
 
+def _str_seq_index(seq_index):
+  assert exists(seq_index) and seq_index.shape[0] > 0
+  domains = []
+  s, e = None, None
+  for i in range(seq_index.shape[0]):
+    if seq_index[i] - 1 != e:
+      if exists(s) and exists(e):
+        domains += [f'{s}-{e}']
+      s = seq_index[i]
+    e = seq_index[i]
+  if exists(s) and exists(e):
+    domains += [f'{s}-{e}']
+  return ','.join(domains)
 
 def _make_seq_features(sequence, description, max_seq_len=None):
   residue_index = torch.arange(len(sequence), dtype=torch.int)
@@ -163,16 +176,24 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
 
-  def __init__(self, sequences, descriptions=None, msa=None):
+  def __init__(self, sequences, descriptions=None, msa=None, msa_as_seq=False):
     self.sequences = sequences
     self.descriptions = descriptions
     self.msa = msa
     assert not exists(self.descriptions) or len(self.sequences) == len(
         self.descriptions)
     assert not exists(self.msa) or len(self.sequences) == len(self.msa)
+    assert (not msa_as_seq) or exists(msa)
+    self.msa_depth = np.cumsum(np.asarray([len(m) for m in self.msa
+                                          ])) if msa_as_seq else None
+
 
   def __getitem__(self, idx):
-    input_sequence = self.sequences[idx]
+    seq_idx, msa_idx = idx, 0
+    if exists(self.msa_depth):
+      seq_idx = np.sum(self.msa_depth < idx)
+      msa_idx = idx - (self.msa_depth[seq_idx - 1] if seq_idx > 0 else 0)
+    input_sequence = self.sequences[seq_idx]
     seq = torch.tensor(residue_constants.sequence_to_onehot(
         sequence=input_sequence,
         mapping=residue_constants.restype_order_with_x,
@@ -184,22 +205,75 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
             lambda a: a if a in residue_constants.restype_order_with_x else
             residue_constants.restypes_with_x[-1], input_sequence))
     mask = torch.ones(len(input_sequence), dtype=torch.bool)
-    if exists(self.descriptions) and exists(self.descriptions[idx]):
-      desc = self.descriptions[idx]
+    if exists(self.descriptions) and exists(self.descriptions[seq_idx]):
+      desc = self.descriptions[seq_idx]
       residue_index = _parse_seq_index(desc, input_sequence, residue_index)
+      desc = desc.split()[0]
     else:
-      desc = str(idx)
+      desc = str(seq_idx)
     ret = dict(pid=desc,
                seq=seq,
                seq_index=residue_index,
                str_seq=str_seq,
                mask=mask)
-    if exists(self.msa) and exists(self.msa[idx]):
-      ret.update(_make_msa_features(self.msa[idx]))
+    if exists(self.msa) and exists(self.msa[seq_idx]):
+      ret.update(_make_msa_features(self.msa[seq_idx], msa_idx=msa_idx))
+    if msa_idx > 0:
+      ret = self.msa_as_seq(ret, msa_idx)
     return ret
 
   def __len__(self):
+    if exists(self.msa_depth):
+      return int(self.msa_depth[-1])
     return len(self.sequences)
+
+  def msa_as_seq(self, item, idx):
+    assert idx > 0
+    assert 'str_msa' in item and 'del_msa' in item
+    assert len(item['str_seq']) == len(item['str_msa'][0]), (
+        idx, item['pid'], item['str_seq'], item['str_msa'][0])
+
+    # swap(msa[1], msa[idx])
+    assert len(item['str_msa'][0]) == len(item['str_msa'][1])
+    assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
+                                                   item['str_msa'][0],
+                                                   item['str_msa'][1])
+    item['str_msa'][0] = item['str_msa'][1]
+    item['str_msa'][1] = item['str_seq']
+    assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
+                                                   item['str_msa'][0],
+                                                   item['str_msa'][1])
+    item['str_seq'] = item['str_msa'][0]
+    assert item['str_seq'] == item['str_msa'][0]
+
+    i, new_order = 0, []
+
+    while i < len(item['str_seq']):
+      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+        new_order.append(i)
+      i += 1
+    logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
+                 len(new_order), i)
+    assert 0 < len(new_order) <= i, (len(new_order), i)
+
+    if len(new_order) < i:
+      item = _make_feats_shrinked(item, new_order)
+
+    # Renew seq related feats
+    pid = item['pid']
+    domains = _str_seq_index(item['seq_index'])
+    item['pid'] = f'{pid}@{idx}'
+    item.update(
+        _make_seq_features(item['str_seq'],
+                           item['pid'],
+                           max_seq_len=self.max_seq_len))
+
+
+    # Fix seq_index
+    del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+    item['seq_index'] = item['seq_index'] + del_seq
+
+    return item
 
   @staticmethod
   def collate_fn(batch):
@@ -553,7 +627,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)
-    return self.resolu.get(pid[0], None)
+    return self.resolu.get(pid, None)
 
   def get_msa_features_new(self, protein_id):
     def _aligned_ratio(msa, n):
