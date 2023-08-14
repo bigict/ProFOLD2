@@ -55,6 +55,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
       data_msa_as_seq_prob=0.0,
+      data_msa_as_seq_topn=None,
       data_filter=data_cond):
     data_loader = dataset.load(
         data_dir=data_dir,
@@ -62,6 +63,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         pseudo_linker_prob=args.pseudo_linker_prob,
         data_rm_mask_prob=args.data_rm_mask_prob,
         msa_as_seq_prob=data_msa_as_seq_prob,
+        msa_as_seq_topn=data_msa_as_seq_topn,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
@@ -79,17 +81,20 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   train_data = create_cycling_data(args.train_data,
       data_idx=args.train_idx,
       weights=args.train_data_weights,
-      data_msa_as_seq_prob=args.train_msa_as_seq_prob)
+      data_msa_as_seq_prob=args.train_msa_as_seq_prob,
+      data_msa_as_seq_topn=args.train_msa_as_seq_topn)
   if args.tuning_data:
     tuning_data = create_cycling_data(args.tuning_data,
         data_idx=args.tuning_idx,
         weights=args.tuning_data_weights,
-        data_msa_as_seq_prob=args.tuning_msa_as_seq_prob)
+        data_msa_as_seq_prob=args.tuning_msa_as_seq_prob,
+        data_msa_as_seq_topn=args.tuning_msa_as_seq_topn)
   if args.fake_data:
     fake_data = create_cycling_data(args.fake_data,
         data_idx=args.fake_idx,
         weights=args.fake_data_weights,
-        data_msa_as_seq_prob=args.fake_msa_as_seq_prob)
+        data_msa_as_seq_prob=args.fake_msa_as_seq_prob,
+        data_msa_as_seq_topn=args.fake_msa_as_seq_topn)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -377,12 +382,21 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
+  parser.add_argument('--train_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
   parser.add_argument('--tuning_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
+  parser.add_argument('--tuning_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
   parser.add_argument('--fake_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
+  parser.add_argument('--fake_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
           'instead of domain, default=0.0')
