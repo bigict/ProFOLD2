@@ -11,14 +11,29 @@ from profold2.common import protein, residue_constants
 from profold2.utils import exists
 
 
-def decompose_pid(pid):
+def decompose_pid(pid, return_domain=False):
+  k = pid.find('/')
+  if k != -1:
+    pid, domains = pid[:k], pid[k+1:]
+  else:
+    domains = None
+
   k = pid.find('_')
   if k != -1:
-    return pid[:k], pid[k+1:]
-  return pid, None
+    pid, chain = pid[:k], pid[k+1:]
+  else:
+    chain = None
 
-def compose_pid(pid, chain):
-  return f'{pid}_{chain}' if chain else f'{pid}'
+  if return_domain:
+    return pid, chain, domains
+  return pid, chain
+
+def compose_pid(pid, chain, domains=None):
+  if exists(chain):
+    pid = f'{pid}_{chain}'
+  if exists(domains):
+    pid = f'{pid}/{domains}'
+  return pid
 
 def domain_parser(ca_coord,
                   ca_mask,

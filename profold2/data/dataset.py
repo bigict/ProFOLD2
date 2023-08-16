@@ -74,16 +74,19 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
               num_msa=msa_depth)
 
 
+_seq_index_pattern = '(\\d+)-(\\d+)'
+
+def _seq_index_split(text):
+  for s in text.split(','):
+    r = re.match(_seq_index_pattern, s)
+    assert r
+    yield tuple(map(int, r.group(1, 2)))
+
+def _seq_index_join(seq_index):
+  return ','.join(f'{i}-{j}' for i, j in seq_index)
+
 def _parse_seq_index(description, input_sequence, seq_index):
   # description: pid field1 field2 ...
-  seq_index_pattern = '(\\d+)-(\\d+)'
-
-  def seq_index_split(text):
-    for s in text.split(','):
-      r = re.match(seq_index_pattern, s)
-      assert r
-      yield tuple(map(int, r.group(1, 2)))
-
   def seq_index_check(positions):
     for i in range(len(positions) - 1):
       p, q = positions[i]
@@ -96,9 +99,9 @@ def _parse_seq_index(description, input_sequence, seq_index):
 
   fields = description.split()
   for f in fields[1:]:
-    r = re.match(f'.*:({seq_index_pattern}(,{seq_index_pattern})*)', f)
+    r = re.match(f'.*:({_seq_index_pattern}(,{_seq_index_pattern})*)', f)
     if r:
-      positions = list(seq_index_split(r.group(1)))
+      positions = list(_seq_index_split(r.group(1)))
       seq_index_check(positions)
       p, q = positions[0]
       start, gap = p, 0
@@ -411,6 +414,25 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.pids)
 
+  def data_from_domain(self, item, domains):
+    assert domains
+    domains = list(_seq_index_split(domains))
+
+    n, new_order = len(item['str_seq']), []
+    for i, j  in domains:
+      assert j < n, (item['pid'], domains)
+      for k in range(i, j + 1):
+        new_order.append(k)
+
+    assert 0 < len(new_order) <= n, (len(new_order), n)
+    if len(new_order) < n:
+      item = _make_feats_shrinked(item,
+                                  new_order,
+                                  seq_feats=('seq', 'seq_index', 'mask',
+                                             'coord', 'coord_mask',
+                                             'coord_plddt'))
+    return item
+
   def data_rm_mask(self, item):
     if 'coord_mask' in item:
       i, new_order = 0, []
@@ -422,8 +444,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       logger.debug('data_rm_mask: %s k=%d, i=%d',
                    item['pid'], len(new_order), i)
 
-      assert 0 < len(new_order) <= i, (len(new_order), i)
-      if len(new_order) < i:
+      assert 0 <= len(new_order) <= i, (len(new_order), i)
+      if 0 < len(new_order) < i:
         item = _make_feats_shrinked(item,
                                     new_order,
                                     seq_feats=('seq', 'seq_index', 'mask',
@@ -528,6 +550,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return line
 
   def get_monomer(self, pid):
+    # CATH format pid
+    pid, chain, domains = decompose_pid(pid, return_domain=True)
+    pid = compose_pid(pid, chain)
+
     pkey = self.mapping[pid] if pid in self.mapping else pid
     seq_feats = self.get_seq_features(pkey)
 
@@ -540,10 +566,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     if self.feat_flags & FEAT_PDB:
       ret.update(self.get_structure_label_npz(pid))
 
+    if exists(domains):
+      ret = self.data_from_domain(ret, domains)
+      # CATH update pid
+      ret['pid'] = compose_pid(pid, None, domains)
+
     if 'msa_idx' in ret and ret['msa_idx'] != 0:
       ret = self.msa_as_seq(ret, ret['msa_idx'])
     elif np.random.random() < self.data_rm_mask_prob:
       ret = self.data_rm_mask(ret)
+
     return ret
 
   def get_complex(self, protein_id, chains):
