@@ -131,13 +131,20 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   # Run docker
   client = docker.from_env()
+  device_requests = [
+      docker.types.DeviceRequest(driver='nvidia', capabilities=[['gpu']])
+  ]
   container = client.containers.run(
       image=args.docker_image_name,
       command=command_args,
+      device_requests=device_requests,
       remove=True,
       detach=True,
       mounts=mounts,
-      user=f'{os.geteuid()}:{os.getegid()}')
+      user=f'{os.geteuid()}:{os.getegid()}',
+      environment={
+          'NVIDIA_VISIBLE_DEVICES': 'all',
+      })
 
   # Add signal handler to ensure CTRL+C also stops the running container.
   signal.signal(signal.SIGINT,

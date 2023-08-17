@@ -242,14 +242,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   for it in range(global_step, args.num_batches):
     _step(train_data, it, writer, stage='train')
 
-    if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
-        worker.is_master()):
-      # Save a checkpoint every N iters.
-      checkpoint_manager.save(it)
-
-      # Add embeddings
-      writer_add_embeddings(writer, model, it)
-
     if (args.tuning_data and
         args.tuning_every > 0 and (it + 1) % args.tuning_every == 0):
       _step(tuning_data, it, writer, stage='tuning',
@@ -261,6 +253,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       _step(fake_data, it, writer, stage='fake',
           batch_callback=(batch_with_coords
               if args.fake_with_coords else batch_seq_only))
+
+    if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
+        worker.is_master()):
+      # Save a checkpoint every N iters.
+      checkpoint_manager.save(it)
+
+      # Add embeddings
+      writer_add_embeddings(writer, model, it)
 
     if (args.eval_data and worker.is_master() and
         args.eval_every > 0 and (it + 1) % args.eval_every == 0):
@@ -347,23 +347,23 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN, default=1024')
-  parser.add_argument('--max_msa_size', type=int, default=128,
-      help='sampling MSAs with depth<=SIZE, default=128')
+  parser.add_argument('--max_msa_size', type=int, default=1024,
+      help='sampling MSAs with depth<=SIZE, default=1024')
   parser.add_argument('--min_crop_len', type=int, default=80,
-      help='filter out proteins whose length<LEN, default=80')
+      help='do not crop protein whose length<LEN, default=80')
   parser.add_argument('--max_crop_len', type=int, default=255,
-      help='filter out proteins whose length>LEN, default=255')
+      help='crop protein whose length>LEN, default=255')
   parser.add_argument('--crop_algorithm', type=str, default='random',
       choices=['random', 'domain'],
       help='type of crop algorithm')
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
-  parser.add_argument('--random_seed', type=int, default=None,
-      help='random seed, default=None')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
           'instead of domain, default=0.0')
+  parser.add_argument('--random_seed', type=int, default=None,
+      help='random seed, default=None')
 
   parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
       help='the maximum number of checkpoints to keep, default=5')

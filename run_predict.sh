@@ -32,7 +32,7 @@ create_sto() {
       }' > ${of}
 }
 
-docker_image_name="profold2"
+docker_image_name="profold2:msa"
 data_dir=/mnt/data/profold2/db
 output_dir=/mnt/data/profold2/test
 max_template_date="2021-05-14"
@@ -81,6 +81,7 @@ for f in $*; do
       --max_template_date=${max_template_date} \
       --output_dir=${output_dir} \
       --models model_msa_1 \
+      --model_shard_size=2 \
       --fasta_fmt=pkl \
       ${pf2_params} \
       ${f}

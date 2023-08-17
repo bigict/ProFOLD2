@@ -10,9 +10,7 @@ from profold2.common import residue_constants
 from profold2.utils import default, exists
 
 def l2_norm(v, dim=-1, epsilon=1e-12):
-    norm = torch.sqrt(torch.sum(v**2, dim=dim, keepdim=True) + epsilon)
-    return v / norm
-    # return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
+    return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
 
 def masked_mean(mask, value, epsilon=1e-10):
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
@@ -41,7 +39,7 @@ def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0,
         batched_dim = sharded_args[0].shape[shard_dim]
         assert all(map(lambda x: not exists(x) or x.shape[shard_dim] == batched_dim, sharded_args))
         for slice_args in zip(*map(
-                lambda x: torch.split(x, shard_size, dim=shard_dim) if exists(x) else [None]*shard_size,
+                lambda x: torch.split(x, shard_size, dim=shard_dim),
                 sharded_args)):
             yield run_fn(*slice_args)
 
@@ -468,8 +466,8 @@ def rigids_to_positions(frames, aatypes):
     # Shape (b, l, 14, 8)
     group_mask = F.one_hot(group_idx, num_classes=8).float()
 
-    rotations = torch.einsum('b l m n,b l n h w->b l m h w', group_mask, rotations)
-    translations = torch.einsum('b l m n,b l n h->b l m h', group_mask, translations)
+    rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
+    translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
 
     # Gather the literature atom positions for each residue.
     # Shape (b, l, 14, 3)

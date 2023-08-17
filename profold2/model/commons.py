@@ -159,8 +159,8 @@ class Attention(nn.Module):
 
       k, v = map(lambda t: repeat(t, '... r d-> ... (r h) d', h=h), (k, v))
       if exists(mask):
-        q = torch.sum(q * mask[...,None,None], dim=1) / (torch.sum(
-            mask[...,None,None], dim=1) + 1e-10)
+        q = torch.sum(q * mask[..., None, None],
+                      dim=1) / (torch.sum(mask[..., None, None], dim=1) + 1e-10)
       else:
         q = q.mean(dim=1)
       q = repeat(q, '... h d -> ... n h d', n=n)
@@ -370,7 +370,8 @@ class OuterMean(nn.Module):
         mask = rearrange(mask, 'b m i -> b m i () () ()') * rearrange(
             mask, 'b m j -> b m () j () ()') > 0
         outer = outer.masked_fill(~mask, 0.)
-      outer = outer.sum(dim=1, keepdim=True)
+      if outer.shape[1] > 1:
+        outer = outer.sum(dim=1, keepdim=True)
       outer = self.proj_out(rearrange(outer, '... c d -> ... (c d)'))
       return outer
 
@@ -380,8 +381,8 @@ class OuterMean(nn.Module):
           mask, 'b m j -> b m () j ()') > 0
       return mask.sum(dim=1, keepdim=True)
 
-    def run_iter_sum(gen):
-      return sum(gen)
+    def run_iter_sum(chunk_iter):
+      return sum(chunk_iter)
 
     outer = functional.sharded_apply(
         run_outer_sum, [left, right, mask],

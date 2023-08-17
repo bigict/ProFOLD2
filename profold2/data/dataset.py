@@ -229,6 +229,7 @@ class ProteinPklDataset(torch.utils.data.Dataset):
     for k_from, k_to in (('template_all_atom_positions', 'template_coord'),
                          ('template_all_atom_masks', 'template_coord_mask')):
       protein[k_to] = torch.from_numpy(feature_dict[k_from][:self.max_templates,...])
+      logger.error('%s.shape: %s', k_to, protein[k_to].shape)
     protein['template_seq'] = protein['template_seq'][:self.max_templates,...]
     protein['template_mask'] = protein['template_mask'][:self.max_templates,...]
 

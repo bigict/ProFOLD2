@@ -221,6 +221,7 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
 
   logging.info('-----------------')
   logging.info('Arguments: %s', args)
+  logging.info('#GPUs: %d', WorkerXPU.device_count())
   logging.info('-----------------')
 
   #--------------
