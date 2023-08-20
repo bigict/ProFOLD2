@@ -176,6 +176,151 @@ def _make_feats_shrinked(item,
 
   return item
 
+def _protein_clips_fn(protein,
+                   min_crop_len=None,
+                   max_crop_len=None,
+                   crop_probability=0.0,
+                   crop_algorithm='random',
+                   **kwargs):
+
+  def _random_sampler(protein, n):
+
+    def _crop_length(n, crop):
+      assert exists(min_crop_len) or exists(max_crop_len)
+
+      if not exists(max_crop_len):
+        assert min_crop_len < n
+        return np.random.randint(min_crop_len, n + 1) if crop else n
+      elif not exists(min_crop_len):
+        assert max_crop_len < n
+        return max_crop_len
+      assert min_crop_len <= max_crop_len and (min_crop_len < n or
+                                               max_crop_len < n)
+      return np.random.randint(min_crop_len,
+                               min(n, max_crop_len) +
+                               1) if crop else min(max_crop_len, n)
+
+    l = _crop_length(n, np.random.random() < crop_probability)
+    logger.debug('min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len,
+                 max_crop_len, n, l)
+    i, j = 0, l
+    if not 'coord_mask' in protein or torch.any(protein['coord_mask']):
+      while True:
+        i = np.random.randint(n - l + 1)
+        j = i + l
+        if not 'coord_mask' in protein or torch.any(
+            protein['coord_mask'][i:j]):
+          break
+    return dict(i=i, j=j, l=n)
+
+  def _domain_sampler(protein, n):
+
+    def _cascade_sampler(weights, width=4):
+      if len(weights) <= width:
+        i = torch.multinomial(weights, 1)
+        return i.item()
+
+      p = torch.zeros((width,))
+      l, k = len(weights) // width, len(weights) % width
+      for i in range(width):
+        v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
+        p[i] = torch.amax(weights[v:w])
+      i = _cascade_sampler(p, width=width)
+      v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
+      return v + _cascade_sampler(weights[v:w], width=width)
+
+    def _domain_next(weights, i, min_len=None, max_len=None):
+      min_len, max_len = default(min_len, 80), default(max_len, 255)
+
+      direction = np.random.randint(2)
+      for _ in range(2):
+        #if direction % 2 == 0 and torch.sum(ca_mask[i:]) >= min_len:
+        if direction % 2 == 0 and i + min_len < n:
+          j = min(len(weights), i + max_len)
+          return j if i + min_len >= j else i + min_len + _cascade_sampler(
+              weights[i + min_len:j])
+        #if direction % 2 == 1 and torch.sum(ca_mask[:i]) >= min_len:
+        if direction % 2 == 1 and i > min_len:
+          j = max(0, i - max_len)
+          return j + _cascade_sampler(
+              weights[j:i - min_len]) if i - min_len > j else j
+        direction += 1
+      return None
+
+    assert exists(min_crop_len) or exists(max_crop_len)
+    assert 'coord' in protein and 'coord_mask' in protein
+
+    if exists(
+        max_crop_len
+    ) and n <= max_crop_len and crop_probability < np.random.random():
+      assert not exists(min_crop_len) or min_crop_len < n
+      return None
+
+    ca_idx = residue_constants.atom_order['CA']
+    ca_coord, ca_coord_mask = protein['coord'][
+        ..., ca_idx, :], protein['coord_mask'][..., ca_idx]
+    logger.debug('domain_sampler: seq_len=%d', n)
+    weights = domain_parser(ca_coord, ca_coord_mask, max_len=max_crop_len)
+    intra_domain_probability = kwargs.get('intra_domain_probability', 0)
+    while True:
+      i = _cascade_sampler(weights)
+      if np.random.random() < intra_domain_probability:
+        logger.debug('domain_intra: seq_len=%d, i=%d', n, i)
+        half = max_crop_len // 2 + max_crop_len % 2
+        if i + 1 < n - i:  # i <= n // 2
+          i = max(0, i - half)
+          j = min(i + max_crop_len, n)
+        else:
+          i = min(n, i + half)
+          j = max(0, i - max_crop_len)
+      else:
+        j = _domain_next(weights,
+                         i,
+                         min_len=min_crop_len,
+                         max_len=max_crop_len)
+        logger.debug('domain_next: seq_len=%d, i=%d, j=%s', n, i,
+                     str(j))
+      if j is not None and torch.any(ca_coord_mask[min(i, j):max(i, j)]):
+        break
+    return dict(i=min(i, j), j=max(i, j), l=n)
+
+  logger.debug('protein_clips_fn: crop_algorithm=%s', crop_algorithm)
+  sampler_list = dict(random=_random_sampler, domain=_domain_sampler)
+
+  assert crop_algorithm in sampler_list
+
+  n = len(protein['str_seq'])
+  if (exists(max_crop_len) and
+      max_crop_len < n) or (exists(min_crop_len) and min_crop_len < n and
+                            crop_probability > 0):
+    sampler_fn = sampler_list[crop_algorithm]
+    if crop_algorithm == 'domain' and ('coord' not in protein or
+                                       'coord_mask' not in protein):
+      sampler_fn = sampler_list['random']
+      logger.debug('protein_clips_fn: crop_algorithm=%s downgrad to: random',
+                   crop_algorithm)
+    return sampler_fn(protein, n)
+
+  return None
+
+def _protein_crop_fn(protein, clip):
+  assert clip
+
+  i, j = clip['i'], clip['j']
+  protein['str_seq'] = protein['str_seq'][i:j]
+  for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
+                'coord_plddt'):
+    if field in protein:
+      protein[field] = protein[field][i:j, ...]
+  for field in ('str_msa',):
+    if field in protein:
+      protein[field] = [v[i:j] for v in protein[field]]
+  for field in ('msa', 'del_msa'):
+    if field in protein:
+      protein[field] = protein[field][:, i:j, ...]
+
+  return protein
+
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
@@ -239,43 +384,44 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 
     # swap(msa[1], msa[idx])
     assert len(item['str_msa'][0]) == len(item['str_msa'][1])
-    assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
-                                                   item['str_msa'][0],
-                                                   item['str_msa'][1])
-    item['str_msa'][0] = item['str_msa'][1]
-    item['str_msa'][1] = item['str_seq']
-    assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
-                                                   item['str_msa'][0],
-                                                   item['str_msa'][1])
-    item['str_seq'] = item['str_msa'][0]
-    assert item['str_seq'] == item['str_msa'][0]
+    if item['str_seq'] != item['str_msa'][1]:
+      assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
+                                                     item['str_msa'][0],
+                                                     item['str_msa'][1])
+      item['str_msa'][0] = item['str_msa'][1]
+      item['str_msa'][1] = item['str_seq']
+      assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
+                                                     item['str_msa'][0],
+                                                     item['str_msa'][1])
+      item['str_seq'] = item['str_msa'][0]
+      assert item['str_seq'] == item['str_msa'][0]
 
-    i, new_order = 0, []
+      i, new_order = 0, []
 
-    while i < len(item['str_seq']):
-      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
-        new_order.append(i)
-      i += 1
-    logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
-                 len(new_order), i)
-    assert 0 < len(new_order) <= i, (len(new_order), i)
+      while i < len(item['str_seq']):
+        if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+          new_order.append(i)
+        i += 1
+      logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
+                   len(new_order), i)
+      assert 0 <= len(new_order) <= i, (len(new_order), i)
 
-    if len(new_order) < i:
-      item = _make_feats_shrinked(item, new_order)
+      if len(new_order) < i:
+        item = _make_feats_shrinked(item, new_order)
 
-    # Renew seq related feats
-    pid = item['pid']
-    domains = _str_seq_index(item['seq_index'])
-    item['pid'] = f'{pid}@{idx}'
-    item.update(
-        _make_seq_features(item['str_seq'],
-                           item['pid'],
-                           max_seq_len=self.max_seq_len))
+      # Renew seq related feats
+      pid = item['pid']
+      domains = _str_seq_index(item['seq_index'])
+      item['pid'] = f'{pid}@{idx}'
+      item.update(
+          _make_seq_features(item['str_seq'],
+                             item['pid'],
+                             max_seq_len=None))
 
 
-    # Fix seq_index
-    del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
-    item['seq_index'] = item['seq_index'] + del_seq
+      # Fix seq_index
+      del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+      item['seq_index'] = item['seq_index'] + del_seq
 
     return item
 
@@ -318,12 +464,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def __init__(self,
                data_dir,
                data_idx=None,
+               data_crop_fn=None,
                max_msa_depth=128,
-               max_seq_len=None,
                pseudo_linker_prob=0.0,
+               pseudo_linker_shuffle=True,
                data_rm_mask_prob=0.0,
                msa_as_seq_prob=0.0,
                msa_as_seq_topn=None,
+               msa_as_seq_min_alr=0.75,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
@@ -331,12 +479,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     data_idx = default(data_idx, 'name.idx')
     if zipfile.is_zipfile(self.data_dir):
       self.data_dir = zipfile.ZipFile(self.data_dir)  # pylint: disable=consider-using-with
+    self.data_crop_fn = data_crop_fn
     self.max_msa_depth = max_msa_depth
-    self.max_seq_len = max_seq_len
     self.pseudo_linker_prob = pseudo_linker_prob
+    self.pseudo_linker_shuffle = pseudo_linker_shuffle
     self.data_rm_mask_prob = data_rm_mask_prob
     self.msa_as_seq_prob = msa_as_seq_prob
     self.msa_as_seq_topn = msa_as_seq_topn
+    self.msa_as_seq_min_alr = msa_as_seq_min_alr
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
     with self._fileobj(data_idx) as f:
@@ -402,7 +552,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         chains = None
 
       if not exists(chains) or len(chains) == 1:
-        ret = self.get_monomer(pid)
+        ret = self.get_monomer(pid, self.data_crop_fn)
       else:
         ret = self.get_complex(pid, chains)
 
@@ -416,7 +566,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def data_from_domain(self, item, domains):
     assert domains
-    domains = list(_seq_index_split(domains))
 
     n, new_order = len(item['str_seq']), []
     for i, j  in domains:
@@ -464,61 +613,62 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     # swap(msa[1], msa[idx])
     assert len(item['str_msa'][0]) == len(item['str_msa'][1])
-    assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
-                                                   item['str_msa'][0],
-                                                   item['str_msa'][1])
-    item['str_msa'][0] = item['str_msa'][1]
-    item['str_msa'][1] = item['str_seq']
-    assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
-                                                   item['str_msa'][0],
-                                                   item['str_msa'][1])
-    item['str_seq'] = item['str_msa'][0]
-    assert item['str_seq'] == item['str_msa'][0]
+    if item['str_seq'] != item['str_msa'][1]:
+      assert item['str_seq'] != item['str_msa'][1], (item['pid'], idx,
+                                                     item['str_msa'][0],
+                                                     item['str_msa'][1])
+      item['str_msa'][0] = item['str_msa'][1]
+      item['str_msa'][1] = item['str_seq']
+      assert item['str_seq'] != item['str_msa'][0], (item['pid'], idx,
+                                                     item['str_msa'][0],
+                                                     item['str_msa'][1])
+      item['str_seq'] = item['str_msa'][0]
+      assert item['str_seq'] == item['str_msa'][0]
 
-    i, new_order = 0, []
+      i, new_order = 0, []
 
-    while i < len(item['str_seq']):
-      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
-        new_order.append(i)
-      i += 1
-    logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
-                 len(new_order), i)
-    assert 0 < len(new_order) <= i, (len(new_order), i)
+      while i < len(item['str_seq']):
+        if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+          new_order.append(i)
+        i += 1
+      logger.debug('msa_as_seq: %s@%s k=%d, i=%d', item['pid'], idx,
+                   len(new_order), i)
+      assert 0 < len(new_order) <= i, (len(new_order), i)
 
-    if len(new_order) < i:
-      item = _make_feats_shrinked(item, new_order)
+      if len(new_order) < i:
+        item = _make_feats_shrinked(item, new_order)
 
-    # Renew seq related feats
-    pid = item['pid']
-    item['pid'] = f'{pid}@{idx}'
-    item.update(
-        _make_seq_features(item['str_seq'],
-                           item['pid'],
-                           max_seq_len=self.max_seq_len))
+      # Renew seq related feats
+      pid = item['pid']
+      item['pid'] = f'{pid}@{idx}'
+      item.update(
+          _make_seq_features(item['str_seq'],
+                             item['pid'],
+                             max_seq_len=None))
 
 
-    # Apply new coord_mask based on aatypes
-    coord_exists = torch.gather(
-        torch.from_numpy(residue_constants.restype_atom14_mask), 0,
-        repeat(item['seq'],
-               'i -> i n',
-               n=residue_constants.restype_atom14_mask.shape[-1]))
-    for field in ('coord', 'coord_mask', 'coord_plddt'):
-      if field in item:
-        item[field] = torch.einsum('i n ...,i n -> i n ...', item[field],
-                                   coord_exists)
-    # Delete coords if all are invalid.
-    ca_idx = residue_constants.atom_order['CA']
-    if 'coord_mask' in item and not torch.any(item['coord_mask'][:,ca_idx]):
+      # Apply new coord_mask based on aatypes
+      coord_exists = torch.gather(
+          torch.from_numpy(residue_constants.restype_atom14_mask), 0,
+          repeat(item['seq'],
+                 'i -> i n',
+                 n=residue_constants.restype_atom14_mask.shape[-1]))
       for field in ('coord', 'coord_mask', 'coord_plddt'):
         if field in item:
-          del item[field]
+          item[field] = torch.einsum('i n ...,i n -> i n ...', item[field],
+                                     coord_exists)
+      # Delete coords if all are invalid.
+      ca_idx = residue_constants.atom_order['CA']
+      if 'coord_mask' in item and not torch.any(item['coord_mask'][:,ca_idx]):
+        for field in ('coord', 'coord_mask', 'coord_plddt'):
+          if field in item:
+            del item[field]
 
-    # Fix seq_index
-    del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
-    item['seq_index'] = item['seq_index'] + del_seq
-    if 'resolu' in item:
-      item['resolu'] = None  # delete it !
+      # Fix seq_index
+      del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+      item['seq_index'] = item['seq_index'] + del_seq
+      if 'resolu' in item:
+        item['resolu'] = None  # delete it !
 
     return item
 
@@ -549,9 +699,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       return line.decode(encoding)
     return line
 
-  def get_monomer(self, pid):
+  def get_monomer(self, pid, crop_fn=None):
     # CATH format pid
     pid, chain, domains = decompose_pid(pid, return_domain=True)
+    if exists(domains):
+      domains = list(_seq_index_split(domains))
     pid = compose_pid(pid, chain)
 
     pkey = self.mapping[pid] if pid in self.mapping else pid
@@ -559,20 +711,31 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     ret = dict(pid=pid,
                msa_idx=0,
+               clip=None,
                resolu=self.get_resolution(pid),
                **seq_feats)
-    if self.feat_flags & FEAT_MSA:
-      ret.update(self.get_msa_features_new(pkey))
     if self.feat_flags & FEAT_PDB:
       ret.update(self.get_structure_label_npz(pid))
+    if exists(domains):
+      if self.feat_flags & FEAT_MSA:
+        ret.update(self.get_msa_features_new(pkey))
+      ret = self.data_from_domain(ret, domains)
+    if exists(crop_fn):
+      clip = crop_fn(ret)
+      if exists(clip):
+        ret = _protein_crop_fn(ret, clip)
+        ret['clip'] = clip
+    if not exists(domains) and (self.feat_flags & FEAT_MSA):
+      ret.update(self.get_msa_features_new(pkey, ret.get('clip')))
 
     if exists(domains):
-      ret = self.data_from_domain(ret, domains)
       # CATH update pid
-      ret['pid'] = compose_pid(pid, None, domains)
+      ret['pid'] = compose_pid(pid, None, _seq_index_join(domains))
 
     if 'msa_idx' in ret and ret['msa_idx'] != 0:
       ret = self.msa_as_seq(ret, ret['msa_idx'])
+    elif exists(domains):
+      pass
     elif np.random.random() < self.data_rm_mask_prob:
       ret = self.data_rm_mask(ret)
 
@@ -585,7 +748,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     assert chain in chains
 
     # shuffle the chains
-    np.random.shuffle(chains)
+    if self.pseudo_linker_shuffle:
+      np.random.shuffle(chains)
 
     seq_index_offset, seq_index_gap = 0, 128
     # Concat all the feats
@@ -601,6 +765,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret[field] = feat[field]
         else:
           ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+      for field in ('coord_plddt',):
+        assert 'coord_mask' in feat, (pid, chain)
+        if not field in feat:
+          feat['coord_plddt'] = torch.ones_like(feat['coord_mask'],
+                                                dtype=torch.float32)
+        if field not in ret:
+          ret[field] = feat[field]
+        else:
+          ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+          
       for field in ('seq_index',):
         seq_index = feat['seq_index'] + seq_index_offset
         if 'seq_index' not in ret:
@@ -646,6 +820,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           chains[idx] = f'{chain}@{msa_idx}'
     ret['pid'] = compose_pid(pid, ','.join(chains))
 
+    if exists(self.data_crop_fn):
+      clip = self.data_crop_fn(ret)
+      if exists(clip):
+        ret = _protein_crop_fn(ret, clip)
+      ret['clip'] = clip
+
     return ret
 
   def get_chain_list(self, protein_id):
@@ -662,14 +842,30 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid, _ = decompose_pid(protein_id)
     return self.resolu.get(pid, None)
 
-  def get_msa_features_new(self, protein_id):
+  def get_msa_features_new(self, protein_id, clip=None):
     def _aligned_ratio(msa, n):
-      return 1. - msa.count('-') / n
+      r = 1. - msa.count('-') / n
+      if exists(self.msa_as_seq_min_alr) and r < self.msa_as_seq_min_alr:
+        return 0
+      return r
 
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
     with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
       sequences = list(map(lambda x: self._ftext(x).strip(), f))
+
+    if exists(clip):
+      i, j = clip['i'], clip['j']
+      def _yield_msa_clip(msa):
+        k = 0
+        for c in msa:
+          if k >= i:
+            yield c
+          if not c.islower():
+            k += 1
+          if k >= j:
+            break
+      sequences = [''.join(_yield_msa_clip(s)) for s in sequences]
 
     ret = {'msa_idx': 0}
     if len(sequences) > 1 and np.random.random() < self.msa_as_seq_prob:
@@ -678,39 +874,41 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         n = min(n, self.msa_as_seq_topn)
       assert n > 1
 
-      clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
-      if self._fstat(clu_file_path):
-        try:
-          with self._fileobj(clu_file_path) as f:
-            clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
-          if len(clu_list) != len(sequences):
-            raise ValueError('len(clu_list) != len(sequences)')
-          clu_list = clu_list[1:n]
+      # clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
+      # if self._fstat(clu_file_path):
+      #   try:
+      #     with self._fileobj(clu_file_path) as f:
+      #       clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
+      #     if len(clu_list) != len(sequences):
+      #       raise ValueError('len(clu_list) != len(sequences)')
+      #     clu_list = clu_list[1:n]
 
-          clu_dict = defaultdict(list)
-          for i, clu in enumerate(clu_list):
-            clu_dict[clu].append(i + 1)
-          clu_list = sorted(clu_dict.items(), key=lambda x: x[0])
-          del clu_dict
+      #     clu_dict = defaultdict(list)
+      #     for i, clu in enumerate(clu_list):
+      #       clu_dict[clu].append(i + 1)
+      #     clu_list = sorted(clu_dict.items(), key=lambda x: x[0])
+      #     del clu_dict
 
-          n = len(clu_list) + 1
-        except ValueError as e:
-          logger.error('read clu faild: (%s) %s', protein_id, str(e))
-      else:
-        clu_list = None
+      #     n = len(clu_list) + 1
+      #   except ValueError as e:
+      #     logger.error('read clu faild: (%s) %s', protein_id, str(e))
+      # else:
+      #   clu_list = None
 
-      if not exists(clu_list) and exists(self.max_msa_depth):
-        n = min(n, self.max_msa_depth)
+      # if not exists(clu_list) and exists(self.max_msa_depth):
+      #   n = min(n, self.max_msa_depth)
 
       w = np.power(np.array([1.0 / p for p in range(1, n)]), 1.0 / 3.0)
-      # v = np.asarray([_aligned_ratio(s, m) for s in sequences[1:n]])
-      # w *= v
-      w /= np.sum(w)
-      ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
-      if exists(clu_list):
-        _, nn_list = clu_list[ret['msa_idx'] - 1]
-        nn_idx = int(np.random.randint(len(nn_list)))
-        ret['msa_idx'] = nn_list[nn_idx]
+      v = np.asarray([_aligned_ratio(s, m) for s in sequences[1:n]])
+      w *= v
+      t = np.sum(w)
+      if t > 0:
+        w /= t
+        ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
+        # if exists(clu_list):
+        #   _, nn_list = clu_list[ret['msa_idx'] - 1]
+        #   nn_idx = int(np.random.randint(len(nn_list)))
+        #   ret['msa_idx'] = nn_list[nn_idx]
     ret.update(_make_msa_features(sequences,
                                   msa_idx=ret['msa_idx'],
                                   max_msa_depth=self.max_msa_depth))
@@ -741,7 +939,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     return _make_seq_features(input_sequence,
                               input_description,
-                              max_seq_len=self.max_seq_len)
+                              max_seq_len=None)
 
   @staticmethod
   def batch_clips_fn(batch,
@@ -887,30 +1085,30 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     if exists(max_crop_len) and exists(min_crop_len):
       assert max_crop_len >= min_crop_len
 
-    clips = ProteinStructureDataset.batch_clips_fn(
-        batch,
-        min_crop_len=min_crop_len,
-        max_crop_len=max_crop_len,
-        crop_probability=crop_probability,
-        crop_algorithm=crop_algorithm,
-        **kwargs)
-    for k, clip in clips.items():
-      i, j = clip['i'], clip['j']
+    # clips = ProteinStructureDataset.batch_clips_fn(
+    #     batch,
+    #     min_crop_len=min_crop_len,
+    #     max_crop_len=max_crop_len,
+    #     crop_probability=crop_probability,
+    #     crop_algorithm=crop_algorithm,
+    #     **kwargs)
+    # for k, clip in clips.items():
+    #   i, j = clip['i'], clip['j']
 
-      batch[k]['str_seq'] = batch[k]['str_seq'][i:j]
-      for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
-                    'coord_plddt'):
-        if field in batch[k]:
-          batch[k][field] = batch[k][field][i:j, ...]
-      for field in ('str_msa',):
-        if field in batch[k]:
-          batch[k][field] = [v[i:j] for v in batch[k][field]]
-      for field in ('msa', 'del_msa'):
-        if field in batch[k]:
-          batch[k][field] = batch[k][field][:, i:j, ...]
+    #   batch[k]['str_seq'] = batch[k]['str_seq'][i:j]
+    #   for field in ('seq', 'seq_index', 'mask', 'coord', 'coord_mask',
+    #                 'coord_plddt'):
+    #     if field in batch[k]:
+    #       batch[k][field] = batch[k][field][i:j, ...]
+    #   for field in ('str_msa',):
+    #     if field in batch[k]:
+    #       batch[k][field] = [v[i:j] for v in batch[k][field]]
+    #   for field in ('msa', 'del_msa'):
+    #     if field in batch[k]:
+    #       batch[k][field] = batch[k][field][:, i:j, ...]
 
-    fields = ('pid', 'resolu', 'seq', 'seq_index', 'mask', 'str_seq', 'msa_idx')
-    pids, resolutions, seqs, seqs_idx, masks, str_seqs, msa_idx = list(
+    fields = ('pid', 'resolu', 'seq', 'seq_index', 'mask', 'str_seq', 'msa_idx', 'clip')
+    pids, resolutions, seqs, seqs_idx, masks, str_seqs, msa_idx, clips = list(
         zip(*[[b[k] for k in fields] for b in batch]))
     lengths = tuple(len(s) for s in str_seqs)
     max_batch_len = max(lengths)
@@ -957,8 +1155,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                  del_msa=padded_dels,
                  num_msa=torch.as_tensor(num_msa))
 
-    if clips:
-      ret['clips'] = clips
+    ret['clips'] = clips
 
     return ret
 
@@ -1043,6 +1240,8 @@ def load(data_dir,
       'max_msa_depth') if 'max_msa_depth' in kwargs else 128
   msa_as_seq_topn = kwargs.pop(
       'msa_as_seq_topn') if 'msa_as_seq_topn' in kwargs else None
+  msa_as_seq_min_alr = kwargs.pop(
+      'msa_as_seq_min_alr') if 'msa_as_seq_min_alr' in kwargs else None
 
   data_dir = data_dir.split(',')
   if exists(data_idx):
@@ -1051,29 +1250,36 @@ def load(data_dir,
     data_idx = [None] * len(data_dir)
   assert len(data_dir) == len(data_idx)
 
+  if 'data_crop_fn' not in kwargs:
+    crop_fn_kwargs = {}
+    if 'intra_domain_probability' in kwargs:
+      crop_fn_kwargs['intra_domain_probability'] = kwargs.pop(
+          'intra_domain_probability')
+    data_crop_fn = functools.partial(_protein_clips_fn,
+                                     min_crop_len=min_crop_len,
+                                     max_crop_len=max_crop_len,
+                                     crop_probability=crop_probability,
+                                     crop_algorithm=crop_algorithm,
+                                     **crop_fn_kwargs)
+  else:
+    data_crop_fn = kwargs.pop('data_crop_fn')
+
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
+                              data_crop_fn=data_crop_fn,
                               pseudo_linker_prob=pseudo_linker_prob,
                               data_rm_mask_prob=data_rm_mask_prob,
                               msa_as_seq_prob=msa_as_seq_prob,
                               msa_as_seq_topn=msa_as_seq_topn,
+                              msa_as_seq_min_alr=msa_as_seq_min_alr,
                               max_msa_depth=max_msa_depth,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))
   ])
   if 'collate_fn' not in kwargs:
-    collate_fn_kwargs = {}
-    if 'intra_domain_probability' in kwargs:
-      collate_fn_kwargs['intra_domain_probability'] = kwargs.pop(
-          'intra_domain_probability')
     kwargs['collate_fn'] = functools.partial(ProteinStructureDataset.collate_fn,
-                                             feat_flags=feat_flags,
-                                             min_crop_len=min_crop_len,
-                                             max_crop_len=max_crop_len,
-                                             crop_probability=crop_probability,
-                                             crop_algorithm=crop_algorithm,
-                                             **collate_fn_kwargs)
+                                             feat_flags=feat_flags)
   if 'weights' in kwargs:
     weights = kwargs.pop('weights')
     if weights:

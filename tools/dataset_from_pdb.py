@@ -58,7 +58,7 @@ def mmcif_yield_chain(mmcif_dict, args):
       npz['bfactor'] = np.stack(bfactor_list, axis=0)
     return npz
   def _make_domain(start, end, delta=0):
-    return f'{start + delta}-{end + delta}'
+    return (start + delta, end + delta)
 
   chain_id, seq, domains = None, [], []
   int_resseq_start, int_resseq_end = None, None
@@ -74,6 +74,8 @@ def mmcif_yield_chain(mmcif_dict, args):
     icode = icode_list[i]
     if icode in _unassigned:
       icode = ' '
+    if icode and icode != ' ':
+      continue
 
     if chain_id_list[i] != chain_id:
       if exists(chain_id):
@@ -193,8 +195,8 @@ def main(args):  # pylint: disable=redefined-outer-name
                                         input_files):
         pid = output_get_basename(input_file)
         for chain, seq, domains, npz in results:
-          seq, domains = ''.join(seq), ','.join(domains)
-          if chain and chain != '.':
+          seq = ''.join(seq)
+          if chain and chain != '.' and not args.ignore_chain:
             fid = f'{pid}_{chain}'
           else:
             fid = pid
@@ -209,7 +211,9 @@ def main(args):  # pylint: disable=redefined-outer-name
               if args.ignore_domain_parser:
                 f.write(f'>{fid}\n')
               else:
-                f.write(f'>{fid} domains:{domains}\n')
+                l = sum(map(lambda x: x[1] - x[0] + 1, domains))
+                domain_str = ','.join(f'{i}-{j}' for i, j in domains)
+                f.write(f'>{fid} domains:{domain_str} length={l}\n')
               f.write(seq)
 
           np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
@@ -244,6 +248,8 @@ if __name__ == '__main__':
   parser.add_argument('--add_plddt', action='store_true', help='add plddt')
   parser.add_argument('--ignore_domain_parser', action='store_true',
                       help='ignore domain parser')
+  parser.add_argument('--ignore_chain', action='store_true',
+                      help='ignore chain')
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   parser.add_argument('input_files', metavar='file', type=str, nargs='+',
                       help='input files')

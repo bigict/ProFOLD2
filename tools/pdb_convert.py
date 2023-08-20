@@ -71,10 +71,10 @@ def cif2pdb(mmcif_file, pdb_file):
 
     if pdb_file.suffix == '.gz':
       with gzip.open(pdb_file, 'wt') as f:
-        io.save(f, select=CustomSelect())
+        io.save(f, select=CustomSelect(), preserve_atom_numbering=True)
     else:
       with open(pdb_file, 'w') as f:
-        io.save(f, select=CustomSelect())
+        io.save(f, select=CustomSelect(), preserve_atom_numbering=True)
 
   except Exception as e:
     logger.error('%s, %s', mmcif_file, str(e))
@@ -89,10 +89,10 @@ def pdb2cif(pdb_file, mmcif_file):
 
     if mmcif_file.suffix == '.gz':
       with gzip.open(mmcif_file, 'wt') as f:
-        io.save(f)
+        io.save(f, preserve_atom_numbering=True)
     else:
       with open(mmcif_file, 'w') as f:
-        io.save(f)
+        io.save(f, preserve_atom_numbering=True)
 
     logger.info(mmcif_file)
   except Exception as e:
