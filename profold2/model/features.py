@@ -6,12 +6,13 @@ from inspect import isfunction
 import numpy as np
 import torch
 from torch.nn import functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
 from profold2.model.functional import (angles_from_positions, batched_gather,
                                        rigids_from_3x3, rigids_from_positions,
+                                       squared_cdist,
                                        symmetric_ground_truth_create_alt)
 from profold2.utils import default, exists
 
@@ -257,6 +258,66 @@ def make_pseudo_beta(protein, prefix='', is_training=True):
                        protein[prefix + 'coord_mask']))
   return protein
 
+@take1st
+def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
+  if is_training and replace_fraction > 0 and 'seq_color' in protein:
+    assert 'sequence_profile' in protein
+    if 'pseudo_beta' in protein and 'pseudo_beta_mask' in protein:
+      seq_color = protein['seq_color']
+      positions = protein['pseudo_beta']
+      mask = protein['pseudo_beta_mask']
+
+      b, max_color = mask.shape[0], torch.max(seq_color)
+
+      # Select one chain randomly
+      selected_clr = 1 + torch.floor(
+          torch.rand(b, device=mask.device) *
+          torch.amax(seq_color, dim=-1)).int()
+
+      masked_clr = (seq_color == selected_clr[..., None])
+      squared_mask = rearrange(mask, '... i -> ... i ()') * rearrange(
+          mask, '... j -> ... () j')
+      pair_clr_mask = (rearrange(seq_color, '... i -> ... i ()') != rearrange(
+          seq_color, '... j -> ... () j')) * masked_clr[..., None]
+      dist2 = squared_cdist(positions, positions)
+
+      # Number of contacts for each chain with selected chain except itself.
+      contacts = torch.sum(squared_mask * pair_clr_mask * (dist2 <= cutoff**2),
+                           dim=-1)
+      if torch.any(contacts):
+        # Nuber of AAs to be mutated
+        n = int(max(1, torch.max(torch.sum(contacts > 0, dim=-1)) * replace_fraction))
+        # Sample muations based on contacts
+        mutation_idx = torch.multinomial(contacts, n)
+
+        c = protein['sequence_profile'].shape[-1]
+        p = torch.gather(
+            protein['sequence_profile'], -2,
+            repeat(mutation_idx[..., None], '... r -> ... (r c)', c=c))
+
+        mask = ['X', '-']
+        m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
+        m = F.one_hot(torch.as_tensor(m, device=p.device),
+                      num_classes=len(residue_constants.restypes_with_x_and_gap))
+        # Shape (k, c)
+        m = ~(torch.sum(m, dim=0) > 0)
+
+        p = rearrange(m, 'c -> () () c') / (p + 1e-4)
+        mutation_aa = torch.multinomial(rearrange(p, 'b i c -> (b i) c'), 1)
+
+        mutation_aa = rearrange(mutation_aa, '(b i) c -> b (i c)', b=b)
+        wt_aa = torch.gather(protein['seq'], -1, mutation_idx)
+
+        def yield_mutation_str(i):
+          for idx, x, y in zip(mutation_idx[i], mutation_aa[i], wt_aa[i]):
+            x, y = residue_constants.restypes[x], residue_constants.restypes[y]
+            yield f'{y}{idx}{x}'
+        protein['mutation_str'] = '|'.join(','.join(yield_mutation_str(i)) for i in range(b))
+
+        protein['true_seq'] = protein['seq']
+        protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx, mutation_aa)
+
+  return protein
 
 @take1st
 def make_backbone_affine(protein, is_training=True):

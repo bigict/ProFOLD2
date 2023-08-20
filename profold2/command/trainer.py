@@ -54,6 +54,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         batch['seq'].shape[1] < args.max_protein_len)
 
   def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
+      pseudo_linker_prob=0.0,
       crop_probability=0.0,
       data_msa_as_seq_prob=0.0,
       data_msa_as_seq_topn=None,
@@ -62,7 +63,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
-        pseudo_linker_prob=args.pseudo_linker_prob,
+        pseudo_linker_prob=pseudo_linker_prob,
         data_rm_mask_prob=args.data_rm_mask_prob,
         msa_as_seq_prob=data_msa_as_seq_prob,
         msa_as_seq_topn=data_msa_as_seq_topn,
@@ -84,6 +85,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   train_data = create_cycling_data(args.train_data,
       data_idx=args.train_idx,
       weights=args.train_data_weights,
+      pseudo_linker_prob=args.train_pseudo_linker_prob,
       crop_probability=args.train_crop_probability,
       data_msa_as_seq_prob=args.train_msa_as_seq_prob,
       data_msa_as_seq_topn=args.train_msa_as_seq_topn,
@@ -92,6 +94,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     tuning_data = create_cycling_data(args.tuning_data,
         data_idx=args.tuning_idx,
         weights=args.tuning_data_weights,
+        pseudo_linker_prob=args.tuning_pseudo_linker_prob,
         crop_probability=args.tuning_crop_probability,
         data_msa_as_seq_prob=args.tuning_msa_as_seq_prob,
         data_msa_as_seq_topn=args.tuning_msa_as_seq_topn,
@@ -100,6 +103,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     fake_data = create_cycling_data(args.fake_data,
         data_idx=args.fake_idx,
         weights=args.fake_data_weights,
+        pseudo_linker_prob=args.fake_pseudo_linker_prob,
         crop_probability=args.fake_crop_probability,
         data_msa_as_seq_prob=args.fake_msa_as_seq_prob,
         data_msa_as_seq_topn=args.fake_msa_as_seq_topn,
@@ -383,7 +387,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
-  parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
+  parser.add_argument('--train_pseudo_linker_prob', type=float, default=0.0,
       help='enable loading complex data, default=0.0')
   parser.add_argument('--data_rm_mask_prob', type=float, default=0.0,
       help='remove masked amino acid with probability DATA_RM_MASK_PROB '
@@ -397,6 +401,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
+  parser.add_argument('--tuning_pseudo_linker_prob', type=float, default=0.0,
+      help='enable loading complex data, default=0.0')
   parser.add_argument('--tuning_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
@@ -412,6 +418,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--fake_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
+  parser.add_argument('--fake_pseudo_linker_prob', type=float, default=0.0,
+      help='enable loading complex data, default=0.0')
   parser.add_argument('--fake_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
@@ -460,8 +468,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='json format headers of model, default=model_headers_main.json')
   parser.add_argument('--model_recycles', type=int, default=2,
       help='number of recycles in model, default=2')
-  parser.add_argument('--model_dim', type=int, nargs=2, default=(256, 128),
-      help='dimension of model, default=(256, 128)')
+  parser.add_argument('--model_dim', type=int, nargs=3, default=(384, 256, 128),
+      help='dimension of model, default=(384, 256, 128)')
   parser.add_argument('--model_embedd_dim', type=int,
       default=esm.ESM_EMBED_DIM,
       help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')

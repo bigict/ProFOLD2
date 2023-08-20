@@ -133,7 +133,7 @@ class Attention(nn.Module):
 
     q, k, v = (self.to_q(x), *self.to_kv(m).chunk(2, dim=-1))
 
-    i, n = q.shape[-2], k.shape[-2]
+    b, i, n = q.shape[0], q.shape[-2], k.shape[-2]
 
     q, k, v = map(lambda t: rearrange(t, '... i (h d) -> ... h i d', d=d),
                   (q, k, v))
@@ -145,36 +145,36 @@ class Attention(nn.Module):
       # they average the queries along the rows of the MSAs
       # they named this particular module MSAColumnGlobalAttention
 
-      k, v = map(lambda t: repeat(t, '... r d-> ... (r h) d', h=h), (k, v))
+      k, v = map(lambda t: repeat(t, '... r i d-> ... (r h) i d', h=h), (k, v))
       if exists(mask):
-        q = torch.sum(q * mask[..., None, None],
-                      dim=1) / (torch.sum(mask[..., None, None], dim=1) + 1e-10)
+        q = torch.sum(q * mask[..., None, :, None],
+                      dim=-2) / (torch.sum(mask[..., None, :, None], dim=-2) + 1e-10)
       else:
-        q = q.mean(dim=1)
+        q = q.mean(dim=-2)
       q = repeat(q, '... h d -> ... h i d', i=n)
 
     # masking
     attn_mask, mask_value = None, -torch.finfo(q.dtype).max
     if exists(mask):
-      mask = default(mask, lambda: torch.ones(1, i, device=device))
+      mask = default(mask, lambda: torch.ones(b, i, device=device))
       context_mask = mask if not exists(context) else default(
           context_mask,
-          lambda: torch.ones(1, k.shape[-3], device=device))
+          lambda: torch.ones(b, k.shape[-2], device=device))
       attn_mask = rearrange(mask.bool(), '... i -> ... () i ()') * rearrange(
           context_mask.bool(), '... j -> ... () () j')
       assert attn_mask.dtype == torch.bool
       
     # pytorch 2.0+
-    if hasattr(F, 'scaled_dot_product_attention'):
+    if hasattr(F, 'scaled_dot_product_attention') and (
+          not exists(attn_bias) or not self.training):
       if exists(attn_mask) and exists(attn_bias):
         attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
       elif exists(attn_bias):
         attn_mask = attn_bias
       # See: https://github.com/pytorch/pytorch/issues/96099
-      with torch.backends.cuda.sdp_kernel(enable_flash=False):
-        dropout_p = self.dropout.p if self.training else 0.0
-        out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
+      dropout_p = self.dropout.p if self.training else 0.0
+      out = F.scaled_dot_product_attention(
+          q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
     else:
       # scale
       q = q * self.scale

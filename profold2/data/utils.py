@@ -2,6 +2,7 @@
  """
 import logging
 import os
+import re
 
 import numpy as np
 import torch
@@ -34,6 +35,66 @@ def compose_pid(pid, chain, domains=None):
   if exists(domains):
     pid = f'{pid}/{domains}'
   return pid
+
+
+_seq_index_pattern = '(\\d+)-(\\d+)'
+
+
+def seq_index_split(text):
+  for s in text.split(','):
+    r = re.match(_seq_index_pattern, s)
+    assert r
+    yield tuple(map(int, r.group(1, 2)))
+
+
+def seq_index_join(seq_index):
+  return ','.join(f'{i}-{j}' for i, j in seq_index)
+
+
+def str_seq_index(seq_index):
+  assert exists(seq_index) and seq_index.shape[0] > 0
+  domains = []
+  s, e = None, None
+  for i in range(seq_index.shape[0]):
+    if seq_index[i] - 1 != e:
+      if exists(s) and exists(e):
+        domains += [(s, e)]
+      s = seq_index[i]
+    e = seq_index[i]
+  if exists(s) and exists(e):
+    domains += [(s, e)]
+  return seq_index_join(domains)
+
+
+def parse_seq_index(description, input_sequence, seq_index):
+  # description: pid field1 field2 ...
+  def seq_index_check(positions):
+    for i in range(len(positions) - 1):
+      p, q = positions[i]
+      m, n = positions[i + 1]
+      assert p < q and m < n
+      assert q < m
+    m, n = positions[-1]
+    assert m <= n
+    assert sum(map(lambda p: p[1] - p[0] + 1, positions)) == len(input_sequence)
+
+  fields = description.split()
+  for f in fields[1:]:
+    r = re.match(f'.*:({_seq_index_pattern}(,{_seq_index_pattern})*)', f)
+    if r:
+      positions = list(seq_index_split(r.group(1)))
+      seq_index_check(positions)
+      p, q = positions[0]
+      start, gap = p, 0
+      for m, n in positions[1:]:
+        gap += m - q - 1
+        seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
+            m - start, n - start + 1)
+        p, q = m, n
+      break
+
+  return seq_index
+
 
 def domain_parser(ca_coord,
                   ca_mask,

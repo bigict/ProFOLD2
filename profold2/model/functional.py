@@ -12,6 +12,13 @@ from profold2.utils import default, exists
 def l2_norm(v, dim=-1, epsilon=1e-12):
     return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True), min=epsilon)
 
+def squared_cdist(x, y, keepdim=False):
+    return torch.sum(torch.square(
+        rearrange(x, '... i d -> ... i () d') - 
+        rearrange(y, '... j d -> ... () j d')),
+                     dim=-1,
+                     keepdim=keepdim)
+
 def masked_mean(mask, value, epsilon=1e-10):
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
 
@@ -39,7 +46,7 @@ def sharded_apply(fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0,
         batched_dim = sharded_args[0].shape[shard_dim]
         assert all(map(lambda x: not exists(x) or x.shape[shard_dim] == batched_dim, sharded_args))
         for slice_args in zip(*map(
-                lambda x: torch.split(x, shard_size, dim=shard_dim) if exists(x) else [None]*shard_size,
+                lambda x: torch.split(x, shard_size, dim=shard_dim),
                 sharded_args)):
             yield run_fn(*slice_args)
 
@@ -236,11 +243,7 @@ def distogram_from_positions(coords, breaks):
   hi_breaks = torch.cat(
       (lo_breaks[1:], torch.full((1,), 1e8, device=breaks.device)),
       dim=-1)
-  dist2 = torch.sum(torch.square(
-      rearrange(coords, '... i c -> ... i () c') -
-      rearrange(coords, '... j c -> ... () j c')),
-                    dim=-1,
-                    keepdims=True)
+  dist2 = squared_cdist(coords, coords, keepdim=True)
   dgram = ((dist2 > lo_breaks) * (dist2 < hi_breaks))
   return dgram.float()
 
@@ -429,7 +432,14 @@ def rigids_from_positions(aatypes, coords, coord_mask):
     group_mask = torch.all(group_point_mask > 0, dim=-1) * group_exists
 
     # Compute the Rigids.
-    group_affine = rigids_from_3x3(group_points)
+    # group_affine = rigids_from_3x3(group_points)
+    group_affine = (rotations_from_vecs(group_points[...,1,:] - group_points[...,0,:], group_points[...,2,:] - group_points[...,1,:]),
+                    group_points[...,1,:])
+    # Adapt backbone frame to old convention (mirror x-axis and z-axis).
+    rots = torch.tile(torch.eye(3, dtype=torch.float32, device=group_points.device), [8, 1, 1])
+    rots[0, 0, 0] = -1
+    rots[0, 2, 2] = -1
+    group_affine = rigids_rotate(group_affine, rots)
 
     # The frames for ambiguous rigid groups are just rotated by 180 degree around
     # the x-axis. The ambiguous group is always the last chi-group.
@@ -466,8 +476,8 @@ def rigids_to_positions(frames, aatypes):
     # Shape (b, l, 14, 8)
     group_mask = F.one_hot(group_idx, num_classes=8).float()
 
-    rotations = torch.einsum('... i m n,... i n h w->... i m h w', group_mask, rotations)
-    translations = torch.einsum('... i m n,... i n h->... i m h', group_mask, translations)
+    rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
+    translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
 
     # Gather the literature atom positions for each residue.
     # Shape (b, l, 14, 3)
