@@ -62,7 +62,7 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
       d = [None] * len(s)
     else:
       s, d = parse_fasta(fasta_str)
-    d[0] = fasta_name
+    d[0] = f'{fasta_name} {d[0]}' if exists(d[0]) else fasta_name
     if args.fasta_fmt == 'single':
       sequences += s
       descriptions += d

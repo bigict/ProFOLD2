@@ -54,7 +54,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         batch['seq'].shape[1] < args.max_protein_len)
 
   def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
+      crop_probability=0.0,
       data_msa_as_seq_prob=0.0,
+      data_msa_as_seq_topn=None,
+      data_msa_as_seq_min_alr=None,
       data_filter=data_cond):
     data_loader = dataset.load(
         data_dir=data_dir,
@@ -62,11 +65,13 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         pseudo_linker_prob=args.pseudo_linker_prob,
         data_rm_mask_prob=args.data_rm_mask_prob,
         msa_as_seq_prob=data_msa_as_seq_prob,
+        msa_as_seq_topn=data_msa_as_seq_topn,
+        msa_as_seq_min_alr=data_msa_as_seq_min_alr,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
-        crop_probability=args.crop_probability,
+        crop_probability=crop_probability,
         intra_domain_probability=args.intra_domain_probability,
         batch_size=args.batch_size,
         weights=list(weights_from_file(weights)),
@@ -79,16 +84,26 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   train_data = create_cycling_data(args.train_data,
       data_idx=args.train_idx,
       weights=args.train_data_weights,
-      data_msa_as_seq_prob=args.train_msa_as_seq_prob)
+      crop_probability=args.train_crop_probability,
+      data_msa_as_seq_prob=args.train_msa_as_seq_prob,
+      data_msa_as_seq_topn=args.train_msa_as_seq_topn,
+      data_msa_as_seq_min_alr=args.train_msa_as_seq_min_alr)
   if args.tuning_data:
     tuning_data = create_cycling_data(args.tuning_data,
         data_idx=args.tuning_idx,
         weights=args.tuning_data_weights,
-        data_msa_as_seq_prob=args.tuning_msa_as_seq_prob)
+        crop_probability=args.tuning_crop_probability,
+        data_msa_as_seq_prob=args.tuning_msa_as_seq_prob,
+        data_msa_as_seq_topn=args.tuning_msa_as_seq_topn,
+        data_msa_as_seq_min_alr=args.tuning_msa_as_seq_min_alr)
   if args.fake_data:
     fake_data = create_cycling_data(args.fake_data,
         data_idx=args.fake_idx,
-        weights=args.fake_data_weights)
+        weights=args.fake_data_weights,
+        crop_probability=args.fake_crop_probability,
+        data_msa_as_seq_prob=args.fake_msa_as_seq_prob,
+        data_msa_as_seq_topn=args.fake_msa_as_seq_topn,
+        data_msa_as_seq_min_alr=args.fake_msa_as_seq_min_alr)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -365,7 +380,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--crop_algorithm', type=str, default='random',
       choices=['random', 'domain'],
       help='type of crop algorithm')
-  parser.add_argument('--crop_probability', type=float, default=0.0,
+  parser.add_argument('--train_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
   parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
@@ -376,9 +391,36 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
+  parser.add_argument('--train_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
+  parser.add_argument('--train_msa_as_seq_min_alr', type=float, default=None,
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
+           'default=None')
+  parser.add_argument('--tuning_crop_probability', type=float, default=0.0,
+      help='crop protein with probability CROP_PROBABILITY when it\'s '
+          'length>MIN_CROP_LEN, default=0.0')
   parser.add_argument('--tuning_msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
            'default=0.0')
+  parser.add_argument('--tuning_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
+  parser.add_argument('--tuning_msa_as_seq_min_alr', type=float, default=None,
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
+           'default=None')
+  parser.add_argument('--fake_crop_probability', type=float, default=0.0,
+      help='crop protein with probability CROP_PROBABILITY when it\'s '
+          'length>MIN_CROP_LEN, default=0.0')
+  parser.add_argument('--fake_msa_as_seq_prob', type=float, default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
+           'default=0.0')
+  parser.add_argument('--fake_msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
+  parser.add_argument('--fake_msa_as_seq_min_alr', type=float, default=None,
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
+           'default=None')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
           'instead of domain, default=0.0')

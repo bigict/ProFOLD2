@@ -171,10 +171,10 @@ class Attention(nn.Module):
       elif exists(attn_bias):
         attn_mask = attn_bias
       # See: https://github.com/pytorch/pytorch/issues/96099
-      # with torch.backends.cuda.sdp_kernel(enable_flash=False):
-      dropout_p = self.dropout.p if self.training else 0.0
-      out = F.scaled_dot_product_attention(
-          q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
+      with torch.backends.cuda.sdp_kernel(enable_flash=False):
+        dropout_p = self.dropout.p if self.training else 0.0
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
     else:
       # scale
       q = q * self.scale
