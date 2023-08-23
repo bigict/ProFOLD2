@@ -5,6 +5,7 @@ import logging
 
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
@@ -362,11 +363,12 @@ class StructureModule(nn.Module):
         if not is_last:
           rotations = rotations.detach()
 
-        single_repr = self.ipa_block(single_repr,
-                                     mask=batch['mask'].bool(),
-                                     pairwise_repr=pairwise_repr,
-                                     rotations=rotations,
-                                     translations=translations)
+        with autocast(enabled=False):
+          single_repr = self.ipa_block(single_repr.float(),
+                                       mask=batch['mask'].bool(),
+                                       pairwise_repr=pairwise_repr.float(),
+                                       rotations=rotations.float(),
+                                       translations=translations.float())
 
         # update quaternion and translation
         quaternion_update, translation_update = self.to_affine_update(
