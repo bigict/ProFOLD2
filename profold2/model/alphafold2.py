@@ -270,9 +270,14 @@ class Alphafold2WithRecycling(nn.Module):
 
     ret = ReturnValues(**self.impl(
         batch, return_recyclables=False, compute_loss=True, **kwargs))
+    metrics = {}
+    if 'confidence' in ret.headers:
+      metrics['confidence'] = ret.headers['confidence']['loss'].item()
     if 'tmscore' in ret.headers:
-      logger.debug('%s/%s pid: %s, tmscore: %s', num_recycle, num_recycle,
+      metrics['tmscore'] = ret.headers['tmscore']['loss'].item()
+    if metrics:
+      logger.debug('%s/%s pid: %s, %s', num_recycle, num_recycle,
                    ','.join(batch['pid']),
-                   ret.headers['tmscore']['loss'].item())
+                   ', '.join(f'{k}: {v}' for k, v in metrics.items()))
 
     return ret.asdict()
