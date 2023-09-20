@@ -5,6 +5,7 @@ import logging
 
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
@@ -30,11 +31,11 @@ class InvariantPointAttention(nn.Module):
   def __init__(self,
                *,
                dim,
-               heads=8,
+               heads=12,
                scalar_key_dim=16,
                scalar_value_dim=16,
                point_key_dim=4,
-               point_value_dim=4,
+               point_value_dim=8,
                pairwise_repr_dim=None,
                require_pairwise_repr=True,
                qkv_use_bias=False,
@@ -350,6 +351,7 @@ class StructureModule(nn.Module):
       quaternions = torch.tensor([1., 0., 0., 0.],
                                  device=device)  # initial rotations
       quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
+      rotations = quaternion_to_matrix(quaternions)
       translations = torch.zeros((b, n, 3), device=device)
 
       # go through the layers and apply invariant point attention and
@@ -357,16 +359,12 @@ class StructureModule(nn.Module):
       for i in range(self.structure_module_depth):
         is_last = i == (self.structure_module_depth - 1)
 
-        rotations = quaternion_to_matrix(quaternions)
-        # No rotation gradients between iterations to stabilize training.
-        if not is_last:
-          rotations = rotations.detach()
-
-        single_repr = self.ipa_block(single_repr,
-                                     mask=batch['mask'].bool(),
-                                     pairwise_repr=pairwise_repr,
-                                     rotations=rotations,
-                                     translations=translations)
+        with autocast(enabled=False):
+          single_repr = self.ipa_block(single_repr.float(),
+                                       mask=batch['mask'].bool(),
+                                       pairwise_repr=pairwise_repr.float(),
+                                       rotations=rotations.float(),
+                                       translations=translations.float())
 
         # update quaternion and translation
         quaternion_update, translation_update = self.to_affine_update(
@@ -379,6 +377,11 @@ class StructureModule(nn.Module):
         translations = torch.einsum('b n c, b n r c -> b n r',
                                     translation_update,
                                     rotations) + translations
+        rotations = quaternion_to_matrix(quaternions)
+        # No rotation gradients between iterations to stabilize training.
+        if not is_last:
+          rotations = rotations.detach()
+
 
         if self.training or is_last:
           angles = self.to_angles(single_repr,
@@ -387,11 +390,10 @@ class StructureModule(nn.Module):
               batch['seq'],
               rigids_scale((rotations, translations), self.position_scale),
               l2_norm(angles))
-          frames = rigids_scale(frames, 1.0 / self.position_scale)
           coords = rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(
-              dict(frames=(rotations, translations),
+              dict(frames=rigids_scale((rotations, translations), self.position_scale),
                    act=single_repr,
                    atoms=dict(frames=frames, coords=coords, angles=angles)))
 
