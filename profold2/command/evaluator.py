@@ -101,8 +101,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
                 rearrange(labels,
                           'b l c d -> b (l c) d')[flat_cloud_mask],
                 'c d -> d c'))
-        logging.debug('coords_aligned: %s', coords_aligned.shape)
-        logging.debug('labels_aligned: %s', labels_aligned.shape)
 
         tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
                       rearrange(labels_aligned, 'd l -> () d l'),
