@@ -72,7 +72,7 @@ def parse_seq_index(description, input_sequence, seq_index):
     for i in range(len(positions) - 1):
       p, q = positions[i]
       m, n = positions[i + 1]
-      assert p < q and m < n
+      assert p <= q and m <= n
       assert q < m
     m, n = positions[-1]
     assert m <= n
@@ -215,6 +215,9 @@ def filter_from_file(filename):
 
 def pdb_from_prediction(batch, headers, idx=None):
 
+  def to_numpy(t):
+    return t.detach().cpu().numpy()
+
   def to_pdb_str(b):
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
@@ -224,7 +227,7 @@ def pdb_from_prediction(batch, headers, idx=None):
             aa, residue_constants.unk_restype_index) for aa in str_seq
     ])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
-      seq_index = batch['seq_index'][b].detach().cpu().numpy()
+      seq_index = to_numpy(batch['seq_index'][b])
     else:
       seq_index = np.arange(seq_len)
     features = {
@@ -232,28 +235,20 @@ def pdb_from_prediction(batch, headers, idx=None):
         'residue_index': seq_index,
     }
 
-    coords = headers['folding']['coords'].detach().cpu()  # (b l c d)
+    coords = to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
-    # includes = ['N', 'CA', 'C', 'CB']
-    includes = []
-    if includes:
-      includes = set(includes)
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
-        atom_list = residue_constants.restype_name_to_atom14_names[resname]
-        for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
-            restype_atom14_mask[i, j] = 0
-    coord_mask = np.asarray(
-        [restype_atom14_mask[restype] for restype in aatype])
+    if 'coord_exists' in batch:
+      coord_mask = to_numpy(batch['coord_exists'][b,...])
+    else:
+      coord_mask = np.asarray(
+          [restype_atom14_mask[restype] for restype in aatype])
     b_factors = None
     if 'confidence' in headers and 'plddt' in headers['confidence']:
-      plddt = headers['confidence']['plddt'].detach().cpu().numpy()  # (b l)
-      b_factors = coord_mask * plddt[b][..., None]
+      plddt = to_numpy(headers['confidence']['plddt'][b,...])  # (b l)
+      b_factors = coord_mask * plddt[..., None]
 
     result = dict(structure_module=dict(
-        final_atom_mask=coord_mask, final_atom_positions=coords[b,
-                                                                ...].numpy()))
+        final_atom_mask=coord_mask, final_atom_positions=coords))
     prot = protein.from_prediction(features=features,
                                    result=result,
                                    b_factors=b_factors)
