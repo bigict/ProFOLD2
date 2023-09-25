@@ -9,7 +9,7 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from profold2.model import functional
+from profold2.model import functional, profiler
 from profold2.utils import default, exists
 
 
@@ -460,35 +460,43 @@ class PairwiseAttentionBlock(nn.Module):
               shard_size=None):
     if exists(msa_repr):
       assert exists(self.outer_mean)
-      x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
+      with profiler.record_function("OuterProductMean"):
+        x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
     if self.multiplication_first:
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_multiply_outgoing(x, mask=mask), training=self.training)
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_multiply_ingoing(x, mask=mask), training=self.training)
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_attention_outgoing(x, edges=x, mask=mask,
-                                           shard_size=shard_size),
-          training=self.training)
-      x = x + self.dropout_column_fn(
-          self.triangle_attention_ingoing(x, edges=x, mask=mask,
-                                          shard_size=shard_size),
-          training=self.training)
+      with profiler.record_function("TriangleMultiplicative"):
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_multiply_outgoing(x, mask=mask),
+            training=self.training)
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_multiply_ingoing(x, mask=mask),
+            training=self.training)
+      with profiler.record_function("TriangleAttention"):
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_attention_outgoing(x, edges=x, mask=mask,
+                                             shard_size=shard_size),
+            training=self.training)
+        x = x + self.dropout_column_fn(
+            self.triangle_attention_ingoing(x, edges=x, mask=mask,
+                                            shard_size=shard_size),
+            training=self.training)
     else:
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_attention_outgoing(x, edges=x, mask=mask,
-                                           shard_size=shard_size),
-          training=self.training)
-      x = x + self.dropout_column_fn(
-          self.triangle_attention_ingoing(x, edges=x, mask=mask,
-                                          shard_size=shard_size),
-          training=self.training)
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_multiply_outgoing(x, mask=mask), training=self.training)
-      x = x + self.dropout_rowwise_fn(
-          self.triangle_multiply_ingoing(x, mask=mask),
-          training=self.training)
+      with profiler.record_function("TriangleAttention"):
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_attention_outgoing(x, edges=x, mask=mask,
+                                             shard_size=shard_size),
+            training=self.training)
+        x = x + self.dropout_column_fn(
+            self.triangle_attention_ingoing(x, edges=x, mask=mask,
+                                            shard_size=shard_size),
+            training=self.training)
+      with profiler.record_function("TriangleMultiplicative"):
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_multiply_outgoing(x, mask=mask),
+            training=self.training)
+        x = x + self.dropout_rowwise_fn(
+            self.triangle_multiply_ingoing(x, mask=mask),
+            training=self.training)
     return x
 
 
@@ -527,10 +535,12 @@ class MsaAttentionBlock(nn.Module):
                                         p=dropout)
 
   def forward(self, x, mask=None, pairwise_repr=None, shard_size=None):
-    x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr,
-                                          shard_size=shard_size),
-                            training=self.training)
-    x = x + self.col_attn(x, mask=mask, shard_size=shard_size)
+    with profiler.record_function("MSARowAttention"):
+      x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr,
+                                            shard_size=shard_size),
+                              training=self.training)
+    with profiler.record_function("MSAColumnAttention"):
+      x = x + self.col_attn(x, mask=mask, shard_size=shard_size)
     return x
 
 
