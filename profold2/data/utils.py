@@ -66,6 +66,16 @@ def str_seq_index(seq_index):
   return seq_index_join(domains)
 
 
+def yield_seq_index(description):
+  fields = description.split()
+  for f in fields[1:]:
+    r = re.match(f'.*:({_seq_index_pattern}(,{_seq_index_pattern})*)', f)
+    if r:
+      for p, q in seq_index_split(r.group(1)):
+        yield p, q
+      break
+
+
 def parse_seq_index(description, input_sequence, seq_index):
   # description: pid field1 field2 ...
   def seq_index_check(positions):
@@ -78,20 +88,16 @@ def parse_seq_index(description, input_sequence, seq_index):
     assert m <= n
     assert sum(map(lambda p: p[1] - p[0] + 1, positions)) == len(input_sequence)
 
-  fields = description.split()
-  for f in fields[1:]:
-    r = re.match(f'.*:({_seq_index_pattern}(,{_seq_index_pattern})*)', f)
-    if r:
-      positions = list(seq_index_split(r.group(1)))
-      seq_index_check(positions)
-      p, q = positions[0]
-      start, gap = p, 0
-      for m, n in positions[1:]:
-        gap += m - q - 1
-        seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
-            m - start, n - start + 1)
-        p, q = m, n
-      break
+  positions = list(yield_seq_index(description))
+  if positions:
+    seq_index_check(positions)
+    p, q = positions[0]
+    start, gap = p, 0
+    for m, n in positions[1:]:
+      gap += m - q - 1
+      seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
+          m - start, n - start + 1)
+      p, q = m, n
 
   return seq_index
 

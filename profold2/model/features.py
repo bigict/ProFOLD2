@@ -10,10 +10,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
-from profold2.model.functional import (angles_from_positions, batched_gather,
-                                       rigids_from_3x3, rigids_from_positions,
-                                       squared_cdist,
-                                       symmetric_ground_truth_create_alt)
+from profold2.model import functional
 from profold2.utils import default, exists
 
 _feats_fn = {}
@@ -62,10 +59,11 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
         for j in range(restype_atom14_mask.shape[1]):
           if restype_atom14_mask[i, j] > 0 and atom_list[j] in excludes:
             restype_atom14_mask[i, j] = 0
-    coord_exists = batched_gather(restype_atom14_mask, protein['seq'])
+    coord_exists = functional.batched_gather(restype_atom14_mask,
+                                             protein['seq'])
   else:
-    coord_exists = batched_gather(residue_constants.restype_atom14_mask,
-                                  protein['seq'])
+    coord_exists = functional.batched_gather(
+        residue_constants.restype_atom14_mask, protein['seq'])
   protein['coord_exists'] = coord_exists
   if 'coord_mask' in protein:
     protein['coord_mask'] *= coord_exists
@@ -99,8 +97,9 @@ def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
 def make_coord_alt(protein, is_training=True):
   if is_training:
     protein.update(
-        symmetric_ground_truth_create_alt(protein['seq'], protein.get('coord'),
-                                          protein.get('coord_mask')))
+        functional.symmetric_ground_truth_create_alt(protein['seq'],
+                                                     protein.get('coord'),
+                                                     protein.get('coord_mask')))
   return protein
 
 
@@ -119,14 +118,14 @@ def make_seq_profile(protein,
   # Shape (b, m, l, c)
   if 'msa' in protein:
     msa = protein['msa']
-    p = F.one_hot(msa,
+    p = F.one_hot(msa.long(),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
     num_msa = p.shape[1]
     # Shape (b, l, c)
     p = torch.sum(p, dim=1)
   else:
     num_msa = 1
-    p = F.one_hot(protein['seq'],
+    p = F.one_hot(protein['seq'].long(),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
 
   # gap value (b, l)
@@ -134,11 +133,10 @@ def make_seq_profile(protein,
   protein['sequence_profile_gap_value'] = p[..., gap_idx] / (num_msa + epsilon)
 
   if exists(mask) and len(mask) > 0:
-    m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
-    m = F.one_hot(torch.as_tensor(m, device=p.device),
-                  num_classes=len(residue_constants.restypes_with_x_and_gap))
     # Shape (k, c)
-    m = ~(torch.sum(m, dim=0) > 0)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                             mask,
+                             device=p.device)
     protein['sequence_profile_mask'] = m
     # Shape (c)
     p = p * rearrange(m, 'c -> () () c')
@@ -163,11 +161,11 @@ def make_seq_profile_pairwise(protein,
     msa = protein['msa']
     if hasattr(protein['seq'], 'device'):
       msa = msa.to(device=protein['seq'].device)
-    q = F.one_hot(msa,
+    q = F.one_hot(msa.long(),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
     del msa
   else:
-    q = F.one_hot(rearrange(protein['seq'], 'b ... -> b () ...'),
+    q = F.one_hot(rearrange(protein['seq'].long(), 'b ... -> b () ...'),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
   b, m, l, c = q.shape
   p = torch.zeros((b, l, l, c, c), device=q.device)
@@ -177,11 +175,10 @@ def make_seq_profile_pairwise(protein,
         rearrange(q[:, i:i + chunk, ...], 'b m j d -> b m () j () d'),
         dim=1)
   if exists(mask) and len(mask) > 0:
-    m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
-    m = F.one_hot(torch.as_tensor(m, device=p.device),
-                  num_classes=len(residue_constants.restypes_with_x_and_gap))
     # Shape (k, c)
-    m = ~(torch.sum(m, dim=0) > 0)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                             mask,
+                             device=p.device)
     m = rearrange(m, 'c -> c ()') * rearrange(m, 'd -> () d')
     protein['sequence_profile_pairwise_mask'] = rearrange(m, 'c d -> (c d)')
     p = p * rearrange(m, 'c d -> () () () c d')
@@ -206,7 +203,7 @@ def make_bert_mask(protein,
 
     if exists(fraction):  # vanilla BERT masking
       masked_position = torch.rand(masked_shape, device=mask.device) < fraction
-    elif exists(span_mean): # SpanBERT-like masking
+    elif exists(span_mean):  # SpanBERT-like masking
       b, n = masked_shape[:2]
       span_num = torch.poisson(torch.full((b,), span_mean, device=mask.device))
       if exists(span_min) or exists(span_max):
@@ -267,7 +264,7 @@ def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
       positions = protein['pseudo_beta']
       mask = protein['pseudo_beta_mask']
 
-      b, max_color = mask.shape[0], torch.max(seq_color)
+      b = mask.shape[0]
 
       # Select one chain randomly
       selected_clr = 1 + torch.floor(
@@ -279,14 +276,16 @@ def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
           mask, '... j -> ... () j')
       pair_clr_mask = (rearrange(seq_color, '... i -> ... i ()') != rearrange(
           seq_color, '... j -> ... () j')) * masked_clr[..., None]
-      dist2 = squared_cdist(positions, positions)
+      dist2 = functional.squared_cdist(positions, positions)
 
       # Number of contacts for each chain with selected chain except itself.
       contacts = torch.sum(squared_mask * pair_clr_mask * (dist2 <= cutoff**2),
                            dim=-1)
       if torch.any(contacts):
         # Nuber of AAs to be mutated
-        n = int(max(1, torch.max(torch.sum(contacts > 0, dim=-1)) * replace_fraction))
+        n = int(
+            max(1,
+                torch.max(torch.sum(contacts > 0, dim=-1)) * replace_fraction))
         # Sample muations based on contacts
         mutation_idx = torch.multinomial(contacts, n)
 
@@ -296,11 +295,10 @@ def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
             repeat(mutation_idx[..., None], '... r -> ... (r c)', c=c))
 
         mask = ['X', '-']
-        m = [residue_constants.restypes_with_x_and_gap.index(i) for i in mask]
-        m = F.one_hot(torch.as_tensor(m, device=p.device),
-                      num_classes=len(residue_constants.restypes_with_x_and_gap))
         # Shape (k, c)
-        m = ~(torch.sum(m, dim=0) > 0)
+        m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                                 mask=mask,
+                                 device=p.device)
 
         p = rearrange(m, 'c -> () () c') / (p + 1e-4)
         mutation_aa = torch.multinomial(rearrange(p, 'b i c -> (b i) c'), 1)
@@ -312,10 +310,13 @@ def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
           for idx, x, y in zip(mutation_idx[i], mutation_aa[i], wt_aa[i]):
             x, y = residue_constants.restypes[x], residue_constants.restypes[y]
             yield f'{y}{idx}{x}'
-        protein['mutation_str'] = '|'.join(','.join(yield_mutation_str(i)) for i in range(b))
+
+        protein['mutation_str'] = '|'.join(
+            ','.join(yield_mutation_str(i)) for i in range(b))
 
         protein['true_seq'] = protein['seq']
-        protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx, mutation_aa)
+        protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx,
+                                       mutation_aa)
 
   return protein
 
@@ -328,8 +329,10 @@ def make_backbone_affine(protein, is_training=True):
     c_idx = residue_constants.atom_order['C']
 
     assert protein['coord'].shape[-2] > min(n_idx, ca_idx, c_idx)
-    protein['backbone_affine'] = rigids_from_3x3(protein['coord'],
-                                                 indices=(c_idx, ca_idx, n_idx))
+    protein['backbone_affine'] = functional.rigids_from_3x3(protein['coord'],
+                                                            indices=(c_idx,
+                                                                     ca_idx,
+                                                                     n_idx))
     coord_mask = protein['coord_mask']
     coord_mask = torch.stack(
         (coord_mask[..., c_idx], coord_mask[..., ca_idx], coord_mask[...,
@@ -342,8 +345,9 @@ def make_backbone_affine(protein, is_training=True):
 @take1st
 def make_affine(protein, is_training=True):
   if is_training:
-    feats = rigids_from_positions(protein['seq'], protein.get('coord'),
-                                  protein.get('coord_mask'))
+    feats = functional.rigids_from_positions(protein['seq'],
+                                             protein.get('coord'),
+                                             protein.get('coord_mask'))
     protein.update(feats)
   return protein
 
@@ -351,8 +355,8 @@ def make_affine(protein, is_training=True):
 @take1st
 def make_torsion_angles(protein, is_training=True):
   if is_training and ('coord' in protein and 'coord_mask' in protein):
-    feats = angles_from_positions(protein['seq'], protein['coord'],
-                                  protein['coord_mask'])
+    feats = functional.angles_from_positions(protein['seq'], protein['coord'],
+                                             protein['coord_mask'])
     protein.update(feats)
   return protein
 

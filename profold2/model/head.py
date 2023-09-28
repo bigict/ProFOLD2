@@ -1,7 +1,5 @@
 import sys
-import functools
 import logging
-import math
 
 import torch
 from torch import nn
@@ -42,17 +40,6 @@ def softmax_cosine_similarity(logits, labels, mask=None):
   pred = F.softmax(logits, dim=-1)
   return F.cosine_similarity(pred * mask, labels * mask, dim=-1)
 
-
-def make_mask(restypes, mask, device=None):
-  num_class = len(restypes)
-  if exists(mask) and mask:
-    m = [restypes.index(i) for i in mask]
-    # Shape (k, c)
-    m = F.one_hot(torch.as_tensor(m, device=device), num_class)
-    # Shape (c)
-    m = ~(torch.sum(m, dim=0) > 0)
-    return m.float()
-  return torch.as_tensor([1.0] * num_class, device=device)
 
 def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
   if exists(num_pivot) and num_pivot > 0 and 'num_msa' in batch:
@@ -192,7 +179,7 @@ class CoevolutionHead(nn.Module):
       num_class = len(residue_constants.restypes_with_x_and_gap)
 
       si, zij = representations['single'], representations['pair']
-      m = make_mask(residue_constants.restypes_with_x_and_gap,
+      m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
                     self.mask,
                     device=si.device)
 
@@ -204,7 +191,7 @@ class CoevolutionHead(nn.Module):
                             'i j -> i j ()')  # eii = 0
       hi = torch.einsum(
           'b m j d,b i j c d,d -> b m i c',
-          F.one_hot(batch['msa'], num_class).float(),
+          F.one_hot(batch['msa'].long(), num_class).float(),
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
           m)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
@@ -216,13 +203,13 @@ class CoevolutionHead(nn.Module):
     num_class = len(residue_constants.restypes_with_x_and_gap)
 
     logits = value['logits']
-    labels = F.one_hot(batch['msa'], num_class)
+    labels = F.one_hot(batch['msa'].long(), num_class)
     logger.debug('CoevolutionHead.loss.logits: %s, %s', logits.shape,
                  self.focal_loss)
 
     assert len(logits.shape) == 4
     assert 'msa' in batch
-    label_mask = make_mask(residue_constants.restypes_with_x_and_gap,
+    label_mask = functional.make_mask(residue_constants.restypes_with_x_and_gap,
                            self.mask,
                            device=logits.device)
 
@@ -259,10 +246,10 @@ class CoevolutionHead(nn.Module):
     # L2 regularization
     beta = _make_dynamic_regularization(self.beta)
     if exists(beta):
-       r2 = torch.sum(torch.square(value['wij']), dim=-1)
-       logger.debug('CoevolutionHead.loss.L2(%s): %s',
-                    beta.tolist(), torch.mean(r2).item())
-       avg_error += torch.mean(beta[...,None,None] * r2)
+      r2 = torch.sum(torch.square(value['wij']), dim=-1)
+      logger.debug('CoevolutionHead.loss.L2(%s): %s',
+                  beta.tolist(), torch.mean(r2).item())
+      avg_error += torch.mean(beta[...,None,None] * r2)
 
     # LH regularization
     if self.gammar > 0:
@@ -472,7 +459,7 @@ class FoldingHead(nn.Module):
         # (N, 8, 3, 14)
         group_atom14_idx = F.one_hot(
             functional.batched_gather(
-                residue_constants.restype_rigid_group_atom14_idx, batch['seq']),
+                residue_constants.restype_rigid_group_atom14_idx, batch['seq']).long(),
             residue_constants.atom14_type_num)
         # (N, 8)
         group_atom14_plddt = torch.amin(torch.einsum(
@@ -567,7 +554,7 @@ class FoldingHead(nn.Module):
 
       sidechain_w = self.params.get('sidechain_w', 0.5)
       assert 0 <= sidechain_w <= 1
-      return ((1. - sidechain_w) * backbone_loss + sidechain_w * sidechain_loss)
+      return (1. - sidechain_w) * backbone_loss + sidechain_w * sidechain_loss
 
     def torsion_angle_loss(traj, gt, epsilon=1e-6):
 
@@ -838,7 +825,7 @@ class MetricDictHead(nn.Module):
           num_class = prob.shape[-1]
 
           pred = torch.argmax(prob, dim=-1)
-          mask = F.one_hot(batch['msa'], num_classes=num_class) * label_mask
+          mask = F.one_hot(batch['msa'].long(), num_classes=num_class) * label_mask
           avg_sim = functional.masked_mean(value=F.one_hot(
               pred, num_classes=num_class),
                                            mask=mask)

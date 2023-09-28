@@ -531,15 +531,15 @@ restype_name_to_atom14_names = {
 
 # This is the standard residue order when coding AA type as a number.
 # Reproduce it by taking 3-letter AA codes and sorting them alphabetically.
-restypes = [
+restypes = (
     'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
     'S', 'T', 'W', 'Y', 'V'
-]
+)
 restype_order = {restype: i for i, restype in enumerate(restypes)}
 restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
-restypes_with_x = restypes + ['X']
+restypes_with_x = restypes + ('X',)
 restype_order_with_x = {restype: i for i, restype in enumerate(restypes_with_x)}
 
 
@@ -686,7 +686,7 @@ ID_TO_HHBLITS_AA = {
     21: '-',
 }
 
-restypes_with_x_and_gap = restypes + ['X', '-']
+restypes_with_x_and_gap = restypes + ('X', '-')
 MAP_HHBLITS_AATYPE_TO_OUR_AATYPE = tuple(
     restypes_with_x_and_gap.index(ID_TO_HHBLITS_AA[i])
     for i in range(len(restypes_with_x_and_gap)))
@@ -745,7 +745,7 @@ chi_angles_atom_indices = np.array([
     chi_atoms + ([[0, 0, 0, 0]] * (4 - len(chi_atoms)))
     for chi_atoms in chi_angles_atom_indices])
 
-chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int64)
+chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int32)
 chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.bool_)
 for res_name, res_chi_angles in chi_angles_atoms.items():
   res_type = resname_to_idx[res_name]
@@ -806,15 +806,15 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and an array with (restype, atomtype, coord) for the atom positions
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
-restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int64)
+restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int32)
 restype_atom37_mask = np.zeros([21, 37], dtype=np.bool_)
 restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
-restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int64)
+restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int32)
 restype_atom14_mask = np.zeros([21, 14], dtype=np.bool_)
 restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
 restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
-restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int64)
-restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int64)
+restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int32)
+restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int32)
 restype_rigid_group_mask = np.zeros([21, 8], dtype=np.bool_)
 
 def _make_rigid_group_constants():

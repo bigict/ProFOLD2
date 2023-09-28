@@ -71,9 +71,9 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
             residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence
     ])
 
-  return dict(msa=torch.as_tensor(int_msa),
+  return dict(msa=torch.as_tensor(int_msa, dtype=torch.int),
               str_msa=msa,
-              del_msa=torch.as_tensor(del_matirx),
+              del_msa=torch.as_tensor(del_matirx, dtype=torch.int),
               num_msa=msa_depth)
 
 
@@ -85,11 +85,11 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
   residue_index = residue_index[:max_seq_len]
   seq_color = torch.full((len(sequence),), seq_color)
 
-  seq = torch.tensor(residue_constants.sequence_to_onehot(
+  seq = torch.as_tensor(residue_constants.sequence_to_onehot(
       sequence=sequence,
       mapping=residue_constants.restype_order_with_x,
       map_unknown_to_x=True),
-                     dtype=torch.int).argmax(-1)
+                     dtype=torch.int).argmax(-1).to(torch.int)
   #residue_index = torch.arange(len(sequence), dtype=torch.int)
   str_seq = ''.join(
       map(
@@ -288,11 +288,11 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
       seq_idx = np.sum(self.msa_depth < idx)
       msa_idx = idx - (self.msa_depth[seq_idx - 1] if seq_idx > 0 else 0)  # pylint: disable=unsubscriptable-object
     input_sequence = self.sequences[seq_idx]
-    seq = torch.tensor(residue_constants.sequence_to_onehot(
+    seq = torch.as_tensor(residue_constants.sequence_to_onehot(
         sequence=input_sequence,
         mapping=residue_constants.restype_order_with_x,
         map_unknown_to_x=True),
-                       dtype=torch.int).argmax(-1)
+                       dtype=torch.int).argmax(-1).to(torch.int)
     residue_index = torch.arange(len(input_sequence), dtype=torch.int)
     str_seq = ''.join(
         map(
@@ -596,7 +596,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # Apply new coord_mask based on aatypes
       coord_exists = torch.gather(
           torch.from_numpy(residue_constants.restype_atom14_mask), 0,
-          repeat(item['seq'],
+          repeat(item['seq'].long(),
                  'i -> i n',
                  n=residue_constants.restype_atom14_mask.shape[-1]))
       for field in ('coord', 'coord_mask', 'coord_plddt'):
@@ -1041,7 +1041,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
 
     ret = dict(pid=pids,
-               msa_idx=torch.as_tensor(msa_idx),
+               msa_idx=torch.as_tensor(msa_idx, dtype=torch.int),
                resolution=resolutions,
                seq=padded_seqs,
                seq_index=padded_seqs_idx,
@@ -1077,7 +1077,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret.update(msa=padded_msas,
                  str_msa=str_msas,
                  del_msa=padded_dels,
-                 num_msa=torch.as_tensor(num_msa))
+                 num_msa=torch.as_tensor(num_msa, dtype=torch.int))
 
     ret['clips'] = clips
 

@@ -1,4 +1,5 @@
 import collections
+import functools
 from inspect import isfunction
 
 import numpy as np
@@ -21,6 +22,19 @@ def squared_cdist(x, y, keepdim=False):
 
 def masked_mean(mask, value, epsilon=1e-10):
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
+
+@functools.lru_cache(maxsize=8)
+def make_mask(restypes, mask, device=None):
+  num_class = len(restypes)
+  if exists(mask) and mask:
+    m = [restypes.index(i) for i in mask]
+    # Shape (k, c)
+    m = F.one_hot(torch.as_tensor(m, dtype=torch.int, device=device).long(),
+                  num_class)
+    # Shape (c)
+    m = ~(torch.sum(m, dim=0) > 0)
+    return m.float()
+  return torch.as_tensor([1.0] * num_class, device=device)
 
 def batched_gather(params, indices):
     b, device = indices.shape[0], indices.device
@@ -342,7 +356,7 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
     #omega_points = torch.stack((prev_coords[...,]))
     # (N, 7, 4, 14)
     torsion_atom14_idx = F.one_hot(
-            batched_gather(residue_constants.chi_angles_atom14_indices, aatypes),
+            batched_gather(residue_constants.chi_angles_atom14_indices, aatypes).long(),
             residue_constants.atom14_type_num)
     torsion_atom14_exists = batched_gather(residue_constants.chi_angles_atom14_exists, aatypes)
 
@@ -415,7 +429,8 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
 def rigids_from_positions(aatypes, coords, coord_mask):
     # (N, 8, 3, 14)
     group_atom14_idx = F.one_hot(
-            batched_gather(residue_constants.restype_rigid_group_atom14_idx, aatypes),
+            batched_gather(residue_constants.restype_rigid_group_atom14_idx,
+                           aatypes).long(),
             residue_constants.atom14_type_num)
     # Compute a mask whether the group exists.
     # (N, 8)
@@ -474,7 +489,7 @@ def rigids_to_positions(frames, aatypes):
     group_idx = batched_gather(
         residue_constants.restype_atom14_to_rigid_group, aatypes)
     # Shape (b, l, 14, 8)
-    group_mask = F.one_hot(group_idx, num_classes=8).float()
+    group_mask = F.one_hot(group_idx.long(), num_classes=8).float()
 
     rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
     translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
