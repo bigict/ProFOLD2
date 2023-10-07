@@ -5,6 +5,8 @@
         for further help.
 """
 import os
+from contextlib import suppress as nullcontext
+import functools
 import logging
 
 import torch
@@ -13,7 +15,7 @@ from einops import rearrange
 # models & data
 from profold2.data import dataset
 from profold2.data.utils import pdb_save
-from profold2.model import FeatureBuilder, ReturnValues
+from profold2.model import profiler, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
@@ -28,7 +30,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   feats, model = worker.load(args.model)
   features = FeatureBuilder(feats).to(worker.device())
   logging.info('feats: %s', feats)
-  logging.info('model: %s', model)
 
   kwargs = {}
   if rank.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
@@ -54,9 +55,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     return (args.min_protein_len <= batch['seq'].shape[1] and
         batch['seq'].shape[1] < args.max_protein_len)
 
-  tmscore, n = 0, 0
-  # eval loop
-  for i, batch in enumerate(filter(data_cond, iter(test_loader))):
+  def data_eval(idx, batch):
     fasta_name, fasta_len = ','.join(batch['pid']), batch['seq'].shape[1]
     with timing(f'Building features for model on {fasta_name} {fasta_len}',
         logging.debug):
@@ -75,7 +74,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     if 'confidence' in r.headers:
       metric_dict['confidence'] = r.headers['confidence']['loss'].item()
       logging.debug('%d pid: %s Confidence: %s',
-            i, fasta_name, r.headers['confidence']['loss'].item())
+            idx, fasta_name, r.headers['confidence']['loss'].item())
     if 'metric' in r.headers:
       metrics = r.headers['metric']['loss']
       if 'contact' in metrics:
@@ -110,16 +109,35 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
                       L=torch.sum(batch['mask'], dim=-1))
         metric_dict['tmscore'] = tms.item()
         logging.debug('%d pid: %s TM-score: %f',
-            i, fasta_name, tms.item())
+            idx, fasta_name, tms.item())
 
-        tmscore, n = tmscore + tms.item(), n + 1
+        # tmscore, n = tmscore + tms.item(), n + 1
 
-      logging.info('no: %d pid: %s, %s', i, fasta_name,
+      logging.info('no: %d pid: %s, %s', idx, fasta_name,
                    ', '.join(f'{k}: {v}' for k, v in metric_dict.items()))
       if args.save_pdb:
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=i)
+
+      return tms.item()
     else:
       raise ValueError('folding are not implemented yet!')
+
+  tmscore, n = 0, 0
+
+  with profiler.profile(
+      enabled=args.enable_profiler,
+      record_shapes=True,
+      profile_memory=True,
+      with_stack=True) as prof:
+    # eval loop
+    for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
+      tmscore += data_eval(idx, batch)
+      n += 1
+
+      if hasattr(prof, 'step'):
+        prof.step()
+  if hasattr(prof, 'key_averages'):
+    logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
 
   if n > 0:
     logging.info('%d TM-score: %f (average)', n, tmscore / n)
@@ -179,6 +197,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='shard size in evoformer model, default=None')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
+  parser.add_argument('--enable_profiler', action='store_true',
+      help='enable profiler')
 
 if __name__ == '__main__':
   import argparse

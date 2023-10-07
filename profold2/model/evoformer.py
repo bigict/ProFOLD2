@@ -10,7 +10,7 @@ from profold2.model.commons import (Attention,
                                     FeedForward,
                                     MsaAttentionBlock,
                                     PairwiseAttentionBlock)
-
+from profold2.model import profiler
 from profold2.utils import exists
 
 
@@ -139,14 +139,16 @@ class EvoformerBlock(nn.Module):
     attn, ff, msa_attn, msa_ff = self.layer
 
     # msa attention and transition
-    m = msa_attn(m, mask=msa_mask, pairwise_repr=x)
-    m = msa_ff(m) + m
+    with profiler.record_function('msa_attn'):
+      m = msa_attn(m, mask=msa_mask, pairwise_repr=x)
+      m = msa_ff(m) + m
 
     # pairwise attention and transition
-    with autocast(enabled=False):
-      x = attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
-               shard_size=shard_size)
-    x = ff(x) + x
+    with profiler.record_function('pair_attn'):
+      with autocast(enabled=False):
+        x = attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
+                 shard_size=shard_size)
+      x = ff(x) + x
 
     return x, m, mask, msa_mask
 
@@ -160,9 +162,10 @@ class Evoformer(nn.Module):
         [EvoformerBlock(**kwargs) for _ in range(depth)])  # pylint: disable=missing-kwoa
 
   def forward(self, x, m, mask=None, msa_mask=None, shard_size=None):
-    inp = (x, m, mask, msa_mask)
-    x, m, *_ = checkpoint_sequential_nargs(self.layers,
-                                           len(self.layers),
-                                           inp,
-                                           shard_size=shard_size)
-    return x, m
+    with profiler.record_function('evoformer'):
+      inp = (x, m, mask, msa_mask)
+      x, m, *_ = checkpoint_sequential_nargs(self.layers,
+                                             len(self.layers),
+                                             inp,
+                                             shard_size=shard_size)
+      return x, m

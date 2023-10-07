@@ -5,6 +5,7 @@
         for further help.
 """
 import os
+from contextlib import suppress as nullcontext
 import functools
 import glob
 import json
@@ -20,7 +21,7 @@ from profold2.data import dataset
 from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_index
-from profold2.model import FeatureBuilder, ReturnValues
+from profold2.model import profiler, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
 from profold2.command.worker import main, WorkerModel, WorkerXPU
@@ -152,8 +153,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
   def timing_callback(timings, key, tic, toc):
     timings[key] = toc - tic
 
-  # Predict structure
-  for idx, batch in enumerate(iter(test_loader)):
+  def predict_structure(idx, batch):
     assert len(batch['pid']) == 1
     timings = {}
 
@@ -256,6 +256,21 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     with open(timings_output_path, 'w', encoding='utf-8') as f:
       f.write(json.dumps(timings, indent=4))
 
+  # Predict structure
+  with profiler.profile(
+      enabled=args.enable_profiler,
+      record_shapes=True,
+      profile_memory=True,
+      with_stack=True) as prof:
+    for idx, batch in enumerate(iter(test_loader)):
+      predict_structure(idx, batch)
+
+      if hasattr(prof, 'step'):
+        prof.step()
+
+  if hasattr(prof, 'key_averages'):
+    logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
+
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
       help='remapped to an alternative set of devices, default=None')
@@ -296,6 +311,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='do NOT save prediction header')
   parser.add_argument('--no_gpu_relax', action='store_true',
       help='run relax on cpu')
+  parser.add_argument('--enable_profiler', action='store_true',
+      help='enable profiler')
 
 if __name__ == '__main__':
   import argparse
