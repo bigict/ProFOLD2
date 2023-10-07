@@ -964,8 +964,8 @@ class ViolationHead(nn.Module):
       b, n = seq.shape[:2]
       seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
     if 'coord_mask' in batch or 'coord_exists' in batch:
-      points, point_mask = value['coords'], batch.get('coord_mask',
-                                                      batch.get('coord_exists'))
+      points, point_mask = value['coords'], batch.get('coord_exists',
+                                                      batch.get('coord_mask'))
       assert exists(point_mask)
 
       # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(

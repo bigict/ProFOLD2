@@ -807,7 +807,7 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
         dist_mask *= (~disulfide_bonds.bool())
 
     # Compute the lower bound for the allowed distances.
-    dist_lower_bound = (
+    dist_lower_bound = dist_mask * (
             rearrange(atom_radius, '... i m -> ... i () m ()') +
             rearrange(atom_radius, '... j n -> ... () j () n'))
 
@@ -818,15 +818,19 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
     #clash_loss = masked_mean(mask=dist_mask, value=dist_errors, epsilon=epsilon)
     clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-    if loss_only:
-        return dict(between_residue_clash_loss=clash_loss)
+    # if loss_only:
+    #     return dict(between_residue_clash_loss=clash_loss)
 
     # Compute the per atom loss sum.
     per_atom_clash = (torch.sum(dist_errors, dim=(-4, -2)) +
             torch.sum(dist_errors, dim=(-3, -1)))
 
+    num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
+    if loss_only:
+        return dict(between_residue_clash_loss=torch.sum(per_atom_clash / (1e-6 + num_atoms)))
+
     # Compute the hard clash mask.
-    clash_mask = dist_mask * (dists < dist_lower_bound - tau)
+    clash_mask = dist_mask * (dists < (dist_lower_bound - tau))
     per_atom_clash_mask = torch.maximum(torch.amax(clash_mask, dim=(-4, -2)),
             torch.amax(clash_mask, dim=(-3, -1)))
 
@@ -834,7 +838,7 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
             per_atom_clash=per_atom_clash,
             per_atom_clash_mask=per_atom_clash_mask)
 
-def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-6, loss_only=False):
+def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-12, loss_only=False):
     """Loss to penalize steric clashes within residues"""
     assert pred_points.shape[-1] == 3
     assert pred_points.shape[:-1] == points_mask.shape
@@ -872,11 +876,15 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     dist_errors = dist_mask * (lower_errors + upper_errors)
     clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-    if loss_only:
-        return dict(within_residue_clash_loss=clash_loss)
+    # if loss_only:
+    #     return dict(within_residue_clash_loss=clash_loss)
 
     # Compute the per atom loss sum.
     per_atom_clash = (torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1))
+
+    num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
+    if loss_only:
+        return dict(within_residue_clash_loss=torch.sum(per_atom_clash / (1e-6 + num_atoms)))
 
     # Compute the violations mask.
     per_atom_clash_mask = dist_mask * ((dists < atom_lower_bound) |
