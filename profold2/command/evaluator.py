@@ -42,6 +42,9 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
       crop_probability=args.crop_probability,
+      msa_as_seq_prob=args.msa_as_seq_prob,
+      msa_as_seq_topn=args.msa_as_seq_topn,
+      msa_as_seq_min_alr=args.msa_as_seq_min_alr,
       feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb
                                     else dataset.FEAT_ALL),
       batch_size=args.batch_size,
@@ -101,8 +104,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
                 rearrange(labels,
                           'b l c d -> b (l c) d')[flat_cloud_mask],
                 'c d -> d c'))
-        logging.debug('coords_aligned: %s', coords_aligned.shape)
-        logging.debug('labels_aligned: %s', labels_aligned.shape)
 
         tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
                       rearrange(labels_aligned, 'd l -> () d l'),
@@ -153,6 +154,15 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN, default=0.0')
+  parser.add_argument('--msa_as_seq_prob', type=float, default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
+           'default=0.0')
+  parser.add_argument('--msa_as_seq_topn', type=int, default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
+           'default=None')
+  parser.add_argument('--msa_as_seq_min_alr', type=float, default=None,
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
+           'default=None')
 
   parser.add_argument('-b', '--batch_size', type=int, default=1,
       help='batch size, default=1')

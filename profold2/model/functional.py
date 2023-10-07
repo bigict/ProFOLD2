@@ -1,4 +1,5 @@
 import collections
+import functools
 from inspect import isfunction
 
 import numpy as np
@@ -21,6 +22,19 @@ def squared_cdist(x, y, keepdim=False):
 
 def masked_mean(mask, value, epsilon=1e-10):
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
+
+@functools.lru_cache(maxsize=8)
+def make_mask(restypes, mask, device=None):
+  num_class = len(restypes)
+  if exists(mask) and mask:
+    m = [restypes.index(i) for i in mask]
+    # Shape (k, c)
+    m = F.one_hot(torch.as_tensor(m, dtype=torch.int, device=device).long(),
+                  num_class)
+    # Shape (c)
+    m = ~(torch.sum(m, dim=0) > 0)
+    return m.float()
+  return torch.as_tensor([1.0] * num_class, device=device)
 
 def batched_gather(params, indices):
     b, device = indices.shape[0], indices.device
@@ -342,7 +356,7 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
     #omega_points = torch.stack((prev_coords[...,]))
     # (N, 7, 4, 14)
     torsion_atom14_idx = F.one_hot(
-            batched_gather(residue_constants.chi_angles_atom14_indices, aatypes),
+            batched_gather(residue_constants.chi_angles_atom14_indices, aatypes).long(),
             residue_constants.atom14_type_num)
     torsion_atom14_exists = batched_gather(residue_constants.chi_angles_atom14_exists, aatypes)
 
@@ -415,7 +429,8 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
 def rigids_from_positions(aatypes, coords, coord_mask):
     # (N, 8, 3, 14)
     group_atom14_idx = F.one_hot(
-            batched_gather(residue_constants.restype_rigid_group_atom14_idx, aatypes),
+            batched_gather(residue_constants.restype_rigid_group_atom14_idx,
+                           aatypes).long(),
             residue_constants.atom14_type_num)
     # Compute a mask whether the group exists.
     # (N, 8)
@@ -474,7 +489,7 @@ def rigids_to_positions(frames, aatypes):
     group_idx = batched_gather(
         residue_constants.restype_atom14_to_rigid_group, aatypes)
     # Shape (b, l, 14, 8)
-    group_mask = F.one_hot(group_idx, num_classes=8).float()
+    group_mask = F.one_hot(group_idx.long(), num_classes=8).float()
 
     rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
     translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
@@ -792,7 +807,7 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
         dist_mask *= (~disulfide_bonds.bool())
 
     # Compute the lower bound for the allowed distances.
-    dist_lower_bound = (
+    dist_lower_bound = dist_mask * (
             rearrange(atom_radius, '... i m -> ... i () m ()') +
             rearrange(atom_radius, '... j n -> ... () j () n'))
 
@@ -803,15 +818,19 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
     #clash_loss = masked_mean(mask=dist_mask, value=dist_errors, epsilon=epsilon)
     clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-    if loss_only:
-        return dict(between_residue_clash_loss=clash_loss)
+    # if loss_only:
+    #     return dict(between_residue_clash_loss=clash_loss)
 
     # Compute the per atom loss sum.
     per_atom_clash = (torch.sum(dist_errors, dim=(-4, -2)) +
             torch.sum(dist_errors, dim=(-3, -1)))
 
+    num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
+    if loss_only:
+        return dict(between_residue_clash_loss=torch.sum(per_atom_clash / (1e-6 + num_atoms)))
+
     # Compute the hard clash mask.
-    clash_mask = dist_mask * (dists < dist_lower_bound - tau)
+    clash_mask = dist_mask * (dists < (dist_lower_bound - tau))
     per_atom_clash_mask = torch.maximum(torch.amax(clash_mask, dim=(-4, -2)),
             torch.amax(clash_mask, dim=(-3, -1)))
 
@@ -819,7 +838,7 @@ def between_residue_clash_loss(pred_points, points_mask, residue_index, aatypes,
             per_atom_clash=per_atom_clash,
             per_atom_clash_mask=per_atom_clash_mask)
 
-def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-6, loss_only=False):
+def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-12, loss_only=False):
     """Loss to penalize steric clashes within residues"""
     assert pred_points.shape[-1] == 3
     assert pred_points.shape[:-1] == points_mask.shape
@@ -857,11 +876,15 @@ def within_residue_clash_loss(pred_points, points_mask, residue_index, aatypes, 
     dist_errors = dist_mask * (lower_errors + upper_errors)
     clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-    if loss_only:
-        return dict(within_residue_clash_loss=clash_loss)
+    # if loss_only:
+    #     return dict(within_residue_clash_loss=clash_loss)
 
     # Compute the per atom loss sum.
     per_atom_clash = (torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1))
+
+    num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
+    if loss_only:
+        return dict(within_residue_clash_loss=torch.sum(per_atom_clash / (1e-6 + num_atoms)))
 
     # Compute the violations mask.
     per_atom_clash_mask = dist_mask * ((dists < atom_lower_bound) |
