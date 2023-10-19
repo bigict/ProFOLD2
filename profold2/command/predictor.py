@@ -100,7 +100,10 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
             size=args.max_msa_size - 1,
             replace=False) if args.max_msa_size > 1 else [])
       msa += [s]
-  data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
+  data = ProteinSequenceDataset(sequences,
+                                descriptions,
+                                msa=msa,
+                                domain_as_seq=args.add_pseudo_linker)
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
         num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)

@@ -307,6 +307,8 @@ class Alphafold2WithRecycling(nn.Module):
     ret = ReturnValues(**self.impl(
         batch, return_recyclables=False, compute_loss=True, **kwargs))
     metrics = {}
+    if 'plddt_mean' in batch:
+      metrics['plddt_mean'] = batch['plddt_mean'].item()
     if 'confidence' in ret.headers:
       metrics['confidence'] = ret.headers['confidence']['loss'].item()
     if 'tmscore' in ret.headers:

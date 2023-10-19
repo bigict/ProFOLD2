@@ -3,6 +3,7 @@ import logging
 
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
@@ -100,7 +101,8 @@ class ContactHead(nn.Module):
 
       targets = (dist2 <= self.cutoff).float()
 
-      errors = F.binary_cross_entropy(logits, targets, reduction='none')
+      with autocast(enabled=False):
+        errors = F.binary_cross_entropy(logits, targets, reduction='none')
 
       square_mask, square_weight = (rearrange(mask, '... i -> ... i ()') *
                                     rearrange(mask, '... j -> ... () j'), 1.0)
@@ -371,6 +373,7 @@ class FoldingHead(nn.Module):
                structure_module_depth,
                structure_module_heads,
                point_value_dim=4,
+               qkv_use_bias=False,
                fape_min=1e-6,
                fape_max=15,
                fape_z=15,
@@ -382,6 +385,7 @@ class FoldingHead(nn.Module):
                                                  structure_module_depth,
                                                  structure_module_heads,
                                                  point_value_dim=point_value_dim,
+                                                 qkv_use_bias=qkv_use_bias,
                                                  dropout=dropout,
                                                  position_scale=position_scale)
 
@@ -623,15 +627,17 @@ class LDDTHead(nn.Module):
 
   def __init__(self,
                dim,
+               num_channels=None,
                buckets_num=50,
                min_resolution=.0,
                max_resolution=sys.float_info.max):
     super().__init__()
     dim, _ = embedd_dim_get(dim)
+    num_channels = default(num_channels, dim)
 
-    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, dim), nn.ReLU(),
-                             nn.Linear(dim, dim), nn.ReLU(),
-                             nn.Linear(dim, buckets_num))
+    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
+                             nn.Linear(num_channels, num_channels), nn.ReLU(),
+                             nn.Linear(num_channels, buckets_num))
     self.buckets_num = buckets_num
 
     self.min_resolution = min_resolution
@@ -688,6 +694,71 @@ class LDDTHead(nn.Module):
     loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
     logger.debug('LDDTHead.loss: %s', loss.item())
     return dict(loss=loss)
+
+class PPIHead(nn.Module):
+  """Head for protein-protein interaction
+    """
+
+  def __init__(self, dim, contact_cutoff=8., min_prob=0.15):
+    super().__init__()
+
+    del dim
+    self.contact_cutoff = contact_cutoff
+    self.min_prob = min_prob
+
+  def forward(self, headers, representations, batch):
+    assert 'distogram' in headers
+    assert 'seq_color' in batch
+
+    logits = headers['distogram']['logits']
+    breaks = headers['distogram']['breaks']
+    seq_mask = batch['mask']
+    seq_color = batch['seq_color']
+
+    # Probability that distance between i and j less than or equal
+    # contact_cutoff
+    probs = F.softmax(logits, dim=-1)
+    t = torch.sum(breaks <= self.contact_cutoff)
+    probs = torch.sum(probs[..., :t + 1], dim=-1)
+
+    # Mask out intra-contact and padding
+    crd_mask = (seq_mask[..., None] * seq_mask[..., None, :])
+    clr_mask = (seq_color[..., None] != seq_color[..., None, :])
+    probs = probs * clr_mask * crd_mask
+
+    # Denoise
+    probs = F.threshold(probs, self.min_prob, 0.0)
+
+    # Prob. that amini acid i has contact with the others
+    probs = 1.0 - torch.exp(torch.sum(torch.log(1.0 - probs), dim=-1))
+
+    # Denoise
+    probs = F.threshold(probs, self.min_prob, 0.0)
+
+    # Prob. that chain i has contact with the other chains
+    b, n = seq_mask.shape[0], torch.amax(seq_color)
+    probs = 1.0 - torch.exp(torch.scatter_add(
+        torch.zeros(b, n, device=probs.device),
+        -1,
+        seq_color.long() - 1,
+        torch.log(1.0 - probs)))
+
+    logger.debug('PPIHead.probs: %s', probs)
+    return dict(probs=probs)
+
+  def loss(self, value, batch):
+    if 'ppi_label' in batch:
+      assert 'ppi_label' in batch and 'ppi_mask' in batch
+
+      probs = value['probs']
+      targets, mask = batch['ppi_label'], batch['ppi_mask']
+      logger.debug('PPIHead.targets: %s', targets)
+      with autocast(enabled=False):
+        errors = F.binary_cross_entropy(probs.float(), targets.float(), reduction='none')
+      avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+      logger.debug('PPIHead.loss: %s', avg_error.item())
+      return dict(loss=avg_error)
+    return None
 
 
 class RobertaLMHead(nn.Module):
@@ -1005,8 +1076,9 @@ class HeaderBuilder:
                   folding=FoldingHead,
                   lddt=LDDTHead,
                   metric=MetricDictHead,
-                  roberta=RobertaLMHead,
+                  ppi=PPIHead,
                   profile=SequenceProfileHead,
+                  roberta=RobertaLMHead,
                   tmscore=TMscoreHead,
                   violation=ViolationHead)
 

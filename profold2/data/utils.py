@@ -240,6 +240,8 @@ def pdb_from_prediction(batch, headers, idx=None):
         'aatype': aatype,
         'residue_index': seq_index,
     }
+    if 'seq_color' in batch:
+      features['seq_color'] = to_numpy(batch['seq_color'][b] - 1)
 
     coords = to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)

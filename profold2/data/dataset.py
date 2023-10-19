@@ -17,11 +17,8 @@ from einops import repeat
 
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
-from profold2.data.utils import (compose_pid,
-                                 decompose_pid,
-                                 domain_parser,
-                                 parse_seq_index,
-                                 seq_index_join,
+from profold2.data.utils import (compose_pid, decompose_pid, domain_parser,
+                                 parse_seq_index, seq_index_join,
                                  seq_index_split)
 from profold2.utils import default, exists, timing
 
@@ -89,7 +86,7 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
       sequence=sequence,
       mapping=residue_constants.restype_order_with_x,
       map_unknown_to_x=True),
-                     dtype=torch.int).argmax(-1).to(torch.int)
+                        dtype=torch.int).argmax(-1).to(torch.int)
   #residue_index = torch.arange(len(sequence), dtype=torch.int)
   str_seq = ''.join(
       map(
@@ -271,8 +268,14 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
 
-  def __init__(self, sequences, descriptions=None, msa=None, msa_as_seq=False):
+  def __init__(self,
+               sequences,
+               descriptions=None,
+               domain_as_seq=False,
+               msa=None,
+               msa_as_seq=False):
     self.sequences = sequences
+    self.domain_as_seq = domain_as_seq
     self.descriptions = descriptions
     self.msa = msa
     assert not exists(self.descriptions) or len(self.sequences) == len(
@@ -292,7 +295,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
         sequence=input_sequence,
         mapping=residue_constants.restype_order_with_x,
         map_unknown_to_x=True),
-                       dtype=torch.int).argmax(-1).to(torch.int)
+                          dtype=torch.int).argmax(-1).to(torch.int)
     residue_index = torch.arange(len(input_sequence), dtype=torch.int)
     str_seq = ''.join(
         map(
@@ -305,9 +308,15 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
       desc = desc.split()[0]
     else:
       desc = str(seq_idx)
+    seq_color = torch.ones(len(input_sequence), dtype=torch.int)
+    if self.domain_as_seq:
+      seq_color += torch.cat(
+          (torch.zeros(1, dtype=torch.int),
+           torch.cumsum(residue_index[:-1] + 1 != residue_index[1:], dim=-1)))
     ret = dict(pid=desc,
                seq=seq,
                seq_index=residue_index,
+               seq_color=seq_color,
                str_seq=str_seq,
                mask=mask)
     if exists(self.msa) and exists(self.msa[seq_idx]):
@@ -372,19 +381,21 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 
   @staticmethod
   def collate_fn(batch):
-    fields = ('pid', 'seq', 'seq_index', 'mask', 'str_seq')
-    pids, seqs, seqs_idx, masks, str_seqs = list(
+    fields = ('pid', 'seq', 'seq_index', 'seq_color', 'mask', 'str_seq')
+    pids, seqs, seqs_idx, seqs_clr, masks, str_seqs = list(
         zip(*[[b[k] for k in fields] for b in batch]))
     lengths = tuple(len(s) for s in str_seqs)
     max_batch_len = max(lengths)
 
     padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
     padded_seqs_idx = pad_for_batch(seqs_idx, max_batch_len, 'seq_index')
+    padded_seqs_clr = pad_for_batch(seqs_clr, max_batch_len, 'seq_index')
     padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
 
     ret = dict(pid=pids,
                seq=padded_seqs,
                seq_index=padded_seqs_idx,
+               seq_color=padded_seqs_clr,
                mask=padded_masks,
                str_seq=str_seqs)
 
