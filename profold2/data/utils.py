@@ -96,7 +96,7 @@ def parse_seq_index(description, input_sequence, seq_index):
     for m, n in positions[1:]:
       gap += m - q - 1
       seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
-          m - start, n - start + 1)
+          m - start, n - start + 1, dtype=seq_index.dtype)
       p, q = m, n
 
   return seq_index

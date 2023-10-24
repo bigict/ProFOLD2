@@ -80,7 +80,7 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
 
   sequence = sequence[:max_seq_len]
   residue_index = residue_index[:max_seq_len]
-  seq_color = torch.full((len(sequence),), seq_color)
+  seq_color = torch.full((len(sequence),), seq_color, dtype=torch.int)
 
   seq = torch.as_tensor(residue_constants.sequence_to_onehot(
       sequence=sequence,
@@ -374,7 +374,9 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
                              max_seq_len=None))
 
       # Fix seq_index
-      del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+      del_seq = torch.cumsum(item['del_msa'][0],
+                             dim=-1,
+                             dtype=item['del_msa'].dtype)
       item['seq_index'] = item['seq_index'] + del_seq
 
     return item
@@ -428,6 +430,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                msa_as_seq_prob=0.0,
                msa_as_seq_topn=None,
                msa_as_seq_min_alr=0.75,
+               msa_as_seq_min_ident=0.0,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
@@ -443,6 +446,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_as_seq_prob = msa_as_seq_prob
     self.msa_as_seq_topn = msa_as_seq_topn
     self.msa_as_seq_min_alr = msa_as_seq_min_alr
+    self.msa_as_seq_min_ident = msa_as_seq_min_ident
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
     with self._fileobj(data_idx) as f:
@@ -535,7 +539,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                   new_order,
                                   seq_feats=('seq', 'seq_index', 'mask',
                                              'coord', 'coord_mask',
-                                             'coord_plddt'))
+                                             'coord_plddt', 'seq_color'))
     return item
 
   def data_rm_mask(self, item):
@@ -622,7 +626,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             del item[field]
 
       # Fix seq_index
-      del_seq = torch.cumsum(item['del_msa'][0], dim=-1)
+      del_seq = torch.cumsum(item['del_msa'][0],
+                             dim=-1,
+                             dtype=item['del_msa'].dtype)
       item['seq_index'] = item['seq_index'] + del_seq
       if 'resolu' in item:
         item['resolu'] = None  # delete it !
@@ -751,14 +757,18 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           seq_len = len(ret['str_msa'][0])
           ret['str_msa'] += ['-' * seq_len] * (n - m)
           ret['msa'] = torch.cat(
-              (ret['msa'], torch.full((n - m, seq_len), gap_idx)), dim=0)
+              (ret['msa'],
+               torch.full((n - m, seq_len), gap_idx, dtype=ret['msa'].dtype)),
+              dim=0)
           ret['del_msa'] = torch.cat(
               (ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0)
         elif 0 < n < m:
           seq_len = len(feat['str_msa'][0])
           feat['str_msa'] += ['-' * seq_len] * (m - n)
           feat['msa'] = torch.cat(
-              (feat['msa'], torch.full((m - n, seq_len), gap_idx)), dim=0)
+              (feat['msa'],
+               torch.full((m - n, seq_len), gap_idx, dtype=feat['msa'].dtype)),
+              dim=0)
           feat['del_msa'] = torch.cat(
               (feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0)
         # Rand permute msa relate feat
@@ -807,6 +817,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if exists(self.msa_as_seq_min_alr) and r < self.msa_as_seq_min_alr:
         return 0
       return r
+
+    def _ident_ratio(msa, seq):
+      assert exists(self.msa_as_seq_min_ident) and self.msa_as_seq_min_ident > 0
+      r = 0
+      i, j = 0, 0
+      while i < len(msa) and j < len(seq):
+        if msa[i] == seq[j]:
+          r += 1
+        i, j = i + 1, j + 1
+      r = r / max(min(i, j), 0.1)
+      if r >= self.msa_as_seq_min_ident:
+        return r
+      return 0
 
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
@@ -862,6 +885,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       w = np.power(np.array([1.0 / p for p in range(1, n)]), 1.0 / 3.0)
       v = np.asarray([_aligned_ratio(s, m) for s in sequences[1:n]])
       w *= v
+      if exists(self.msa_as_seq_min_ident) and self.msa_as_seq_min_ident > 0:
+        v = np.asarray([_ident_ratio(s, sequences[0]) for s in sequences[1:n]])
+        w *= v
       t = np.sum(w)
       if t > 0:
         w /= t
@@ -1177,6 +1203,8 @@ def load(data_dir,
       'msa_as_seq_topn') if 'msa_as_seq_topn' in kwargs else None
   msa_as_seq_min_alr = kwargs.pop(
       'msa_as_seq_min_alr') if 'msa_as_seq_min_alr' in kwargs else None
+  msa_as_seq_min_ident = kwargs.pop(
+      'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
 
   data_dir = data_dir.split(',')
   if exists(data_idx):
@@ -1208,6 +1236,7 @@ def load(data_dir,
                               msa_as_seq_prob=msa_as_seq_prob,
                               msa_as_seq_topn=msa_as_seq_topn,
                               msa_as_seq_min_alr=msa_as_seq_min_alr,
+                              msa_as_seq_min_ident=msa_as_seq_min_ident,
                               max_msa_depth=max_msa_depth,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))

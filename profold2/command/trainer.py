@@ -26,7 +26,7 @@ from profold2.data.utils import (
     weights_from_file)
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
-from profold2.utils import exists
+from profold2.utils import exists, version_cmp
 from profold2.command.worker import main, WorkerModel, WorkerXPU
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
@@ -59,6 +59,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       data_msa_as_seq_prob=0.0,
       data_msa_as_seq_topn=None,
       data_msa_as_seq_min_alr=None,
+      data_msa_as_seq_min_ident=None,
       data_filter=data_cond):
     data_loader = dataset.load(
         data_dir=data_dir,
@@ -68,6 +69,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         msa_as_seq_prob=data_msa_as_seq_prob,
         msa_as_seq_topn=data_msa_as_seq_topn,
         msa_as_seq_min_alr=data_msa_as_seq_min_alr,
+        msa_as_seq_min_ident=data_msa_as_seq_min_ident,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
@@ -89,7 +91,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       crop_probability=args.train_crop_probability,
       data_msa_as_seq_prob=args.train_msa_as_seq_prob,
       data_msa_as_seq_topn=args.train_msa_as_seq_topn,
-      data_msa_as_seq_min_alr=args.train_msa_as_seq_min_alr)
+      data_msa_as_seq_min_alr=args.train_msa_as_seq_min_alr,
+      data_msa_as_seq_min_ident=args.train_msa_as_seq_min_ident)
   if args.tuning_data:
     tuning_data = create_cycling_data(args.tuning_data,
         data_idx=args.tuning_idx,
@@ -98,16 +101,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         crop_probability=args.tuning_crop_probability,
         data_msa_as_seq_prob=args.tuning_msa_as_seq_prob,
         data_msa_as_seq_topn=args.tuning_msa_as_seq_topn,
-        data_msa_as_seq_min_alr=args.tuning_msa_as_seq_min_alr)
-  if args.fake_data:
-    fake_data = create_cycling_data(args.fake_data,
-        data_idx=args.fake_idx,
-        weights=args.fake_data_weights,
-        pseudo_linker_prob=args.fake_pseudo_linker_prob,
-        crop_probability=args.fake_crop_probability,
-        data_msa_as_seq_prob=args.fake_msa_as_seq_prob,
-        data_msa_as_seq_topn=args.fake_msa_as_seq_topn,
-        data_msa_as_seq_min_alr=args.fake_msa_as_seq_min_alr)
+        data_msa_as_seq_min_alr=args.tuning_msa_as_seq_min_alr,
+        data_msa_as_seq_min_ident=args.tuning_msa_as_seq_min_ident)
 
   if args.eval_data:
     eval_loader = dataset.load(
@@ -225,7 +220,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         autocast_ctx = nullcontext
         if grad_scaler.is_enabled():
           # FIXED ME: cache_enabled=True will crash :(
-          autocast_ctx = functools.partial(autocast, cache_enabled=False)
+          if version_cmp(torch.__version__, '1.10.0') >= 0:
+            autocast_ctx = functools.partial(autocast, cache_enabled=False)
+          else:
+            autocast_ctx = autocast
         with autocast_ctx():
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
@@ -257,12 +255,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       if field in batch:
         del batch[field]
     return batch
-  # def batch_with_pseudo_beta(batch):
-  #   batch = copy.copy(batch)
-  #   for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
-  #     if field in batch:
-  #       del batch[field]
-  #   return batch
   def batch_with_coords(batch):
     return batch
 
@@ -275,12 +267,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       _step(tuning_data, it, writer, stage='tuning',
           batch_callback=(batch_with_coords
               if args.tuning_with_coords else batch_seq_only))
-
-    if (args.fake_data and
-        args.fake_every > 0 and (it + 1) % args.fake_every == 0):
-      _step(fake_data, it, writer, stage='fake',
-          batch_callback=(batch_with_coords
-              if args.fake_with_coords else batch_seq_only))
 
     if (args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
         worker.is_master()):
@@ -363,14 +349,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='sample tuning data by weights, default=None')
   parser.add_argument('--tuning_with_coords', action='store_true',
       help='use `coord` when tuning')
-  parser.add_argument('--fake_data', type=str, default=None,
-      help='fake dataset dir, default=None')
-  parser.add_argument('--fake_idx', type=str, default='name.idx',
-      help='fake dataset idx, default=\'name.idx\'')
-  parser.add_argument('--fake_data_weights', type=str, default=None,
-      help='sample fake data by weights, default=None')
-  parser.add_argument('--fake_with_coords', action='store_true',
-      help='use `coord` when faking')
   parser.add_argument('--min_protein_len', type=int, default=50,
       help='filter out proteins whose length<LEN, default=50')
   parser.add_argument('--max_protein_len', type=int, default=1024,
@@ -401,6 +379,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
+  parser.add_argument('--train_msa_as_seq_min_ident', type=float, default=None,
+      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT'
+           'default=None')
   parser.add_argument('--tuning_pseudo_linker_prob', type=float, default=0.0,
       help='enable loading complex data, default=0.0')
   parser.add_argument('--tuning_crop_probability', type=float, default=0.0,
@@ -415,19 +396,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--tuning_msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
-  parser.add_argument('--fake_crop_probability', type=float, default=0.0,
-      help='crop protein with probability CROP_PROBABILITY when it\'s '
-          'length>MIN_CROP_LEN, default=0.0')
-  parser.add_argument('--fake_pseudo_linker_prob', type=float, default=0.0,
-      help='enable loading complex data, default=0.0')
-  parser.add_argument('--fake_msa_as_seq_prob', type=float, default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
-           'default=0.0')
-  parser.add_argument('--fake_msa_as_seq_topn', type=int, default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
-           'default=None')
-  parser.add_argument('--fake_msa_as_seq_min_alr', type=float, default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
+  parser.add_argument('--tuning_msa_as_seq_min_ident', type=float, default=None,
+      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT'
            'default=None')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
@@ -441,8 +411,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='save a checkpoint every K times, default=100')
   parser.add_argument('--tuning_every', type=int, default=10,
       help='tuning model every K times, default=10')
-  parser.add_argument('--fake_every', type=int, default=100,
-      help='fake model every K times, default=100')
   parser.add_argument('--eval_every', type=int, default=100,
       help='eval model every K times, default=100')
   parser.add_argument(

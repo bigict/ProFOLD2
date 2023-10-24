@@ -336,9 +336,11 @@ def make_mutation(protein,
         # protein['mutation_str'] = '|'.join(
         #     ','.join(yield_mutation_str(i)) for i in range(b))
         protein['mutation_idx'] = selected_clr
-        ppi_label = torch.scatter(
-            ppi_label, -1, selected_clr.long() - 1,
-            torch.zeros(b, n, device=ppi_label.device, dtype=torch.bool))
+        # ppi_label = torch.scatter(
+        #     ppi_label, -1, selected_clr - 1,
+        #     torch.zeros(b, n, device=ppi_label.device, dtype=torch.bool))
+        ppi_label = ppi_label.masked_fill(
+            F.one_hot(selected_clr.long() - 1, num_classes=n), False)
 
         protein['true_seq'] = protein['seq']
         protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx,

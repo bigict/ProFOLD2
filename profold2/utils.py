@@ -22,6 +22,14 @@ def default(val, d):
   return d() if isfunction(d) else d
 
 
+def version_cmp(x, y):
+  for a, b in zip(x.split('.'), y.split('.')):
+    if int(a) > int(b):
+      return 1
+    elif int(a) < int(b):
+      return -1
+  return 0
+
 def unique_id():
   """Generate a unique ID as specified in RFC 4122."""
   # See https://docs.python.org/3/library/uuid.html
