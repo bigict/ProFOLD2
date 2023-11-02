@@ -126,6 +126,7 @@ def _make_feats_shrinked(item, new_order, seq_feats=None, msa_feats=None):
 def _protein_clips_fn(protein,
                       min_crop_len=None,
                       max_crop_len=None,
+                      max_crop_plddt=False,
                       crop_probability=0.0,
                       crop_algorithm='random',
                       **kwargs):
@@ -150,10 +151,20 @@ def _protein_clips_fn(protein,
     l = _crop_length(n, np.random.random() < crop_probability)
     logger.debug('min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len,
                  max_crop_len, n, l)
-    i, j = 0, l
+    i, j, w = 0, l, None
     if not 'coord_mask' in protein or torch.any(protein['coord_mask']):
+      if max_crop_plddt and 'coord_plddt' in protein:
+        ca_idx = residue_constants.atom_order['CA']
+        plddt = protein['coord_plddt'][..., ca_idx]
+        w = torch.cumsum(plddt, dim=-1)
+        assert len(w.shape) == 1
+        w = torch.cat((w[l - 1:l], w[l:] - w[:-l]), dim=-1)
+        assert w.shape[0] == plddt.shape[-1] - l + 1
       while True:
-        i = np.random.randint(n - l + 1)
+        if exists(w):
+          i = int(torch.multinomial(torch.pow(w / l, 2.0), 1))
+        else:
+          i = np.random.randint(n - l + 1)
         j = i + l
         if not 'coord_mask' in protein or torch.any(protein['coord_mask'][i:j]):
           break
@@ -1193,6 +1204,7 @@ def load(data_dir,
          msa_as_seq_prob=0.0,
          min_crop_len=None,
          max_crop_len=None,
+         max_crop_plddt=False,
          crop_probability=0,
          crop_algorithm='random',
          feat_flags=FEAT_ALL,
@@ -1221,6 +1233,7 @@ def load(data_dir,
     data_crop_fn = functools.partial(_protein_clips_fn,
                                      min_crop_len=min_crop_len,
                                      max_crop_len=max_crop_len,
+                                     max_crop_plddt=max_crop_plddt,
                                      crop_probability=crop_probability,
                                      crop_algorithm=crop_algorithm,
                                      **crop_fn_kwargs)
