@@ -20,7 +20,9 @@ def squared_cdist(x, y, keepdim=False):
                      dim=-1,
                      keepdim=keepdim)
 
-def masked_mean(mask, value, epsilon=1e-10):
+def masked_mean(mask, value, dim=None, epsilon=1e-10):
+    if exists(dim):
+        return torch.sum(mask*value, dim=dim) / (epsilon + torch.sum(mask, dim=dim))
     return torch.sum(mask*value) / (epsilon + torch.sum(mask))
 
 @functools.lru_cache(maxsize=8)

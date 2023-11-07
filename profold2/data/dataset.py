@@ -70,6 +70,7 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
 
   return dict(msa=torch.as_tensor(int_msa, dtype=torch.int),
               str_msa=msa,
+              msa_row_mask=torch.ones(len(int_msa), dtype=torch.bool),
               del_msa=torch.as_tensor(del_matirx, dtype=torch.int),
               num_msa=msa_depth)
 
@@ -412,13 +413,16 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
                mask=padded_masks,
                str_seq=str_seqs)
 
-    fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
+    fields = ('msa', 'msa_row_mask', 'str_msa', 'del_msa', 'num_msa')
     if all(all(field in b for field in fields) for b in batch):
-      msas, str_msas, del_msas, num_msa = list(
+      msas, msa_row_msks, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
-      padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
-      ret.update(msa=padded_msas,
+      msas = pad_for_batch(msas, max_batch_len, 'msa')
+      msa_row_msks = pad_for_batch(msa_row_msks, max_batch_len, 'msa_row_mask')
+      del_msas = pad_for_batch(del_msas, max_batch_len, 'del_msa')
+      ret.update(msa=msas,
+                 msa_row_mask=msa_row_msks,
                  str_msa=str_msas,
                  del_msa=del_msas,
                  num_msa=torch.as_tensor(num_msa))
@@ -921,6 +925,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                    coord_mask=torch.from_numpy(structure['coord_mask']))
         if 'bfactor' in structure:
           ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
+        else:
+          ret.update(
+              coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
         return ret
     return {}
 
@@ -1109,20 +1116,22 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # optional
       fields = ('coord_plddt',)
       for field in fields:
-        if not field in batch[0]:
+        if not all(field in b for b in batch):
           continue
         padded_values = pad_for_batch([b[field] for b in batch], max_batch_len,
                                       field)
         ret[field] = padded_values
 
     if feat_flags & FEAT_MSA:
-      fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
-      msas, str_msas, del_msas, num_msa = list(
+      fields = ('msa', 'msa_row_mask', 'str_msa', 'del_msa', 'num_msa')
+      msas, msa_row_msks, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
       padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
+      msa_row_msks = pad_for_batch(msa_row_msks, max_batch_len, 'msa_row_mask')
       padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
       ret.update(msa=padded_msas,
+                 msa_row_mask=msa_row_msks,
                  str_msa=str_msas,
                  del_msa=padded_dels,
                  num_msa=torch.as_tensor(num_msa, dtype=torch.int))
@@ -1180,16 +1189,36 @@ def pad_for_batch(items, batch_length, dtype):
       c = torch.cat((item, z), dim=0)
       batch.append(c)
   elif dtype == 'msa':
+    msa_depth = max(msa.shape[0] for msa in items)
     for msa in items:
-      z = torch.ones((msa.shape[0], batch_length - msa.shape[1]),
-                     dtype=msa.dtype) * residue_constants.HHBLITS_AA_TO_ID['X']
-      c = torch.cat((msa, z), dim=1)
+      c = msa
+      # Append columns
+      z = torch.ones((c.shape[0], batch_length - c.shape[1]),
+                     dtype=c.dtype) * residue_constants.HHBLITS_AA_TO_ID['-']
+      c = torch.cat((c, z), dim=1)
+      # Append rows
+      z = torch.ones((msa_depth - c.shape[0], c.shape[1]),
+                     dtype=c.dtype) * residue_constants.HHBLITS_AA_TO_ID['-']
+      c = torch.cat((c, z), dim=0)
+      batch.append(c)
+  elif dtype == 'msa_row_mask':
+    msa_depth = max(msa.shape[0] for msa in items)
+    for msa in items:
+      c = msa
+      # Append rows
+      z = torch.zeros((msa_depth - c.shape[0]), dtype=c.dtype)
+      c = torch.cat((c, z), dim=0)
       batch.append(c)
   elif dtype == 'del_msa':
+    msa_depth = max(msa.shape[0] for msa in items)
     for del_msa in items:
-      z = torch.zeros((del_msa.shape[0], batch_length - del_msa.shape[1]),
-                      dtype=del_msa.dtype)
-      c = torch.cat((del_msa, z), dim=1)
+      c = del_msa
+      # Append columns
+      z = torch.zeros((c.shape[0], batch_length - c.shape[1]), dtype=c.dtype)
+      c = torch.cat((c, z), dim=1)
+      # Append rows
+      z = torch.zeros((msa_depth - c.shape[0], c.shape[1]), dtype=c.dtype)
+      c = torch.cat((c, z), dim=0)
       batch.append(c)
   else:
     raise ValueError('Not implement yet!')

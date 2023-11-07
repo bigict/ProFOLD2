@@ -5,7 +5,6 @@
         for further help.
 """
 import os
-from contextlib import suppress as nullcontext
 import functools
 import glob
 import json

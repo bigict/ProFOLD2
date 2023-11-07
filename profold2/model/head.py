@@ -48,7 +48,31 @@ def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
     w = torch.pow(w, alpha)
     errors = torch.einsum('b ...,b -> b ...', errors, w)
     return errors, w.tolist()
-  return errors, [1.0]*errors.shape[0]
+  return errors, [1.0] * errors.shape[0]
+
+def batched_tmscore(pred_points, true_points, coord_mask, mask):
+  assert len(pred_points.shape) == 4  # b i c d
+
+  def _yield_tmscore(b):
+    flat_cloud_mask = rearrange(coord_mask[b], 'i c -> (i c)')
+
+    # rotate / align
+    coords_aligned, labels_aligned = Kabsch(
+        rearrange(
+            rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask],
+            'c d -> d c'),
+        rearrange(
+            rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask],
+            'c d -> d c'))
+
+    return TMscore(rearrange(coords_aligned, 'd l -> () d l'),
+                   rearrange(labels_aligned, 'd l -> () d l'),
+                   L=torch.sum(mask[b], dim=-1))
+
+  # tms = sum(map(_yield_tmscore, range(pred_points.shape[0])))
+  tms = torch.cat(list(map(_yield_tmscore, range(pred_points.shape[0]))))
+  return tms
+
 
 class ConfidenceHead(nn.Module):
   """Head to predict confidence.
@@ -59,11 +83,18 @@ class ConfidenceHead(nn.Module):
 
   def forward(self, headers, representations, batch):
     metrics = {}
-    if 'lddt' in headers and 'logits' in headers['lddt']:
-      metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
-    if 'plddt' in metrics:
-      metrics['loss'] = torch.mean(metrics['plddt'], dim=-1)
-      logger.debug('ConfidenceHead.loss: %s', metrics['loss'].item())
+    with torch.no_grad():
+      if 'lddt' in headers and 'logits' in headers['lddt']:
+        metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+      if 'plddt' in metrics:
+        mask = batch['mask']
+        # metrics['loss'] = functional.masked_mean(value=metrics['plddt'], mask=mask)
+        metrics['loss'] = torch.sum(metrics['plddt'] * mask,
+                                    dim=-1) / (torch.sum(mask, dim=-1) + 1e-6)
+        metrics['loss'] = functional.masked_mean(value=metrics['plddt'],
+                                                 mask=mask,
+                                                 dim=-1)
+        logger.debug('ConfidenceHead.loss: %s', metrics['loss'].tolist())
     return metrics
 
 
@@ -182,8 +213,8 @@ class CoevolutionHead(nn.Module):
 
       si, zij = representations['single'], representations['pair']
       m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                    self.mask,
-                    device=si.device)
+                               self.mask,
+                               device=si.device)
 
       ei = self.single(si)
       eij = self.pairwize(
@@ -212,8 +243,8 @@ class CoevolutionHead(nn.Module):
     assert len(logits.shape) == 4
     assert 'msa' in batch
     label_mask = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                           self.mask,
-                           device=logits.device)
+                                      self.mask,
+                                      device=logits.device)
 
     errors = softmax_cross_entropy(labels=labels,
                                    logits=logits,
@@ -221,6 +252,8 @@ class CoevolutionHead(nn.Module):
                                    gammar=self.focal_loss)
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
                         labels.float(), label_mask)
+    if 'msa_row_mask' in batch:
+      mask = torch.einsum('b m i,b m -> b m i', mask, batch['msa_row_mask'])
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
@@ -237,21 +270,23 @@ class CoevolutionHead(nn.Module):
         return max_w + (min_w - max_w) * num_msa / self.num_pivot
       return None
 
+    square_mask = (rearrange(batch['mask'], '... i -> ... i ()') *
+                   rearrange(batch['mask'], '... j -> ... () j'))
     # L1 regularization
     alpha = _make_dynamic_regularization(self.alpha)
     if exists(alpha):
-      r1 = torch.sum(torch.abs(value['wij']), dim=-1)
+      r1 = torch.sum(torch.abs(value['wij']), dim=-1) * square_mask
       logger.debug('CoevolutionHead.loss.L1(%s): %s',
                    alpha.tolist(), torch.mean(r1).item())
-      avg_error += torch.mean(alpha[...,None,None] * r1)
+      avg_error += torch.mean(alpha[..., None, None] * r1)
 
     # L2 regularization
     beta = _make_dynamic_regularization(self.beta)
     if exists(beta):
-      r2 = torch.sum(torch.square(value['wij']), dim=-1)
+      r2 = torch.sum(torch.square(value['wij']), dim=-1) * square_mask
       logger.debug('CoevolutionHead.loss.L2(%s): %s',
                   beta.tolist(), torch.mean(r2).item())
-      avg_error += torch.mean(beta[...,None,None] * r2)
+      avg_error += torch.mean(beta[..., None, None] * r2)
 
     # LH regularization
     if self.gammar > 0:
@@ -381,13 +416,14 @@ class FoldingHead(nn.Module):
                position_scale=1.0,
                **params):
     super().__init__()
-    self.struct_module = folding.StructureModule(dim,
-                                                 structure_module_depth,
-                                                 structure_module_heads,
-                                                 point_value_dim=point_value_dim,
-                                                 qkv_use_bias=qkv_use_bias,
-                                                 dropout=dropout,
-                                                 position_scale=position_scale)
+    self.struct_module = folding.StructureModule(
+        dim,
+        structure_module_depth,
+        structure_module_heads,
+        point_value_dim=point_value_dim,
+        qkv_use_bias=qkv_use_bias,
+        dropout=dropout,
+        position_scale=position_scale)
 
     self.fape_min = fape_min
     self.fape_max = fape_max
@@ -463,8 +499,8 @@ class FoldingHead(nn.Module):
         # (N, 8, 3, 14)
         group_atom14_idx = F.one_hot(
             functional.batched_gather(
-                residue_constants.restype_rigid_group_atom14_idx, batch['seq']).long(),
-            residue_constants.atom14_type_num)
+                residue_constants.restype_rigid_group_atom14_idx,
+                batch['seq']).long(), residue_constants.atom14_type_num)
         # (N, 8)
         group_atom14_plddt = torch.amin(torch.einsum(
             '... g m n, ... n -> ... g m', group_atom14_idx.float(),
@@ -635,9 +671,9 @@ class LDDTHead(nn.Module):
     dim, _ = embedd_dim_get(dim)
     num_channels = default(num_channels, dim)
 
-    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
-                             nn.Linear(num_channels, num_channels), nn.ReLU(),
-                             nn.Linear(num_channels, buckets_num))
+    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_channels),
+                             nn.ReLU(), nn.Linear(num_channels, num_channels),
+                             nn.ReLU(), nn.Linear(num_channels, buckets_num))
     self.buckets_num = buckets_num
 
     self.min_resolution = min_resolution
@@ -754,7 +790,9 @@ class PPIHead(nn.Module):
       targets, mask = batch['ppi_label'], batch['ppi_mask']
       logger.debug('PPIHead.targets: %s', targets)
       with autocast(enabled=False):
-        errors = F.binary_cross_entropy(probs.float(), targets.float(), reduction='none')
+        errors = F.binary_cross_entropy(probs.float(),
+                                        targets.float(),
+                                        reduction='none')
       avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
       logger.debug('PPIHead.loss: %s', avg_error.item())
       return dict(loss=avg_error)
@@ -833,84 +871,95 @@ class MetricDictHead(nn.Module):
 
   def forward(self, headers, representations, batch):
     metrics = MetricDict()
-    if 'distogram' in headers and 'pseudo_beta' in batch:
-      assert 'logits' in headers['distogram'] and 'breaks' in headers[
-          'distogram']
-      logits, breaks = headers['distogram']['logits'], headers['distogram'][
-          'breaks']
-      positions = batch['pseudo_beta']
-      mask = batch['pseudo_beta_mask']
+    with torch.no_grad():
+      if 'distogram' in headers and 'pseudo_beta' in batch:
+        assert 'logits' in headers['distogram'] and 'breaks' in headers[
+            'distogram']
+        logits, breaks = headers['distogram']['logits'], headers['distogram'][
+            'breaks']
+        positions = batch['pseudo_beta']
+        mask = batch['pseudo_beta_mask']
 
-      cutoff = self.params.get('contact_cutoff', 8.0)
-      t = torch.sum(breaks <= cutoff)
-      pred = F.softmax(logits, dim=-1)
-      pred = torch.sum(pred[..., :t + 1], dim=-1)
-      truth = torch.cdist(positions, positions, p=2)
-      precision_list = contact_precision(
-          pred,
-          truth,
-          mask=mask,
-          ratios=self.params.get('contact_ratios'),
-          ranges=self.params.get('contact_ranges'),
-          cutoff=cutoff)
-      metrics['contact'] = MetricDict()
-      for (i, j), ratio, precision in precision_list:
-        i, j = default(i, 0), default(j, 'inf')
-        metrics['contact'][f'[{i},{j})_{ratio}'] = precision
-      if '[24,inf)_1' in metrics['contact']:
-        logger.debug('MetricDictHead.contact.[24,inf]@L: %s',
-                     metrics['contact']['[24,inf)_1'].item())
-    if ('profile' in headers or
-        'coevolution' in headers) and 'sequence_profile' in batch:
-      labels, label_mask = batch['sequence_profile'], 1.0
-      if 'sequence_profile_mask' in batch:
-        label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+        cutoff = self.params.get('contact_cutoff', 8.0)
+        t = torch.sum(breaks <= cutoff)
+        pred = F.softmax(logits, dim=-1)
+        pred = torch.sum(pred[..., :t + 1], dim=-1)
+        truth = torch.cdist(positions, positions, p=2)
+        metrics['contact'] = MetricDict()
+        for b in range(truth.shape[0]):
+          precision_list = contact_precision(
+              pred[b],
+              truth[b],
+              mask=mask[b],
+              ratios=self.params.get('contact_ratios'),
+              ranges=self.params.get('contact_ranges'),
+              cutoff=cutoff)
+          for (i, j), ratio, precision in precision_list:
+            i, j = default(i, 0), default(j, 'inf')
+            k = f'[{i},{j})_{ratio}'
+            if k in metrics['contact']:
+              metrics['contact'][k] = torch.cat(
+                  (metrics['contact'][k], precision), dim=-1)
+            else:
+              metrics['contact'][k] = precision
+        if '[24,inf)_1' in metrics['contact']:
+          logger.debug('MetricDictHead.contact.[24,inf]@L: %s',
+                       metrics['contact']['[24,inf)_1'].tolist())
+      if ('profile' in headers or
+          'coevolution' in headers) and 'sequence_profile' in batch:
+        labels, label_mask = batch['sequence_profile'], 1.0
+        if 'sequence_profile_mask' in batch:
+          label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
 
-      mask = batch['mask']
-      if 'profile' in headers:
-        assert 'logits' in headers['profile']
-        logits = headers['profile']['logits']
-        sim = softmax_cosine_similarity(logits=logits,
-                                        labels=labels,
-                                        mask=label_mask)
-        avg_sim = functional.masked_mean(value=sim, mask=mask)
-        logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
-        metrics['profile'] = MetricDict()
-        metrics['profile']['cosine'] = avg_sim
-      if 'coevolution' in headers:
-        metrics['coevolution'] = MetricDict()
+        mask = batch['mask']
+        if 'profile' in headers:
+          assert 'logits' in headers['profile']
+          logits = headers['profile']['logits']
+          sim = softmax_cosine_similarity(logits=logits,
+                                          labels=labels,
+                                          mask=label_mask)
+          avg_sim = functional.masked_mean(value=sim, mask=mask)
+          logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
+          metrics['profile'] = MetricDict()
+          metrics['profile']['cosine'] = avg_sim
+        if 'coevolution' in headers:
+          metrics['coevolution'] = MetricDict()
 
-        assert 'logits' in headers['coevolution']
-        prob = F.softmax(headers['coevolution']['logits'], dim=-1)
+          assert 'logits' in headers['coevolution']
+          prob = F.softmax(headers['coevolution']['logits'], dim=-1)
 
-        pred = torch.sum(prob, dim=-3)
-        pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
-        sim = F.cosine_similarity(pred * label_mask,
-                                  labels * label_mask,
-                                  dim=-1)
-        avg_sim = functional.masked_mean(value=sim, mask=mask)
-        logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
-        metrics['coevolution']['cosine'] = avg_sim
+          pred = torch.sum(prob, dim=-3)
+          pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
+          sim = F.cosine_similarity(pred * label_mask,
+                                    labels * label_mask,
+                                    dim=-1)
+          avg_sim = functional.masked_mean(value=sim, mask=mask)
+          logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
+          metrics['coevolution']['cosine'] = avg_sim
 
-        if 'msa' in batch:
-          num_class = prob.shape[-1]
+          if 'msa' in batch:
+            num_class = prob.shape[-1]
 
-          pred = torch.argmax(prob, dim=-1)
-          mask = F.one_hot(batch['msa'].long(), num_classes=num_class) * label_mask
-          avg_sim = functional.masked_mean(value=F.one_hot(
-              pred, num_classes=num_class),
-                                           mask=mask)
-          logger.debug('MetricDictHead.coevolution.identity: %s',
-                       avg_sim.item())
-          metrics['coevolution']['identity'] = avg_sim
+            pred = torch.argmax(prob, dim=-1)
+            mask = F.one_hot(batch['msa'].long(),
+                             num_classes=num_class) * label_mask
+            if 'msa_row_mask' in batch:
+              mask = torch.einsum('b m i c, b m -> b m i c', mask,
+                                  batch['msa_row_mask'])
+            avg_sim = functional.masked_mean(value=F.one_hot(
+                pred, num_classes=num_class),
+                                             mask=mask)
+            logger.debug('MetricDictHead.coevolution.identity: %s',
+                         avg_sim.item())
+            metrics['coevolution']['identity'] = avg_sim
 
-          errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
-          avg_error = torch.exp(
-              functional.masked_mean(value=errors, mask=torch.sum(mask,
-                                                                  dim=-1)))
-          logger.debug('MetricDictHead.coevolution.perplexity: %s',
-                       avg_error.item())
-          metrics['coevolution']['perplexity'] = avg_error
+            errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
+            avg_error = torch.exp(
+                functional.masked_mean(value=errors, mask=torch.sum(mask,
+                                                                    dim=-1)))
+            logger.debug('MetricDictHead.coevolution.perplexity: %s',
+                         avg_error.item())
+            metrics['coevolution']['perplexity'] = avg_error
 
     return dict(loss=metrics) if metrics else None
 
@@ -919,11 +968,7 @@ class SequenceProfileHead(nn.Module):
   """Head to predict sequence profile.
     """
 
-  def __init__(self,
-               dim,
-               input_dim=None,
-               single_repr=None,
-               num_pivot=None):
+  def __init__(self, dim, input_dim=None, single_repr=None, num_pivot=None):
     super().__init__()
     dim, _ = embedd_dim_get(dim)
 
@@ -963,9 +1008,7 @@ class SequenceProfileHead(nn.Module):
     if 'sequence_profile_mask' in batch:
       label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
 
-    errors = softmax_kl_diversity(labels=labels,
-                                  logits=logits,
-                                  mask=label_mask)
+    errors = softmax_kl_diversity(labels=labels, logits=logits, mask=label_mask)
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
@@ -987,31 +1030,13 @@ class TMscoreHead(nn.Module):
   def forward(self, headers, representations, batch):
     assert 'folding' in headers and 'coords' in headers['folding']
 
-    if 'coords_aligned' in headers['folding'] and 'labels_aligned' in headers[
-        'folding']:
-      coords_aligned, labels_aligned = headers['folding'][
-          'coords_aligned'], headers['folding']['labels_aligned']
-      return dict(loss=TMscore(rearrange(coords_aligned, 'd l -> () d l'),
-                               rearrange(labels_aligned, 'd l -> () d l'),
-                               L=torch.sum(batch['mask'], dim=-1).item()))
-    elif 'coord' in batch and 'coord_mask' in batch:
-      pred, labels = headers['folding']['coords'][
-          ..., :self.num_atoms, :], batch['coord'][..., :self.num_atoms, :]
+    if 'coord' in batch and 'coord_mask' in batch:
+      pred_points = headers['folding']['coords'][..., :self.num_atoms, :]
+      true_points = batch['coord'][..., :self.num_atoms, :]
       coord_mask = batch['coord_mask'][..., :self.num_atoms]
-      flat_cloud_mask = rearrange(coord_mask, 'b l c -> b (l c)')
-
-      # rotate / align
-      coords_aligned, labels_aligned = Kabsch(
-          rearrange(
-              rearrange(pred, 'b l c d -> b (l c) d')[flat_cloud_mask],
-              'c d -> d c'),
-          rearrange(
-              rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask],
-              'c d -> d c'))
-
-      return dict(loss=TMscore(rearrange(coords_aligned, 'd l -> () d l'),
-                               rearrange(labels_aligned, 'd l -> () d l'),
-                               L=torch.sum(batch['mask'], dim=-1).item()))
+      with torch.no_grad():
+        tms = batched_tmscore(pred_points, true_points, coord_mask, batch['mask'])
+      return dict(loss=tms)
     return None
 
 

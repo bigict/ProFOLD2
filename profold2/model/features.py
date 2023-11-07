@@ -78,9 +78,10 @@ def make_coord_plddt(protein,
                      is_training=True):
   if is_training and 'coord_plddt' in protein:
     ca_idx = residue_constants.atom_order['CA']
-    plddt_mean = functional.masked_mean(
-        value=protein['coord_plddt'][..., ca_idx],
-        mask=protein['mask'])
+    plddt_mean = functional.masked_mean(value=protein['coord_plddt'][...,
+                                                                     ca_idx],
+                                        mask=protein['mask'],
+                                        dim=-1)
     protein['plddt_mean'] = plddt_mean
     plddt_mask = (protein['coord_plddt'] >= threshold)
     if exists(gamma):
@@ -88,6 +89,7 @@ def make_coord_plddt(protein,
     protein['coord_plddt'] *= plddt_mask
     protein['coord_plddt_use_weighted_mask'] = use_weighted_mask
   return protein
+
 
 @take1st
 def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
@@ -97,6 +99,7 @@ def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
     protein['loss.distogram.w'] = mask * (1.0 - distogram_w) + distogram_w
     protein['loss.folding.w'] = mask * (1.0 - folding_w) + folding_w
   return protein
+
 
 @take1st
 def make_coord_alt(protein, is_training=True):
@@ -127,15 +130,19 @@ def make_seq_profile(protein,
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
     num_msa = p.shape[1]
     # Shape (b, l, c)
-    p = torch.sum(p, dim=1)
+    if 'msa_row_mask' in protein:
+      p = torch.einsum('b m i c,b m -> b i c', p.float(),
+                       protein['msa_row_mask'].float())
+    else:
+      p = torch.sum(p.float(), dim=1)
   else:
     num_msa = 1
     p = F.one_hot(protein['seq'].long(),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
 
-  # gap value (b, l)
-  gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
-  protein['sequence_profile_gap_value'] = p[..., gap_idx] / (num_msa + epsilon)
+  # # gap value (b, l)
+  # gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
+  # protein['sequence_profile_gap_value'] = p[..., gap_idx] / (num_msa + epsilon)
 
   if exists(mask) and len(mask) > 0:
     # Shape (k, c)
@@ -251,14 +258,16 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
 def make_pseudo_beta(protein, prefix='', is_training=True):
   del is_training
 
-  if (prefix + 'seq' in protein and
-      prefix + 'coord' in protein and
+  if (prefix + 'seq' in protein and prefix + 'coord' in protein and
       prefix + 'coord_mask' in protein):
-    protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
-        pseudo_beta_fn(protein[prefix + 'seq'],
-                       protein[prefix + 'coord'],
-                       protein[prefix + 'coord_mask']))
+    protein[prefix +
+            'pseudo_beta'], protein[prefix +
+                                    'pseudo_beta_mask'] = (pseudo_beta_fn(
+                                        protein[prefix + 'seq'],
+                                        protein[prefix + 'coord'],
+                                        protein[prefix + 'coord_mask']))
   return protein
+
 
 @take1st
 def make_mutation(protein,
@@ -285,8 +294,8 @@ def make_mutation(protein,
     b, n = mask.shape[0], torch.amax(seq_color)
 
     # ppi label && mask
-    ppi_label = torch.scatter_add(torch.zeros(
-        b, n, device=contacts.device), -1, seq_color.long() - 1,
+    ppi_label = torch.scatter_add(torch.zeros(b, n, device=contacts.device), -1,
+                                  seq_color.long() - 1,
                                   torch.sum(contacts, dim=-1)) > 0
     ppi_mask = torch.scatter_add(torch.zeros(b, n, device=contacts.device), -1,
                                  seq_color.long() - 1, mask) > 0
@@ -349,6 +358,7 @@ def make_mutation(protein,
     protein['ppi_label'], protein['ppi_mask'] = ppi_label, ppi_mask
 
   return protein
+
 
 @take1st
 def make_backbone_affine(protein, is_training=True):
@@ -448,6 +458,7 @@ def make_selection(protein, fields, is_training=True):
 class FeatureBuilder:
   """Build features by feature functions in config
     """
+
   def __init__(self, config):
     self.config = config
 

@@ -81,6 +81,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         weights=list(weights_from_file(weights)),
         shuffle=True,
         prefetch_factor=args.prefetch_factor,
+        drop_last=True,
         pin_memory=True,
         num_workers=args.num_workers)
     return cycling(data_loader, data_filter)
@@ -162,7 +163,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
     elif exists(writer):
       if isinstance(loss, torch.Tensor):
-        loss = loss.item()
+        loss = torch.mean(loss).item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
       writer.add_scalar(prefix, loss, it)
 
@@ -238,11 +239,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           running_loss += MetricDict({h:v['loss']})
 
       if ('tmscore' in r.headers and
-          r.headers['tmscore']['loss'].item() >= args.save_pdb):
+          torch.mean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
     for k, v in running_loss.items():
-      v /= (args.batch_size * args.gradient_accumulate_every)
+      v /= args.gradient_accumulate_every
       writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       #writer.add_scalar(f'Loss/train@{k}', v, it)
 
@@ -295,7 +296,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
               eval_loss += MetricDict({h:v['loss']})
           n += 1
         for k, v in eval_loss.items():
-          v /= (args.batch_size * n)
+          v /= n
           writer_add_scalars(writer, v, it, prefix=f'Loss/eval@{k}')
           #writer.add_scalar(f'Loss/eval@{k}', v, it)
 

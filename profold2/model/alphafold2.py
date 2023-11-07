@@ -301,18 +301,18 @@ class Alphafold2WithRecycling(nn.Module):
         if 'tmscore' in ret.headers:
           logger.debug('%s/%s pid: %s, tmscore: %s', i, num_recycle,
                        ','.join(batch['pid']),
-                       ret.headers['tmscore']['loss'].item())
+                       ret.headers['tmscore']['loss'].tolist())
         batch['recyclables'] = ret.recyclables
 
     ret = ReturnValues(**self.impl(
         batch, return_recyclables=False, compute_loss=True, **kwargs))
     metrics = {}
     if 'plddt_mean' in batch:
-      metrics['plddt_mean'] = batch['plddt_mean'].item()
+      metrics['plddt_mean'] = batch['plddt_mean'].tolist()
     if 'confidence' in ret.headers:
-      metrics['confidence'] = ret.headers['confidence']['loss'].item()
+      metrics['confidence'] = ret.headers['confidence']['loss'].tolist()
     if 'tmscore' in ret.headers:
-      metrics['tmscore'] = ret.headers['tmscore']['loss'].item()
+      metrics['tmscore'] = ret.headers['tmscore']['loss'].tolist()
     if metrics:
       logger.debug('%s/%s pid: %s, %s', num_recycle, num_recycle,
                    ','.join(batch['pid']),
