@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import random
+import re
 
 import numpy as np
 import torch
@@ -133,6 +134,16 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                      embedd_dim=args.model_embedd_dim,
                      attn_dropout=args.model_dropout,
                      headers=headers)
+  ####
+  # HACK
+  if exists(args.model_params_requires_grad):
+    params_requires_grad_pattern = re.compile(args.model_params_requires_grad)
+    for name, param in model.named_parameters():
+      if params_requires_grad_pattern.match(name):
+        param.requires_grad = False
+      else:
+        logging.info('name: %s, param: %s', name, param)
+  ####
 
   # optimizer
   optim = Adam(model.parameters(), lr=args.learning_rate)
@@ -454,6 +465,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_dropout', type=float, nargs=2,
       default=(0.1, 0.1),
       help='dropout of evoformer(single & pair) in model, default=(0.1, 0.1)')
+  parser.add_argument('--model_params_requires_grad', type=str,
+      default=None,
+      help='learn partial parameters only, default=None')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
