@@ -118,6 +118,10 @@ def _make_feats_shrinked(item, new_order, seq_feats=None, msa_feats=None):
   for field in default(seq_feats, ('coord', 'coord_mask', 'coord_plddt')):
     if field in item:
       item[field] = torch.index_select(item[field], 0, new_order)
+  for field in ('coord_pae',):
+    if field in item:
+      item[field] = torch.index_select(item[field], 0, new_order)
+      item[field] = torch.index_select(item[field], 1, new_order)
   for field in default(msa_feats, ('msa', 'del_msa')):
     if field in item:
       item[field] = torch.index_select(item[field], 1, new_order)
@@ -282,6 +286,9 @@ def _protein_crop_fn(protein, clip):
                 'coord_plddt'):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
+  for field in ('coord_pae',):
+    if field in protein:
+      protein[field] = protein[field][i:j, i:j]
   for field in ('str_msa',):
     if field in protein:
       protein[field] = [v[i:j] for v in protein[field]]
