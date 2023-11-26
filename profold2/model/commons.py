@@ -351,10 +351,10 @@ class TriangleMultiplicativeModule(nn.Module):
 # evoformer blocks
 
 
-class OuterMean(nn.Module):
+class OuterProductMean(nn.Module):
   """OuterProductMean
     """
-  def __init__(self, dim_msa, dim_pairwise, dim_hidden=None, eps=1e-5):
+  def __init__(self, dim_msa, dim_pairwise, dim_hidden=32, eps=1e-5):
     super().__init__()
 
     self.eps = eps
@@ -363,7 +363,7 @@ class OuterMean(nn.Module):
 
     self.left_proj = nn.Linear(dim_msa, dim_hidden)
     self.right_proj = nn.Linear(dim_msa, dim_hidden)
-    self.proj_out = nn.Linear(dim_hidden, dim_pairwise)
+    self.proj_out = nn.Linear(dim_hidden**2, dim_pairwise)
 
   def forward(self, x, mask=None, shard_size=None):
     x = self.norm(x)
@@ -371,14 +371,16 @@ class OuterMean(nn.Module):
     right = self.right_proj(x)
 
     def run_outer_sum(left, right, mask):
-      outer = rearrange(left, 'b m i d -> b m i () d') * rearrange(
-          right, 'b m j d -> b m () j d')
+      outer = rearrange(left, 'b m i c -> b m i () c ()') * rearrange(
+          right, 'b m j d -> b m () j () d')
       if exists(mask):
         # masked mean, if there are padding in the rows of the MSA
-        mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(
-            mask, 'b m j -> b m () j ()') > 0
+        mask = rearrange(mask, 'b m i -> b m i () () ()') * rearrange(
+            mask, 'b m j -> b m () j () ()') > 0
         outer = outer.masked_fill(~mask, 0.)
-      return outer.sum(dim=1, keepdim=True)
+      outer = outer.sum(dim=1, keepdim=True)
+      outer = self.proj_out(rearrange(outer, '... c d -> ... (c d)'))
+      return outer
 
     def run_mask_sum(mask):
       # masked mean, if there are padding in the rows of the MSA
@@ -404,7 +406,7 @@ class OuterMean(nn.Module):
     else:
       outer = outer.mean(dim=1)
 
-    return self.proj_out(outer)
+    return outer
 
 
 class PairwiseAttentionBlock(nn.Module):
@@ -423,7 +425,7 @@ class PairwiseAttentionBlock(nn.Module):
     super().__init__()
     self.multiplication_first = multiplication_first
 
-    self.outer_mean = OuterMean(
+    self.outer_mean = OuterProductMean(
         dim_msa, dim_pairwise) if not disabled_outer_mean else None
     self.triangle_attention_outgoing = AxialAttention(dim_node=dim_pairwise,
                                                       dim_edge=dim_pairwise,

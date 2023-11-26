@@ -77,12 +77,19 @@ def make_coord_plddt(protein,
                      use_weighted_mask=True,
                      is_training=True):
   if is_training and 'coord_plddt' in protein:
+    ca_idx = residue_constants.atom_order['CA']
+    plddt_mean = functional.masked_mean(value=protein['coord_plddt'][...,
+                                                                     ca_idx],
+                                        mask=protein['mask'],
+                                        dim=-1)
+    protein['plddt_mean'] = plddt_mean
     plddt_mask = (protein['coord_plddt'] >= threshold)
     if exists(gamma):
       protein['coord_plddt'] = torch.exp(gamma * (protein['coord_plddt'] - 1.0))
     protein['coord_plddt'] *= plddt_mask
     protein['coord_plddt_use_weighted_mask'] = use_weighted_mask
   return protein
+
 
 @take1st
 def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
@@ -92,6 +99,7 @@ def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
     protein['loss.distogram.w'] = mask * (1.0 - distogram_w) + distogram_w
     protein['loss.folding.w'] = mask * (1.0 - folding_w) + folding_w
   return protein
+
 
 @take1st
 def make_coord_alt(protein, is_training=True):
@@ -122,15 +130,19 @@ def make_seq_profile(protein,
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
     num_msa = p.shape[1]
     # Shape (b, l, c)
-    p = torch.sum(p, dim=1)
+    if 'msa_row_mask' in protein:
+      p = torch.einsum('b m i c,b m -> b i c', p.float(),
+                       protein['msa_row_mask'].float())
+    else:
+      p = torch.sum(p.float(), dim=1)
   else:
     num_msa = 1
     p = F.one_hot(protein['seq'].long(),
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
 
-  # gap value (b, l)
-  gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
-  protein['sequence_profile_gap_value'] = p[..., gap_idx] / (num_msa + epsilon)
+  # # gap value (b, l)
+  # gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
+  # protein['sequence_profile_gap_value'] = p[..., gap_idx] / (num_msa + epsilon)
 
   if exists(mask) and len(mask) > 0:
     # Shape (k, c)
@@ -246,79 +258,107 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
 def make_pseudo_beta(protein, prefix='', is_training=True):
   del is_training
 
-  if (prefix + 'seq' in protein and
-      prefix + 'coord' in protein and
+  if (prefix + 'seq' in protein and prefix + 'coord' in protein and
       prefix + 'coord_mask' in protein):
-    protein[prefix + 'pseudo_beta'], protein[prefix + 'pseudo_beta_mask'] = (
-        pseudo_beta_fn(protein[prefix + 'seq'],
-                       protein[prefix + 'coord'],
-                       protein[prefix + 'coord_mask']))
+    protein[prefix +
+            'pseudo_beta'], protein[prefix +
+                                    'pseudo_beta_mask'] = (pseudo_beta_fn(
+                                        protein[prefix + 'seq'],
+                                        protein[prefix + 'coord'],
+                                        protein[prefix + 'coord_mask']))
   return protein
 
+
 @take1st
-def make_mutation(protein, replace_fraction=0.6, cutoff=8, is_training=True):
-  if is_training and replace_fraction > 0 and 'seq_color' in protein:
+def make_mutation(protein,
+                  mutation_prob=0.0,
+                  replace_fraction=0.6,
+                  cutoff=8,
+                  is_training=True):
+  assert 0.0 <= mutation_prob <= 1.0
+  if is_training and 'pseudo_beta' in protein and 'pseudo_beta_mask' in protein:
+    assert 'seq_color' in protein
     assert 'sequence_profile' in protein
-    if 'pseudo_beta' in protein and 'pseudo_beta_mask' in protein:
-      seq_color = protein['seq_color']
-      positions = protein['pseudo_beta']
-      mask = protein['pseudo_beta_mask']
+    seq_color = protein['seq_color']
+    positions = protein['pseudo_beta']
+    mask = protein['pseudo_beta_mask']
 
-      b = mask.shape[0]
+    squared_mask = rearrange(mask, '... i -> ... i ()') * rearrange(
+        mask, '... j -> ... () j')
+    pair_clr_mask = (rearrange(seq_color, '... i -> ... i ()') != rearrange(
+        seq_color, '... j -> ... () j'))
 
+    dist2 = functional.squared_cdist(positions, positions)
+    contacts = squared_mask * pair_clr_mask * (dist2 <= cutoff**2)
+
+    b, n = mask.shape[0], torch.amax(seq_color)
+
+    # ppi label && mask
+    ppi_label = torch.scatter_add(torch.zeros(b, n, device=contacts.device), -1,
+                                  seq_color.long() - 1,
+                                  torch.sum(contacts, dim=-1)) > 0
+    ppi_mask = torch.scatter_add(torch.zeros(b, n, device=contacts.device), -1,
+                                 seq_color.long() - 1, mask) > 0
+
+    if np.random.random() < mutation_prob and replace_fraction > 0:
       # Select one chain randomly
       selected_clr = 1 + torch.floor(
           torch.rand(b, device=mask.device) *
           torch.amax(seq_color, dim=-1)).int()
 
-      masked_clr = (seq_color == selected_clr[..., None])
-      squared_mask = rearrange(mask, '... i -> ... i ()') * rearrange(
-          mask, '... j -> ... () j')
-      pair_clr_mask = (rearrange(seq_color, '... i -> ... i ()') != rearrange(
-          seq_color, '... j -> ... () j')) * masked_clr[..., None]
-      dist2 = functional.squared_cdist(positions, positions)
+      # masked_clr = (seq_color == selected_clr[..., None])
+      masked_clr = (seq_color == selected_clr)
 
       # Number of contacts for each chain with selected chain except itself.
-      contacts = torch.sum(squared_mask * pair_clr_mask * (dist2 <= cutoff**2),
-                           dim=-1)
-      if torch.any(contacts):
+      contacts = torch.sum(contacts * masked_clr[..., None], dim=-1)
+      if torch.any(contacts > 0):
         # Nuber of AAs to be mutated
-        n = int(
-            max(1,
+        d = int(
+            max(4,
                 torch.max(torch.sum(contacts > 0, dim=-1)) * replace_fraction))
         # Sample muations based on contacts
-        mutation_idx = torch.multinomial(contacts, n)
+        mutation_idx = torch.multinomial(contacts + 0.1, d)
 
         c = protein['sequence_profile'].shape[-1]
         p = torch.gather(
             protein['sequence_profile'], -2,
             repeat(mutation_idx[..., None], '... r -> ... (r c)', c=c))
 
-        mask = ['X', '-']
+        mask = 'X-'
         # Shape (k, c)
         m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
                                  mask=mask,
                                  device=p.device)
 
         p = rearrange(m, 'c -> () () c') / (p + 1e-4)
-        mutation_aa = torch.multinomial(rearrange(p, 'b i c -> (b i) c'), 1)
+        mutation_aa = torch.multinomial(rearrange(p, 'b i c -> (b i) c'),
+                                        1).int()
 
         mutation_aa = rearrange(mutation_aa, '(b i) c -> b (i c)', b=b)
         wt_aa = torch.gather(protein['seq'], -1, mutation_idx)
 
-        def yield_mutation_str(i):
+        def yield_mutation_str(i):  # pylint: disable=unused-variable
           for idx, x, y in zip(mutation_idx[i], mutation_aa[i], wt_aa[i]):
             x, y = residue_constants.restypes[x], residue_constants.restypes[y]
             yield f'{y}{idx}{x}'
 
-        protein['mutation_str'] = '|'.join(
-            ','.join(yield_mutation_str(i)) for i in range(b))
+        # protein['mutation_str'] = '|'.join(
+        #     ','.join(yield_mutation_str(i)) for i in range(b))
+        protein['mutation_idx'] = selected_clr
+        # ppi_label = torch.scatter(
+        #     ppi_label, -1, selected_clr - 1,
+        #     torch.zeros(b, n, device=ppi_label.device, dtype=torch.bool))
+        ppi_label = ppi_label.masked_fill(
+            F.one_hot(selected_clr.long() - 1, num_classes=n), False)
 
         protein['true_seq'] = protein['seq']
         protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx,
                                        mutation_aa)
+        protein['loss.folding.w'] = torch.zeros_like(selected_clr)  # FIXME
+    protein['ppi_label'], protein['ppi_mask'] = ppi_label, ppi_mask
 
   return protein
+
 
 @take1st
 def make_backbone_affine(protein, is_training=True):
@@ -418,6 +458,7 @@ def make_selection(protein, fields, is_training=True):
 class FeatureBuilder:
   """Build features by feature functions in config
     """
+
   def __init__(self, config):
     self.config = config
 

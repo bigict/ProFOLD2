@@ -5,7 +5,6 @@
         for further help.
 """
 import os
-from contextlib import suppress as nullcontext
 import functools
 import glob
 import json
@@ -51,16 +50,17 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
     pid, _ = os.path.splitext(fasta_file)
     return pid
 
-  if hasattr(args, 'fasta_data'):
-    for fasta_name, fasta_str in args.fasta_data:
+  if exists(args.fasta_file_list):
+    with open(args.fasta_file_list, 'r') as f:
+      for fasta_file in filter(lambda x: len(x) > 0,
+                               map(lambda x: x.strip(), f)):
+        args.fasta_files.append(fasta_file)
+  for fasta_glob in args.fasta_files:
+    for fasta_file in glob.glob(fasta_glob):
+      fasta_name = filename_get(fasta_file)
+      with open(fasta_file, 'r') as f:
+        fasta_str = f.read()
       yield fasta_name, fasta_str
-  else:
-    for fasta_glob in args.fasta_files:
-      for fasta_file in glob.glob(fasta_glob):
-        fasta_name = filename_get(fasta_file)
-        with open(fasta_file, 'r', encoding='utf-8') as f:
-          fasta_str = f.read()
-        yield fasta_name, fasta_str
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   kwargs = {'pin_memory': True, 'shuffle': False}
@@ -100,7 +100,10 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
             size=args.max_msa_size - 1,
             replace=False) if args.max_msa_size > 1 else [])
       msa += [s]
-  data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
+  data = ProteinSequenceDataset(sequences,
+                                descriptions,
+                                msa=msa,
+                                domain_as_seq=args.add_pseudo_linker)
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
         num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
@@ -204,7 +207,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
                                                          r.headers, idx=0)
         unrelaxed_pdb_path = os.path.join(output_dir,
                                           f'unrelaxed_{model_name}.pdb')
-        with open(unrelaxed_pdb_path, 'w', encoding='utf-8') as f:
+        with open(unrelaxed_pdb_path, 'w') as f:
           f.write(unrelaxed_pdbs[model_name])
 
         if exists(amber_relaxer):
@@ -230,7 +233,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           # Save the relaxed PDB.
           relaxed_output_path = os.path.join(
               output_dir, f'relaxed_{model_name}.pdb')
-          with open(relaxed_output_path, 'w', encoding='utf-8') as f:
+          with open(relaxed_output_path, 'w') as f:
             f.write(relaxed_pdb_str)
 
       # Rank by model confidence and write out relaxed PDBs in rank order.
@@ -239,21 +242,21 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)):
         ranked_order.append(model_name)
         ranked_output_path = os.path.join(output_dir, f'ranked_{i}.pdb')
-        with open(ranked_output_path, 'w', encoding='utf-8') as f:
+        with open(ranked_output_path, 'w') as f:
           if exists(amber_relaxer):
             f.write(relaxed_pdbs[model_name])
           else:
             f.write(unrelaxed_pdbs[model_name])
 
       ranking_output_path = os.path.join(output_dir, 'ranking_debug.json')
-      with open(ranking_output_path, 'w', encoding='utf-8') as f:
+      with open(ranking_output_path, 'w') as f:
         f.write(json.dumps(
             {'confidences': ranking_scores, 'order': ranked_order}, indent=4))
 
     logging.info('Final timings for %s: %s', fasta_name, timings)
 
     timings_output_path = os.path.join(output_dir, 'timings.json')
-    with open(timings_output_path, 'w', encoding='utf-8') as f:
+    with open(timings_output_path, 'w') as f:
       f.write(json.dumps(timings, indent=4))
 
   # Predict structure
@@ -276,6 +279,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='remapped to an alternative set of devices, default=None')
   parser.add_argument('fasta_files', type=str, nargs='*',
       help='fasta files')
+  parser.add_argument('--fasta_file_list', type=str, default=None,
+      help='fasta file list, default=None')
   parser.add_argument('--fasta_fmt', type=str, default='single',
       choices=['single', 'a3m', 'a4m'],
       help='format of fasta files, default=\'single\'')

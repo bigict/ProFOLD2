@@ -5,8 +5,6 @@
         for further help.
 """
 import os
-from contextlib import suppress as nullcontext
-import functools
 import logging
 
 import torch
@@ -116,7 +114,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       logging.info('no: %d pid: %s, %s', idx, fasta_name,
                    ', '.join(f'{k}: {v}' for k, v in metric_dict.items()))
       if args.save_pdb:
-        pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=i)
+        pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=idx)
 
       return tms.item()
     else:

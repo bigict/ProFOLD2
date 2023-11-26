@@ -51,6 +51,10 @@ def mmcif_yield_chain(mmcif_dict, args):
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
   model_list = mmcif_dict['_atom_site.pdbx_PDB_model_num']
 
+  def _get_residue(i):
+    if residue_id_list[i] == 'MSE':
+      return 'MET'
+    return residue_id_list[i]
   def _make_npz(coord_list, coord_mask_list, bfactor_list):
     npz = dict(coord=np.stack(coord_list, axis=0),
                coord_mask=np.stack(coord_mask_list, axis=0))
@@ -94,6 +98,9 @@ def mmcif_yield_chain(mmcif_dict, args):
       labels, label_mask, bfactors = None, None, None
 
     int_resseq = int(label_seq_id_list[i])
+    residue_id = residue_id_list[i]
+    if residue_id == 'MSE':
+      residue_id = 'MET'
 
     if not exists(int_resseq_start):
       int_resseq_start = int_resseq
@@ -106,7 +113,7 @@ def mmcif_yield_chain(mmcif_dict, args):
       int_resseq_start = int_resseq
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
       resname = residue_constants.restype_3to1.get(
-          residue_id_list[i], residue_constants.restypes_with_x[-1])
+          residue_id, residue_constants.restypes_with_x[-1])
       seq.append(resname)
 
       if exists(labels):
@@ -120,8 +127,8 @@ def mmcif_yield_chain(mmcif_dict, args):
     int_resseq_end = int_resseq
 
 
-    if residue_id_list[i] in residue_constants.restype_name_to_atom14_names:
-      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id_list[i]]  # pylint: disable=line-too-long
+    if residue_id in residue_constants.restype_name_to_atom14_names:
+      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
     else:
       res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
     try:

@@ -96,7 +96,7 @@ def parse_seq_index(description, input_sequence, seq_index):
     for m, n in positions[1:]:
       gap += m - q - 1
       seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
-          m - start, n - start + 1)
+          m - start, n - start + 1, dtype=seq_index.dtype)
       p, q = m, n
 
   return seq_index
@@ -240,6 +240,8 @@ def pdb_from_prediction(batch, headers, idx=None):
         'aatype': aatype,
         'residue_index': seq_index,
     }
+    if 'seq_color' in batch:
+      features['seq_color'] = to_numpy(batch['seq_color'][b] - 1)
 
     coords = to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)

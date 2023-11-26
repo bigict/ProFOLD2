@@ -22,6 +22,14 @@ def default(val, d):
   return d() if isfunction(d) else d
 
 
+def version_cmp(x, y):
+  for a, b in zip(x.split('.'), y.split('.')):
+    if int(a) > int(b):
+      return 1
+    elif int(a) < int(b):
+      return -1
+  return 0
+
 def unique_id():
   """Generate a unique ID as specified in RFC 4122."""
   # See https://docs.python.org/3/library/uuid.html
@@ -419,7 +427,7 @@ def kabsch_torch(x, y, cpu=False):
     x_ = x - x.mean(dim=-1, keepdim=True)
     y_ = y - y.mean(dim=-1, keepdim=True)
     # calculate convariance matrix (for each prot in the batch)
-    c = torch.matmul(x_, y_.t()).detach()
+    c = torch.matmul(x_, y_.t())
     if cpu:
       c = c.cpu()
     # Optimal rotation matrix via SVD
@@ -733,7 +741,8 @@ def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
       num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
       assert 0 < num_tops <= seq_len
       top_labels = sorted_pred_truth[:num_tops, 1]
-      pred_corrects = ((0 < top_labels) & (top_labels <= cutoff)).sum()
+      pred_corrects = ((0 < top_labels) & (top_labels <= cutoff))
+      pred_corrects = torch.sum(pred_corrects, dim=-1, keepdims=True)
       yield (i, j), ratio, pred_corrects / float(num_tops)
 
 
