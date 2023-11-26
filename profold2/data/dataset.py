@@ -3,6 +3,7 @@
 import os
 import contextlib
 import functools
+import json
 import logging
 from io import BytesIO
 import pathlib
@@ -127,6 +128,7 @@ def _make_feats_shrinked(item, new_order, seq_feats=None, msa_feats=None):
 def _protein_clips_fn(protein,
                       min_crop_len=None,
                       max_crop_len=None,
+                      min_crop_pae=False,
                       max_crop_plddt=False,
                       crop_probability=0.0,
                       crop_algorithm='random',
@@ -154,16 +156,30 @@ def _protein_clips_fn(protein,
                  max_crop_len, n, l)
     i, j, w = 0, l, None
     if not 'coord_mask' in protein or torch.any(protein['coord_mask']):
-      if max_crop_plddt and 'coord_plddt' in protein:
+      if min_crop_pae and 'coord_pae' in protein:
+        assert protein['coord_pae'].shape[-1] == protein['coord_pae'].shape[-2]
+        assert protein['coord_pae'].shape[-1] == n
+        w = torch.cumsum(torch.cumsum(protein['coord_pae'], dim=-1), dim=-2)
+        w = torch.cat(
+            (w[l - 1:l, l - 1],
+             torch.diagonal(
+                 w[l:, l:] - w[:n - l, l:] - w[l:, :n - l] + w[:n - l, :n - l],
+                 dim1=-2,
+                 dim2=-1)),
+            dim=-1) / (l**2)
+        w = 1 / (w + 1e-8)
+        w = torch.pow(w, 1.3)
+      elif max_crop_plddt and 'coord_plddt' in protein:
         ca_idx = residue_constants.atom_order['CA']
         plddt = protein['coord_plddt'][..., ca_idx]
         w = torch.cumsum(plddt, dim=-1)
         assert len(w.shape) == 1
         w = torch.cat((w[l - 1:l], w[l:] - w[:-l]), dim=-1)
         assert w.shape[0] == plddt.shape[-1] - l + 1
+        w = torch.pow(w / l, 2.0)
       while True:
         if exists(w):
-          i = int(torch.multinomial(torch.pow(w / l, 2.0), 1))
+          i = int(torch.multinomial(w, 1))
         else:
           i = np.random.randint(n - l + 1)
         j = i + l
@@ -918,8 +934,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return ret
 
   def get_structure_label_npz(self, protein_id):
-    if self._fstat(f'{self.pdb_dir}/{protein_id}.npz'):
-      with self._fileobj(f'{self.pdb_dir}/{protein_id}.npz') as f:
+    ret = {}
+
+    pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
+    if self._fstat(pdb_file):
+      with self._fileobj(pdb_file) as f:
         structure = np.load(BytesIO(f.read()))
         ret = dict(coord=torch.from_numpy(structure['coord']),
                    coord_mask=torch.from_numpy(structure['coord_mask']))
@@ -928,8 +947,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         else:
           ret.update(
               coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
-        return ret
-    return {}
+    pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
+    if self._fstat(pae_file):
+      with self._fileobj(pae_file) as f:
+        pae_obj = json.loads(f.read())
+        assert len(pae_obj) == 1
+        pae_obj = torch.as_tensor(pae_obj[0]['predicted_aligned_error'])
+        ret.update(coord_pae=pae_obj)
+    return ret
 
   def get_seq_features(self, protein_id, seq_color=1):
     """Runs alignment tools on the input sequence and creates features."""
@@ -1233,6 +1258,7 @@ def load(data_dir,
          msa_as_seq_prob=0.0,
          min_crop_len=None,
          max_crop_len=None,
+         min_crop_pae=False,
          max_crop_plddt=False,
          crop_probability=0,
          crop_algorithm='random',
@@ -1262,6 +1288,7 @@ def load(data_dir,
     data_crop_fn = functools.partial(_protein_clips_fn,
                                      min_crop_len=min_crop_len,
                                      max_crop_len=max_crop_len,
+                                     min_crop_pae=min_crop_pae,
                                      max_crop_plddt=max_crop_plddt,
                                      crop_probability=crop_probability,
                                      crop_algorithm=crop_algorithm,

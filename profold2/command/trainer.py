@@ -74,6 +74,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
+        min_crop_pae=True,
         max_crop_plddt=True,
         crop_algorithm=args.crop_algorithm,
         crop_probability=crop_probability,
@@ -116,6 +117,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
         batch_size=args.batch_size,
+        drop_last=True,
         pin_memory=True,
         num_workers=args.num_workers)
 

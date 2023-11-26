@@ -4,13 +4,16 @@
      ```
      for further help.
 """
+import os
 import functools
 import logging
 import multiprocessing as mp
 
+import numpy as np
 import torch
 from einops import rearrange
 
+from profold2.common import protein
 from profold2.data import dataset
 from profold2.data.dataset import ProteinStructureDataset
 from profold2.data.utils import compose_pid, decompose_pid
@@ -41,6 +44,29 @@ def to_fasta_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')
   parser.add_argument(
       '--print_first_only', action='store_true', help='print first only')
+  return parser
+
+
+def to_pdb(data, args):  # pylint: disable=redefined-outer-name
+  os.makedirs(args.output, exist_ok=True)
+
+  for feat in iter(data):
+    prot = protein.Protein(aatype=np.array(feat['seq']),
+                           atom_positions=np.array(feat['coord']),
+                           atom_mask=np.array(feat['coord_mask']),
+                           residue_index=np.array(feat['seq_index']) + 1,
+                           chain_index=np.zeros_like(feat['seq']),
+                           b_factors=np.zeros_like(feat['coord_mask']))
+    pid = feat['pid']
+    with open(os.path.join(args.output, f'{pid}.pdb'), 'w') as f:
+      if args.verbose:
+        logger.debug('to pdb: %s', pid)
+      f.write(protein.to_pdb(prot))
+
+
+def to_pdb_add_argument(parser):  # pylint: disable=redefined-outer-name
+  parser.add_argument(
+      '-o', '--output', type=str, default=None, help='output file')
   return parser
 
 
@@ -266,6 +292,7 @@ if __name__ == '__main__':
       'contacts': (contacts, contacts_add_argument),
       'plddt': (plddt, plddt_add_argument),
       'to_fasta': (to_fasta, to_fasta_add_argument),
+      'to_pdb': (to_pdb, to_pdb_add_argument),
   }
 
   parser = argparse.ArgumentParser()
