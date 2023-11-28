@@ -160,9 +160,9 @@ def _protein_clips_fn(protein,
                  max_crop_len, n, l)
     i, j, w = 0, l, None
     if not 'coord_mask' in protein or torch.any(protein['coord_mask']):
-      if min_crop_pae and 'coord_pae' in protein:
+      if (min_crop_pae and 'coord_pae' in protein and
+          protein['coord_pae'].shape[-1] == n):
         assert protein['coord_pae'].shape[-1] == protein['coord_pae'].shape[-2]
-        assert protein['coord_pae'].shape[-1] == n
         w = torch.cumsum(torch.cumsum(protein['coord_pae'], dim=-1), dim=-2)
         w = torch.cat(
             (w[l - 1:l, l - 1],
@@ -178,7 +178,7 @@ def _protein_clips_fn(protein,
         plddt = protein['coord_plddt'][..., ca_idx]
         w = torch.cumsum(plddt, dim=-1)
         assert len(w.shape) == 1
-        w = torch.cat((w[l - 1:l], w[l:] - w[:-l]), dim=-1)
+        w = torch.cat((w[l - 1:l], w[l:] - w[:-l]), dim=-1)  # pylint: disable=invalid-unary-operand-type
         assert w.shape[0] == plddt.shape[-1] - l + 1
         w = torch.pow(w / l, 2.0)
       while True:
