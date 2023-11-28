@@ -40,7 +40,6 @@ def to_fasta(data, args):  # pylint: disable=redefined-outer-name
 
 def to_fasta_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--dump_keys', action='store_true', help='dump keys')
-  parser.add_argument('--checksum', action='store_true', help='dump keys')
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')
   parser.add_argument(
       '--print_first_only', action='store_true', help='print first only')
@@ -83,6 +82,9 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
         print(prot['pid'], n, prot['coord'].shape)
     elif args.coord_required:
       print(prot['pid'], 'coord required')
+    if 'coord_pae' in prot:
+      if n != prot['coord_pae'].shape[0] or prot['coord_pae'].shape[1] != n:
+        print(prot['pid'], n, prot['coord_pae'].shape)
     if 'coord_mask' in prot:
       if n != prot['coord_mask'].shape[0]:
         print(prot['pid'], n, prot['coord_mask'].shape)
