@@ -311,6 +311,10 @@ class Alphafold2WithRecycling(nn.Module):
       metrics['plddt_mean'] = batch['plddt_mean'].tolist()
     if 'confidence' in ret.headers:
       metrics['confidence'] = ret.headers['confidence']['loss'].tolist()
+    if 'metric' in ret.headers and 'contact' in ret.headers['metric']['loss']:
+      contacts = ret.headers['metric']['loss']['contact']
+      if '[24,inf)_1' in contacts:
+        metrics['P@L'] = contacts['[24,inf)_1'].tolist()
     if 'tmscore' in ret.headers:
       metrics['tmscore'] = ret.headers['tmscore']['loss'].tolist()
     if metrics:

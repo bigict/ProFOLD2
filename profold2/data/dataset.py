@@ -527,14 +527,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_list = ['BFD30_E-3']
 
   def __getstate__(self):
-    logger.debug('being pickled ...')
     d = self.__dict__
     if isinstance(self.data_dir, zipfile.ZipFile):
       d['data_dir'] = self.data_dir.filename
+    logger.debug('%s is pickled ...', d['data_dir'])
     return d
 
   def __setstate__(self, d):
-    logger.debug('being unpickled ...')
+    logger.debug('%s is unpickled ...', d['data_dir'])
     if zipfile.is_zipfile(d['data_dir']):
       d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
     self.__dict__ = d
