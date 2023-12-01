@@ -21,8 +21,9 @@ def parse_tmscore_output(src, terms: tuple):
   result = {}
   start_keyword = dict(tmscore='TM-score    = ',
                        gdt='GDT-TS-score= ',
-                       length='Length=  ')
-  end_char = dict(tmscore=' ', gdt=' ', length='\n')
+                       length='Length=  ',
+                       rmsd='RMSD of  the common residues=')
+  end_char = dict(tmscore=' ', gdt=' ', length='\n', rmsd='\n')
   for term in terms:
     assert term in end_char
     key_word = start_keyword[term]
@@ -36,7 +37,7 @@ def parse_tmscore_output(src, terms: tuple):
 
 
 def parse_deepscore_output(src, terms):
-  key_name = dict(tmscore='TMscore', gdt='GDT_TS', length='length')
+  key_name = dict(tmscore='TMscore', gdt='GDT_TS', length='length', rmsd='RMSD(A)')
   length_line = 7  # 0-indexed.
   title_line = 12  # 0-indexed.
   score_line = 13  # 0-indexed.
@@ -80,6 +81,18 @@ def parse_tmalign_output(src, terms):
       for k, (v1, v2, f) in key_name.items()
   }
 
+def parse_lddt_output(src, terms):
+  all_scores = {}
+
+  key_name = dict(lDDT='Global LDDT score:')
+  for line in map(lambda x: x.strip(), src.split('\n')):
+    for key, field in key_name.items():
+      if line.startswith(field):
+        all_scores[key] = float(line[len(field):])
+
+  return {k: all_scores[k] for k in terms if k in all_scores}
+
+
 def run_scorer(exe_path, predicted_path, gt_path, terms):
   scorer_process = subprocess.run([exe_path, predicted_path, gt_path],
                                   stdout=subprocess.PIPE, check=True)
@@ -90,6 +103,8 @@ def run_scorer(exe_path, predicted_path, gt_path, terms):
     return parse_deepscore_output(f.read(), terms)
   elif exe_name == 'TMalign':
     return parse_tmalign_output(f.read(), terms)
+  elif exe_name == 'lddt':
+    return parse_lddt_output(f.read(), terms)
   # TMScore
   return parse_tmscore_output(f.read(), terms)
 
@@ -103,9 +118,14 @@ def read_pairwise_list(f):
 
 
 def main(args):  # pylint: disable=redefined-outer-name
-  name_map = {'tmscore': 'TM-score', 'length': 'Length'}
-  if args.gdt:
-    name_map['gdt'] = 'GDT-TS'
+  if args.exe_path == 'lddt':
+    name_map = {'lDDT': 'lDDT'}
+  else:
+    name_map = {'tmscore': 'TM-score', 'length': 'Length'}
+    if args.gdt:
+      name_map['gdt'] = 'GDT-TS'
+    if args.rmsd:
+      name_map['rmsd'] = 'RMSD'
 
   if args.pairwise_list:
     if args.pairwise_list == '-':
@@ -168,6 +188,9 @@ if __name__ == '__main__':
   parser.add_argument('--gdt',
                       action='store_true',
                       help='Get GDT-TS score as long as TMscore.')
+  parser.add_argument('--rmsd',
+                      action='store_true',
+                      help='Get RMSD score as long as TMscore.')
   parser.add_argument('-e',
                       '--exe_path',
                       type=str,

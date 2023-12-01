@@ -30,6 +30,18 @@ from profold2.model.utils import CheckpointManager
 from profold2.utils import exists, version_cmp
 from profold2.command.worker import main, WorkerModel, WorkerXPU
 
+def backward_hook_wrap(name, module):
+  def backward_hook_print(self, grad_input, grad_output):
+    del self
+    message = f'after backard of {name}@{module.__class__.__qualname__}'
+    logging.debug('%s grad_input: %s, grad_output: %s', message, grad_input,
+                  grad_output)
+
+  logging.debug('module.register_full_backward_hook: %s@%s', name,
+                module.__class__.__qualname__)
+  module.register_full_backward_hook(backward_hook_print)
+  return module
+
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
@@ -145,6 +157,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         param.requires_grad = False
       else:
         logging.info('name: %s, param: %s', name, param)
+  if exists(args.model_params_requires_hook):
+    params_requires_hook = re.compile(args.model_params_requires_hook)
+    for name, module in model.named_modules():
+      if params_requires_hook.match(name):
+        backward_hook_wrap(name, module)
   ####
 
   # optimizer
@@ -234,11 +251,16 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with sync_ctx():
         autocast_ctx = nullcontext
         if grad_scaler.is_enabled():
+          dtype = torch.float16
+          if hasattr(torch.cuda, 'is_bf16_supported'):
+            if torch.cuda.is_bf16_supported():
+              dtype = torch.bfloat16
           # FIXED ME: cache_enabled=True will crash :(
           if version_cmp(torch.__version__, '1.10.0') >= 0:
-            autocast_ctx = functools.partial(autocast, cache_enabled=False)
+            autocast_ctx = functools.partial(autocast, dtype=dtype,
+                                             cache_enabled=False)
           else:
-            autocast_ctx = autocast
+            autocast_ctx = functools.partial(autocast, dtype=dtype)
         with autocast_ctx():
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
@@ -470,6 +492,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_params_requires_grad', type=str,
       default=None,
       help='learn partial parameters only, default=None')
+  parser.add_argument('--model_params_requires_hook', type=str,
+      default=None,
+      help='hook partial parameters, default=None')
 
   parser.add_argument('--save_pdb', type=float, default=1.0,
       help='save pdb files when TMscore>=VALUE, default=1.0')
