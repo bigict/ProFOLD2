@@ -55,7 +55,7 @@ def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
                 exist_ok=True)
-  if args.save_pdb <= 1.0:
+  if exists(args.save_pdb) and args.save_pdb <= 1.0:
     os.makedirs(os.path.join(args.prefix, 'pdbs'),
                 exist_ok=True)
 
@@ -283,7 +283,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         if 'loss' in v:
           running_loss += MetricDict({h:v['loss']})
 
-      if ('tmscore' in r.headers and
+      if ('tmscore' in r.headers and exists(args.save_pdb) and
           torch.mean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
@@ -506,7 +506,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       default=None,
       help='hook partial parameters, default=None')
 
-  parser.add_argument('--save_pdb', type=float, default=1.0,
+  parser.add_argument('--save_pdb', type=float, default=None,
       help='save pdb files when TMscore>=VALUE, default=1.0')
   parser.add_argument('--amp_enabled', action='store_true',
       help='enable automatic mixed precision, default=False')
