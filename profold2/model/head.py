@@ -47,7 +47,7 @@ def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
     w = torch.clamp(batch['num_msa'], max=num_pivot) / num_pivot
     w = torch.pow(w, alpha)
     errors = torch.einsum('b ...,b -> b ...', errors, w)
-    return errors, w.tolist()
+    return errors, w
   return errors, [1.0] * errors.shape[0]
 
 def batched_tmscore(pred_points, true_points, coord_mask, mask):
@@ -94,7 +94,7 @@ class ConfidenceHead(nn.Module):
         metrics['loss'] = functional.masked_mean(value=metrics['plddt'],
                                                  mask=mask,
                                                  dim=-1)
-        logger.debug('ConfidenceHead.loss: %s', metrics['loss'].tolist())
+        logger.debug('ConfidenceHead.loss: %s', metrics['loss'])
     return metrics
 
 
@@ -153,7 +153,7 @@ class ContactHead(nn.Module):
       avg_error = functional.masked_mean(value=errors * square_weight,
                                          mask=square_mask,
                                          epsilon=1e-6)
-      logger.debug('ContactHead.loss: %s', avg_error.item())
+      logger.debug('ContactHead.loss: %s', avg_error)
       if exists(self.loss_min) or exists(self.loss_max):
         avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
       return dict(loss=avg_error)
@@ -257,7 +257,7 @@ class CoevolutionHead(nn.Module):
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error.item())
+    logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error)
 
     def _make_dynamic_regularization(w):
       if isinstance(w, float) and w > 0:
@@ -277,7 +277,7 @@ class CoevolutionHead(nn.Module):
     if exists(alpha):
       r1 = torch.sum(torch.abs(value['wij']), dim=-1) * square_mask
       logger.debug('CoevolutionHead.loss.L1(%s): %s',
-                   alpha.tolist(), torch.mean(r1).item())
+                   alpha, torch.mean(r1))
       avg_error += torch.mean(alpha[..., None, None] * r1)
 
     # L2 regularization
@@ -285,7 +285,7 @@ class CoevolutionHead(nn.Module):
     if exists(beta):
       r2 = torch.sum(torch.square(value['wij']), dim=-1) * square_mask
       logger.debug('CoevolutionHead.loss.L2(%s): %s',
-                  beta.tolist(), torch.mean(r2).item())
+                  beta, torch.mean(r2))
       avg_error += torch.mean(beta[..., None, None] * r2)
 
     # LH regularization
@@ -297,7 +297,7 @@ class CoevolutionHead(nn.Module):
           torch.square(
               torch.einsum('... i, ... i j, ... j', p, M, p) /
               (torch.einsum('... i,... i', p, p) + epsilon)))
-      logger.debug('CoevolutionHead.loss.LH: %s', rlh.item())
+      logger.debug('CoevolutionHead.loss.LH: %s', rlh)
       avg_error += 0.5 * self.gammar * rlh
 
     if exists(self.loss_min) or exists(self.loss_max):
@@ -388,14 +388,14 @@ class DistogramHead(nn.Module):
         square_weight = plddt_weight
 
     if 'loss.distogram.w' in batch:
-      logger.debug('DistogramHead.loss.w: %s', batch['loss.distogram.w'].tolist())
+      logger.debug('DistogramHead.loss.w: %s', batch['loss.distogram.w'])
       errors = torch.einsum('b ...,b -> b ...',
                             errors,
                             batch['loss.distogram.w'])
     avg_error = functional.masked_mean(value=errors * square_weight,
                                        mask=square_mask,
                                        epsilon=1e-6)
-    logger.debug('DistogramHead.loss: %s', avg_error.item())
+    logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
 
 
@@ -455,7 +455,7 @@ class FoldingHead(nn.Module):
             rearrange(batch['coord_plddt'][..., ca_idx], '... j -> ... () j'))
 
       if 'loss.folding.w' in batch:
-        logger.debug('FoldingHead.loss.w: %s', batch['loss.folding.w'].tolist())
+        logger.debug('FoldingHead.loss.w: %s', batch['loss.folding.w'])
         wij = rearrange(batch['loss.folding.w'], '... -> ... () ()')
         dij_weight = dij_weight * wij if exists(dij_weight) else wij
 
@@ -476,8 +476,7 @@ class FoldingHead(nn.Module):
                             use_weighted_mask=batch.get(
                                 'coord_plddt_use_weighted_mask',
                                 False)) / self.fape_z
-        logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i,
-                     r.item())
+        logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r)
         yield r
 
     def sidechain_fape_loss(pred_frames, true_frames, frames_mask, pred_points,
@@ -530,7 +529,7 @@ class FoldingHead(nn.Module):
                           use_weighted_mask=batch.get(
                               'coord_plddt_use_weighted_mask',
                               False)) / self.fape_z
-      logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r.item())
+      logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r)
       return r
 
     def fape_loss(traj, gt):
@@ -604,7 +603,7 @@ class FoldingHead(nn.Module):
           errors = torch.abs(angle_norm - 1.)
           avg_error = torch.mean(errors)
           logger.debug('FoldingHead.loss(norm_angle_loss: %d): %s', i,
-                       avg_error.item())
+                       avg_error)
           yield avg_error
 
       def yield_pred_angle_loss(pred_angles_list, true_angles):
@@ -641,7 +640,7 @@ class FoldingHead(nn.Module):
         elif len(pred_loss) == 1:
           pred_loss = functional.masked_mean(value=pred_loss[0],
                                              mask=angles_mask)
-        logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss.item())
+        logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss)
       else:
         pred_loss = .0
         logger.debug('FoldingHead.loss(pred_angle_loss): %s', pred_loss)
@@ -728,7 +727,7 @@ class LDDTHead(nn.Module):
           mask[i] = 1
     points_mask = torch.einsum('b,b ... -> b ...', mask, points_mask)
     loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
-    logger.debug('LDDTHead.loss: %s', loss.item())
+    logger.debug('LDDTHead.loss: %s', loss)
     return dict(loss=loss)
 
 class PPIHead(nn.Module):
@@ -794,7 +793,7 @@ class PPIHead(nn.Module):
                                         targets.float(),
                                         reduction='none')
       avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.debug('PPIHead.loss: %s', avg_error.item())
+      logger.debug('PPIHead.loss: %s', avg_error)
       return dict(loss=avg_error)
     return None
 
@@ -829,7 +828,7 @@ class RobertaLMHead(nn.Module):
                                    logits=logits)
 
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('RobertaLMHead.loss: %s', avg_error.item())
+    logger.debug('RobertaLMHead.loss: %s', avg_error)
     if exists(self.loss_min) or exists(self.loss_max):
       avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
     return dict(loss=avg_error)
@@ -904,7 +903,7 @@ class MetricDictHead(nn.Module):
               metrics['contact'][k] = precision
         if '[24,inf)_1' in metrics['contact']:
           logger.debug('MetricDictHead.contact.[24,inf]@L: %s',
-                       metrics['contact']['[24,inf)_1'].tolist())
+                       metrics['contact']['[24,inf)_1'])
       if ('profile' in headers or
           'coevolution' in headers) and 'sequence_profile' in batch:
         labels, label_mask = batch['sequence_profile'], 1.0
@@ -919,7 +918,7 @@ class MetricDictHead(nn.Module):
                                           labels=labels,
                                           mask=label_mask)
           avg_sim = functional.masked_mean(value=sim, mask=mask)
-          logger.debug('MetricDictHead.profile.cosine: %s', avg_sim.item())
+          logger.debug('MetricDictHead.profile.cosine: %s', avg_sim)
           metrics['profile'] = MetricDict()
           metrics['profile']['cosine'] = avg_sim
         if 'coevolution' in headers:
@@ -934,7 +933,7 @@ class MetricDictHead(nn.Module):
                                     labels * label_mask,
                                     dim=-1)
           avg_sim = functional.masked_mean(value=sim, mask=mask)
-          logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim.item())
+          logger.debug('MetricDictHead.coevolution.cosine: %s', avg_sim)
           metrics['coevolution']['cosine'] = avg_sim
 
           if 'msa' in batch:
@@ -949,16 +948,14 @@ class MetricDictHead(nn.Module):
             avg_sim = functional.masked_mean(value=F.one_hot(
                 pred, num_classes=num_class),
                                              mask=mask)
-            logger.debug('MetricDictHead.coevolution.identity: %s',
-                         avg_sim.item())
+            logger.debug('MetricDictHead.coevolution.identity: %s', avg_sim)
             metrics['coevolution']['identity'] = avg_sim
 
             errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
             avg_error = torch.exp(
                 functional.masked_mean(value=errors, mask=torch.sum(mask,
                                                                     dim=-1)))
-            logger.debug('MetricDictHead.coevolution.perplexity: %s',
-                         avg_error.item())
+            logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error)
             metrics['coevolution']['perplexity'] = avg_error
 
     return dict(loss=metrics) if metrics else None
@@ -1012,7 +1009,7 @@ class SequenceProfileHead(nn.Module):
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('SequenceProfileHead.loss(%s): %s', w, avg_error.item())
+    logger.debug('SequenceProfileHead.loss(%s): %s', w, avg_error)
     return dict(loss=avg_error)
 
 
@@ -1088,7 +1085,7 @@ class ViolationHead(nn.Module):
                                                loss_only=True))
 
       for k, v in loss_dict.items():
-        logger.debug('ViolationHead.%s: %s', k, v.item())
+        logger.debug('ViolationHead.%s: %s', k, v)
       return dict(loss=sum(loss_dict.values()))
     return None
 
