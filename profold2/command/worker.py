@@ -33,7 +33,7 @@ class _WorkerLogRecordFactory(object):
 
     def _tensor_to_list(x):
       if isinstance(x, torch.Tensor):
-        if len(x.shape) > 1:
+        if len(x.shape) > 1 or (len(x.shape) == 1 and x.shape[0] > 1):
           return x.tolist()
         return x.item()
       return x

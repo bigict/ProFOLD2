@@ -658,10 +658,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                      coord_exists)
       # Delete coords if all are invalid.
       ca_idx = residue_constants.atom_order['CA']
-      if 'coord_mask' in item and not torch.any(item['coord_mask'][:, ca_idx]):
-        for field in ('coord', 'coord_mask', 'coord_plddt'):
-          if field in item:
-            del item[field]
+      # FIXED: collate_fn may failed when batch_size > 1
+      # if 'coord_mask' in item and not torch.any(item['coord_mask'][:, ca_idx]):
+      #   for field in ('coord', 'coord_mask', 'coord_plddt'):
+      #     if field in item:
+      #       del item[field]
 
       # Fix seq_index
       del_seq = torch.cumsum(item['del_msa'][0],
