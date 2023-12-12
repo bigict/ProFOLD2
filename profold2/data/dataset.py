@@ -527,14 +527,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_list = ['BFD30_E-3']
 
   def __getstate__(self):
-    logger.debug('being pickled ...')
     d = self.__dict__
     if isinstance(self.data_dir, zipfile.ZipFile):
       d['data_dir'] = self.data_dir.filename
+    logger.debug('%s is pickled ...', d['data_dir'])
     return d
 
   def __setstate__(self, d):
-    logger.debug('being unpickled ...')
+    logger.debug('%s is unpickled ...', d['data_dir'])
     if zipfile.is_zipfile(d['data_dir']):
       d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
     self.__dict__ = d
@@ -658,10 +658,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                      coord_exists)
       # Delete coords if all are invalid.
       ca_idx = residue_constants.atom_order['CA']
-      if 'coord_mask' in item and not torch.any(item['coord_mask'][:, ca_idx]):
-        for field in ('coord', 'coord_mask', 'coord_plddt'):
-          if field in item:
-            del item[field]
+      # FIXED: collate_fn may failed when batch_size > 1
+      # if 'coord_mask' in item and not torch.any(item['coord_mask'][:, ca_idx]):
+      #   for field in ('coord', 'coord_mask', 'coord_plddt'):
+      #     if field in item:
+      #       del item[field]
 
       # Fix seq_index
       del_seq = torch.cumsum(item['del_msa'][0],

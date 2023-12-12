@@ -301,21 +301,26 @@ class Alphafold2WithRecycling(nn.Module):
         if 'tmscore' in ret.headers:
           logger.debug('%s/%s pid: %s, tmscore: %s', i, num_recycle,
                        ','.join(batch['pid']),
-                       ret.headers['tmscore']['loss'].tolist())
+                       ret.headers['tmscore']['loss'])
         batch['recyclables'] = ret.recyclables
 
     ret = ReturnValues(**self.impl(
         batch, return_recyclables=False, compute_loss=True, **kwargs))
     metrics = {}
     if 'plddt_mean' in batch:
-      metrics['plddt_mean'] = batch['plddt_mean'].tolist()
+      metrics['plddt_mean'] = batch['plddt_mean']
     if 'confidence' in ret.headers:
-      metrics['confidence'] = ret.headers['confidence']['loss'].tolist()
+      metrics['confidence'] = ret.headers['confidence']['loss']
+    if 'metric' in ret.headers and 'contact' in ret.headers['metric']['loss']:
+      contacts = ret.headers['metric']['loss']['contact']
+      if '[24,inf)_1' in contacts:
+        metrics['P@L'] = contacts['[24,inf)_1']
     if 'tmscore' in ret.headers:
-      metrics['tmscore'] = ret.headers['tmscore']['loss'].tolist()
+      metrics['tmscore'] = ret.headers['tmscore']['loss']
     if metrics:
-      logger.debug('%s/%s pid: %s, %s', num_recycle, num_recycle,
+      msg = ', '.join(['%s: %s']*len(metrics))
+      logger.debug(f'%s/%s pid: %s, {msg}', num_recycle, num_recycle,
                    ','.join(batch['pid']),
-                   ', '.join(f'{k}: {v}' for k, v in metrics.items()))
+                   *functools.reduce(lambda x, y: x + y, metrics.items()))
 
     return ret.asdict()

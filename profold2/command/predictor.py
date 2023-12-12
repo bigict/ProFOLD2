@@ -106,11 +106,15 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
                                 domain_as_seq=args.add_pseudo_linker)
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(data,
-        num_replicas=WorkerXPU.world_size(args.nnodes), rank=xpu.rank)
+                                           num_replicas=WorkerXPU.world_size(
+                                               args.nnodes),
+                                           rank=xpu.rank,
+                                           shuffle=False)
   return torch.utils.data.DataLoader(
       data,
       collate_fn=ProteinSequenceDataset.collate_fn,
-      num_workers=args.num_workers, **kwargs)
+      num_workers=args.num_workers,
+      **kwargs)
 
 def _create_relaxer(use_gpu_relax=False):
   from profold2.relax import relax  # pylint: disable=import-outside-toplevel
@@ -204,7 +208,8 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
 
         unrelaxed_pdbs[model_name] = pdb_from_prediction(batch,
-                                                         r.headers, idx=0)
+                                                         r.headers,
+                                                         idx=0)
         unrelaxed_pdb_path = os.path.join(output_dir,
                                           f'unrelaxed_{model_name}.pdb')
         with open(unrelaxed_pdb_path, 'w') as f:

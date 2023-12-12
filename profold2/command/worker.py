@@ -12,6 +12,45 @@ from torch import nn
 from profold2.model import Alphafold2
 from profold2.utils import default, exists, torch_allow_tf32
 
+
+class _WorkerLogRecordFactory(object):
+  """Preprocess tensor args before creating a LogRecord
+  """
+  def __init__(self, record_factory):
+    self.record_factory = record_factory
+
+  def __call__(self,
+               name,
+               level,
+               fn,
+               lno,
+               msg,
+               args,
+               exc_info,
+               func=None,
+               sinfo=None,
+               **kwargs):
+
+    def _tensor_to_list(x):
+      if isinstance(x, torch.Tensor):
+        if len(x.shape) > 1 or (len(x.shape) == 1 and x.shape[0] > 1):
+          return x.tolist()
+        return x.item()
+      return x
+
+    if exists(args):
+      args = tuple(map(_tensor_to_list, args))
+    return self.record_factory(name,
+                               level,
+                               fn,
+                               lno,
+                               msg,
+                               args,
+                               exc_info,
+                               func=func,
+                               sinfo=sinfo,
+                               **kwargs)
+
 class _WorkerLogFilter(logging.Filter):
   def __init__(self, rank=-1):
     super().__init__()
@@ -174,6 +213,10 @@ class WorkerFunction(object):
 
   def __call__(self, rank, args):  # pylint: disable=redefined-outer-name
     xpu = WorkerXPU(rank, args)
+
+    # logger for Tensors
+    record_factory = _WorkerLogRecordFactory(logging.getLogRecordFactory())
+    logging.setLogRecordFactory(record_factory)
 
     # logging
     if self.log_queue:

@@ -32,12 +32,21 @@ from profold2.command.worker import main, WorkerModel, WorkerXPU
 
 def backward_hook_wrap(name, module):
   def backward_hook_print(self, grad_input, grad_output):
-    del self
-    message = f'after backard of {name}@{module.__class__.__qualname__}'
-    logging.debug('%s grad_input: %s, grad_output: %s', message, grad_input,
-                  grad_output)
+    def _tensor_min_max(t):
+      if exists(t):
+        return tuple(map(lambda x: torch.aminmax(x) if exists(x) else x, t))
+      return t
 
-  logging.debug('module.register_full_backward_hook: %s@%s', name,
+    del self
+    message = f'After backard of {name}@{module.__class__.__qualname__}'
+    for param_name, param_value in module.named_parameters():
+      logging.debug('%s param_name: %s, param_value: %s', message,
+                    param_name, param_value)
+    logging.debug('%s grad_input: %s, grad_output: %s', message,
+                  _tensor_min_max(grad_input),
+                  _tensor_min_max(grad_output))
+
+  logging.debug('Register backward hook: %s@%s', name,
                 module.__class__.__qualname__)
   module.register_full_backward_hook(backward_hook_print)
   return module
@@ -46,7 +55,7 @@ def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
                 exist_ok=True)
-  if args.save_pdb <= 1.0:
+  if exists(args.save_pdb) and args.save_pdb <= 1.0:
     os.makedirs(os.path.join(args.prefix, 'pdbs'),
                 exist_ok=True)
 
@@ -158,6 +167,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       else:
         logging.info('name: %s, param: %s', name, param)
   if exists(args.model_params_requires_hook):
+    # torch.set_printoptions(profile='full')
     params_requires_hook = re.compile(args.model_params_requires_hook)
     for name, module in model.named_modules():
       if params_requires_hook.match(name):
@@ -273,7 +283,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         if 'loss' in v:
           running_loss += MetricDict({h:v['loss']})
 
-      if ('tmscore' in r.headers and
+      if ('tmscore' in r.headers and exists(args.save_pdb) and
           torch.mean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
@@ -496,7 +506,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       default=None,
       help='hook partial parameters, default=None')
 
-  parser.add_argument('--save_pdb', type=float, default=1.0,
+  parser.add_argument('--save_pdb', type=float, default=None,
       help='save pdb files when TMscore>=VALUE, default=1.0')
   parser.add_argument('--amp_enabled', action='store_true',
       help='enable automatic mixed precision, default=False')
