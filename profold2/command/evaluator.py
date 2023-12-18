@@ -129,8 +129,11 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       with_stack=True) as prof:
     # eval loop
     for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
-      tmscore += data_eval(idx, batch)
-      n += 1
+      try:
+        tmscore += data_eval(idx, batch)
+        n += 1
+      except RuntimeError as e:
+        logging.error('%d %s', idx, str(e))
 
       if hasattr(prof, 'step'):
         prof.step()
