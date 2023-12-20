@@ -271,7 +271,10 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
       profile_memory=True,
       with_stack=True) as prof:
     for idx, batch in enumerate(iter(test_loader)):
-      predict_structure(idx, batch)
+      try:
+        predict_structure(idx, batch)
+      except RuntimeError as e:
+        logging.error('%d %s', idx, str(e))
 
       if hasattr(prof, 'step'):
         prof.step()
