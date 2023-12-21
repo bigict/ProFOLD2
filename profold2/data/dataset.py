@@ -14,13 +14,13 @@ import numpy as np
 import torch
 from torch.utils.data import WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
-from einops import repeat
+from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import (compose_pid, decompose_pid, domain_parser,
                                  parse_seq_index, seq_index_join,
-                                 seq_index_split)
+                                 seq_index_split, str_seq_index)
 from profold2.utils import default, exists, timing
 
 logger = logging.getLogger(__file__)
@@ -189,7 +189,7 @@ def _protein_clips_fn(protein,
         j = i + l
         if not 'coord_mask' in protein or torch.any(protein['coord_mask'][i:j]):
           break
-    return dict(i=i, j=j, l=n)
+    return dict(i=i, j=j, d=list(range(i, j)), l=n)
 
   def _domain_sampler(protein, n):
 
@@ -255,10 +255,63 @@ def _protein_clips_fn(protein,
         logger.debug('domain_next: seq_len=%d, i=%d, j=%s', n, i, str(j))
       if j is not None and torch.any(ca_coord_mask[min(i, j):max(i, j)]):
         break
-    return dict(i=min(i, j), j=max(i, j), l=n)
+    return dict(i=min(i, j), j=max(i, j), d=list(range(i, j)), l=n)
+
+  def _knn_sampler(protein, n):
+
+    assert exists(min_crop_len) or exists(max_crop_len)
+    assert 'coord' in protein and 'coord_mask' in protein
+
+    if exists(max_crop_len
+             ) and n <= max_crop_len and crop_probability < np.random.random():
+      assert not exists(min_crop_len) or min_crop_len < n
+      return None
+
+    ca_idx = residue_constants.atom_order['CA']
+    ca_coord, ca_coord_mask = protein['coord'][
+        ..., ca_idx, :], protein['coord_mask'][..., ca_idx]
+    logger.debug('knn_sampler: seq_len=%d', n)
+
+    min_len = default(min_crop_len, 32)
+    max_len = default(max_crop_len, 256)
+    gamma = 0.004
+
+    ridx = np.random.randint(n)
+    eps = 1e-1
+    dist2 = torch.sum(torch.square(
+        rearrange(ca_coord, 'i d -> i () d') -
+        rearrange(ca_coord, 'j d -> () j d')),
+                      dim=-1)
+    mask = rearrange(ca_coord_mask, 'i -> i ()') * rearrange(
+        ca_coord_mask, 'j -> () j')
+    dist2 = dist2.masked_fill(~mask, torch.max(dist2))
+    dist2 = dist2[ridx]
+    opt_h = torch.zeros(n + 1, max_len + 1, dtype=torch.float)
+
+    for i in range(1, n + 1):
+      for j in range(1, min(i, max_len) + 1):
+        opt_h[i, j] = opt_h[i - 1, j - 1] + 1.0 / (dist2[i - 1] + eps)
+        if min_len <= j < i:
+          opt_v = opt_h[i - min_len - 1, j - min_len] + torch.sum(
+              1 / (dist2[i - min_len:i] + eps)) - gamma
+          opt_h[i, j] = max(opt_h[i, j], opt_v)
+    # Traceback
+    new_order = []
+    i, j = n + 1, max_len
+    while j > 0:
+      _, i = torch.max(opt_h[:i, j], dim=-1)
+      new_order = list(range(max(0, i - min_len), i)) + new_order
+      i, j = i - min_len + 1, j - min_len
+    cidx = protein['seq_index'][ridx].item()
+    logger.debug('_knn_sampler: ridx=%s, cidx=%s, %s', ridx, cidx,
+                 str_seq_index(torch.as_tensor(new_order)))
+    return dict(d=new_order, c=cidx, l=n)
+
 
   logger.debug('protein_clips_fn: crop_algorithm=%s', crop_algorithm)
-  sampler_list = dict(random=_random_sampler, domain=_domain_sampler)
+  sampler_list = dict(random=_random_sampler,
+                      domain=_domain_sampler,
+                      knn=_knn_sampler)
 
   assert crop_algorithm in sampler_list
 
@@ -267,7 +320,7 @@ def _protein_clips_fn(protein,
       max_crop_len < n) or (exists(min_crop_len) and min_crop_len < n and
                             crop_probability > 0):
     sampler_fn = sampler_list[crop_algorithm]
-    if crop_algorithm == 'domain' and ('coord' not in protein or
+    if crop_algorithm != 'random' and ('coord' not in protein or
                                        'coord_mask' not in protein):
       sampler_fn = sampler_list['random']
       logger.debug('protein_clips_fn: crop_algorithm=%s downgrad to: random',
@@ -279,6 +332,13 @@ def _protein_clips_fn(protein,
 
 def _protein_crop_fn(protein, clip):
   assert clip
+
+  if 'd' in clip:
+    return _make_feats_shrinked(protein,
+                                clip['d'],
+                                seq_feats=('seq', 'seq_index', 'mask',
+                                           'coord', 'coord_mask',
+                                           'coord_plddt', 'seq_color'))
 
   i, j = clip['i'], clip['j']
   protein['str_seq'] = protein['str_seq'][i:j]
@@ -298,6 +358,12 @@ def _protein_crop_fn(protein, clip):
 
   return protein
 
+
+def _protein_crop_fmt(clip):
+  assert clip
+  if 'd' in clip:
+    clip['d'] = str_seq_index(torch.as_tensor(clip['d']))
+  return clip
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
@@ -657,7 +723,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           item[field] = torch.einsum('i n ...,i n -> i n ...', item[field],
                                      coord_exists)
       # Delete coords if all are invalid.
-      ca_idx = residue_constants.atom_order['CA']
+      # ca_idx = residue_constants.atom_order['CA']
       # FIXED: collate_fn may failed when batch_size > 1
       # if 'coord_mask' in item and not torch.any(item['coord_mask'][:, ca_idx]):
       #   for field in ('coord', 'coord_mask', 'coord_plddt'):
@@ -726,7 +792,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       clip = crop_fn(ret)
       if exists(clip):
         ret = _protein_crop_fn(ret, clip)
-        ret['clip'] = clip
+        ret['clip'] = _protein_crop_fmt(clip)
     if not exists(domains) and (self.feat_flags & FEAT_MSA):
       ret.update(self.get_msa_features_new(pkey, ret.get('clip')))
 
@@ -792,7 +858,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret[field] = max(ret.get(field, 0), feat[field])
         m, n = len(ret.get('str_msa', [])), len(feat['str_msa'])
         gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
-        if 0 < m < n:
+        if m < n and 'msa' in ret:
           seq_len = len(ret['str_msa'][0])
           ret['str_msa'] += ['-' * seq_len] * (n - m)
           ret['msa'] = torch.cat(
@@ -801,7 +867,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               dim=0)
           ret['del_msa'] = torch.cat(
               (ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0)
-        elif 0 < n < m:
+        elif 0 <= n < m:
           seq_len = len(feat['str_msa'][0])
           feat['str_msa'] += ['-' * seq_len] * (m - n)
           feat['msa'] = torch.cat(
@@ -821,6 +887,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             ret[field] = feat[field]
           else:
             ret[field] = torch.cat((ret[field], feat[field]), dim=1)
+        for field in ('msa_row_mask',):
+          if field not in ret or m < n:
+            ret[field] = feat[field]
         # Update chain_id
         if feat['msa_idx'] > 0:
           msa_idx = feat['msa_idx']
@@ -831,7 +900,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       clip = self.data_crop_fn(ret)
       if exists(clip):
         ret = _protein_crop_fn(ret, clip)
-      ret['clip'] = clip
+      ret['clip'] = _protein_crop_fmt(clip)
 
     return ret
 
@@ -982,143 +1051,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                               max_seq_len=None)
 
   @staticmethod
-  def batch_clips_fn(batch,
-                     min_crop_len=None,
-                     max_crop_len=None,
-                     crop_probability=0.0,
-                     crop_algorithm='random',
-                     **kwargs):
-
-    def _random_sampler(b, n, batch):
-
-      def _crop_length(n, crop):
-        assert exists(min_crop_len) or exists(max_crop_len)
-
-        if not exists(max_crop_len):
-          assert min_crop_len < n
-          return np.random.randint(min_crop_len, n + 1) if crop else n
-        elif not exists(min_crop_len):
-          assert max_crop_len < n
-          return max_crop_len
-        assert min_crop_len <= max_crop_len and (min_crop_len < n or
-                                                 max_crop_len < n)
-        return np.random.randint(min_crop_len,
-                                 min(n, max_crop_len) +
-                                 1) if crop else min(max_crop_len, n)
-
-      l = _crop_length(n, np.random.random() < crop_probability)
-      logger.debug('min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len,
-                   max_crop_len, n, l)
-      i, j = 0, l
-      if not 'coord_mask' in batch[b] or torch.any(batch[b]['coord_mask']):
-        while True:
-          i = np.random.randint(n - l + 1)
-          j = i + l
-          if not 'coord_mask' in batch[b] or torch.any(
-              batch[b]['coord_mask'][i:j]):
-            break
-      return dict(i=i, j=j, l=n)
-
-    def _domain_sampler(b, n, batch):
-
-      def _cascade_sampler(weights, width=4):
-        if len(weights) <= width:
-          i = torch.multinomial(weights, 1)
-          return i.item()
-
-        p = torch.zeros((width,))
-        l, k = len(weights) // width, len(weights) % width
-        for i in range(width):
-          v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
-          p[i] = torch.amax(weights[v:w])
-        i = _cascade_sampler(p, width=width)
-        v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
-        return v + _cascade_sampler(weights[v:w], width=width)
-
-      def _domain_next(weights, i, min_len=None, max_len=None):
-        min_len, max_len = default(min_len, 80), default(max_len, 255)
-
-        direction = np.random.randint(2)
-        for _ in range(2):
-          #if direction % 2 == 0 and torch.sum(ca_mask[i:]) >= min_len:
-          if direction % 2 == 0 and i + min_len < n:
-            j = min(len(weights), i + max_len)
-            return j if i + min_len >= j else i + min_len + _cascade_sampler(
-                weights[i + min_len:j])
-          #if direction % 2 == 1 and torch.sum(ca_mask[:i]) >= min_len:
-          if direction % 2 == 1 and i > min_len:
-            j = max(0, i - max_len)
-            return j + _cascade_sampler(
-                weights[j:i - min_len]) if i - min_len > j else j
-          direction += 1
-        return None
-
-      assert exists(min_crop_len) or exists(max_crop_len)
-      assert 'coord' in batch[b] and 'coord_mask' in batch[b]
-
-      if exists(
-          max_crop_len
-      ) and n <= max_crop_len and crop_probability < np.random.random():
-        assert not exists(min_crop_len) or min_crop_len < n
-        return None
-
-      ca_idx = residue_constants.atom_order['CA']
-      ca_coord, ca_coord_mask = batch[b]['coord'][
-          ..., ca_idx, :], batch[b]['coord_mask'][..., ca_idx]
-      logger.debug('domain_sampler: batch=%d, seq_len=%d', b, n)
-      weights = domain_parser(ca_coord, ca_coord_mask, max_len=max_crop_len)
-      intra_domain_probability = kwargs.get('intra_domain_probability', 0)
-      while True:
-        i = _cascade_sampler(weights)
-        if np.random.random() < intra_domain_probability:
-          logger.debug('domain_intra: batch=%d, seq_len=%d, i=%d', b, n, i)
-          half = max_crop_len // 2 + max_crop_len % 2
-          if i + 1 < n - i:  # i <= n // 2
-            i = max(0, i - half)
-            j = min(i + max_crop_len, n)
-          else:
-            i = min(n, i + half)
-            j = max(0, i - max_crop_len)
-        else:
-          j = _domain_next(weights,
-                           i,
-                           min_len=min_crop_len,
-                           max_len=max_crop_len)
-          logger.debug('domain_next: batch=%d, seq_len=%d, i=%d, j=%s', b, n, i,
-                       str(j))
-        if j is not None and torch.any(ca_coord_mask[min(i, j):max(i, j)]):
-          break
-      return dict(i=min(i, j), j=max(i, j), l=n)
-
-    logger.debug('batch_clips_fn: crop_algorithm=%s', crop_algorithm)
-    sampler_list = dict(random=_random_sampler, domain=_domain_sampler)
-
-    assert crop_algorithm in sampler_list
-
-    clips = {}
-
-    for k in range(len(batch)):
-      n = len(batch[k]['str_seq'])
-      if (exists(max_crop_len) and
-          max_crop_len < n) or (exists(min_crop_len) and min_crop_len < n and
-                                crop_probability > 0):
-        sampler_fn = sampler_list[crop_algorithm]
-        if crop_algorithm == 'domain' and ('coord' not in batch[k] or
-                                           'coord_mask' not in batch[k]):
-          sampler_fn = sampler_list['random']
-          logger.debug('batch_clips_fn: crop_algorithm=%s downgrad to: random',
-                       crop_algorithm)
-        clip = sampler_fn(k, n, batch)
-        if clip:
-          clips[k] = clip
-
-    return clips
-
-  @staticmethod
   def collate_fn(batch, feat_flags=None):
     fields = ('pid', 'resolu', 'seq', 'seq_index', 'seq_color', 'mask',
-              'str_seq', 'msa_idx', 'clip')
-    pids, resolutions, seqs, seqs_idx, seqs_color, masks, str_seqs, msa_idx, clips = list(  # pylint: disable=line-too-long
+              'str_seq', 'clip')
+    pids, resolutions, seqs, seqs_idx, seqs_color, masks, str_seqs, clips = list(  # pylint: disable=line-too-long
         zip(*[[b[k] for k in fields] for b in batch]))
     lengths = tuple(len(s) for s in str_seqs)
     max_batch_len = max(lengths)
@@ -1129,7 +1065,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
 
     ret = dict(pid=pids,
-               msa_idx=torch.as_tensor(msa_idx, dtype=torch.int),
                resolution=resolutions,
                seq=padded_seqs,
                seq_index=padded_seqs_idx,
@@ -1156,14 +1091,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret[field] = padded_values
 
     if feat_flags & FEAT_MSA:
-      fields = ('msa', 'msa_row_mask', 'str_msa', 'del_msa', 'num_msa')
-      msas, msa_row_msks, str_msas, del_msas, num_msa = list(
+      fields = ('msa', 'msa_idx', 'msa_row_mask', 'str_msa', 'del_msa',
+                'num_msa')
+      msas, msa_idx, msa_row_msks, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
       padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
       msa_row_msks = pad_for_batch(msa_row_msks, max_batch_len, 'msa_row_mask')
       padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
       ret.update(msa=padded_msas,
+                 msa_idx=torch.as_tensor(msa_idx, dtype=torch.int),
                  msa_row_mask=msa_row_msks,
                  str_msa=str_msas,
                  del_msa=padded_dels,
