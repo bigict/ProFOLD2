@@ -70,6 +70,8 @@ class Alphafold2(nn.Module):
                attn_dropout=0.,
                ff_dropout=0.,
                disable_token_embed=False,
+               accept_msa=False,
+               accept_frames=True,
                recycling_single_repr=True,
                recycling_pos=False,
                recycling_pos_min_bin=3.25,
@@ -99,6 +101,8 @@ class Alphafold2(nn.Module):
                                dim_pairwise=dim_pairwise,
                                heads=heads,
                                dim_head=dim_head,
+                               accept_msa=accept_msa,
+                               accept_frames=accept_frames,
                                attn_dropout=attn_dropout,
                                ff_dropout=ff_dropout)
 
@@ -214,19 +218,27 @@ class Alphafold2(nn.Module):
         0] = m[:, 0] + self.recycling_msa_norm(recyclables.msa_first_row_repr)
       x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
 
+    # black hole frames
+    b, _, n, device = *m.shape[:3], m.device
+    quaternions = torch.tensor([1., 0., 0., 0.],
+                               device=device)  # initial rotations
+    quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
+    translations = torch.zeros((b, n, 3), device=device)
+
     # trunk
-    x, m = self.evoformer(x,
-                        m,
-                        mask=x_mask,
-                        msa_mask=msa_mask,
-                        shard_size=shard_size)
+    x, m, t = self.evoformer(x,
+                             m,
+                             frames=(quaternions, translations),
+                             mask=x_mask,
+                             msa_mask=msa_mask,
+                             shard_size=shard_size)
 
     s = self.to_single_repr(m[:, 0])
 
     # ready output container
     ret = ReturnValues()
 
-    representations.update(msa=m, pair=x, single=s, single_init=s)
+    representations.update(msa=m, pair=x, single=s, frames=t, single_init=s)
 
     ret.headers = {}
     for name, module, options in self.headers:

@@ -8,6 +8,8 @@ from einops import rearrange
 from profold2.model.commons import (Attention,
                                     checkpoint_sequential_nargs,
                                     FeedForward,
+                                    FrameAttentionBlock,
+                                    FrameUpdate,
                                     MsaAttentionBlock,
                                     PairwiseAttentionBlock)
 from profold2.model import profiler
@@ -115,42 +117,81 @@ class EvoformerBlock(nn.Module):
                dim_head,
                attn_dropout,
                ff_dropout,
-               global_column_attn=False):
+               global_column_attn=False,
+               accept_msa=True,
+               accept_frames=False,
+               **kwargs):
     super().__init__()
 
-    self.layer = nn.ModuleList([
-        PairwiseAttentionBlock(dim_msa=dim_msa,
-                               dim_pairwise=dim_pairwise,
-                               heads=heads,
-                               dim_head=dim_head,
-                               dropout=attn_dropout),
-        FeedForward(dim=dim_pairwise, dropout=ff_dropout),
-        MsaAttentionBlock(dim_msa=dim_msa,
-                          dim_pairwise=dim_pairwise,
-                          heads=heads,
-                          dim_head=dim_head,
-                          dropout=attn_dropout,
-                          global_column_attn=global_column_attn),
-        FeedForward(dim=dim_msa, dropout=ff_dropout),
-    ])
+    # self.layer = nn.ModuleList([
+    #     PairwiseAttentionBlock(dim_msa=dim_msa,
+    #                            dim_pairwise=dim_pairwise,
+    #                            heads=heads,
+    #                            dim_head=dim_head,
+    #                            dropout=attn_dropout),
+    #     FeedForward(dim=dim_pairwise, dropout=ff_dropout),
+    #     MsaAttentionBlock(dim_msa=dim_msa,
+    #                       dim_pairwise=dim_pairwise,
+    #                       heads=heads,
+    #                       dim_head=dim_head,
+    #                       dropout=attn_dropout,
+    #                       global_column_attn=global_column_attn,
+    #                       **kwargs),
+    #     FeedForward(dim=dim_msa, dropout=ff_dropout),
+    # ])
+    self.pair_attn = PairwiseAttentionBlock(dim_msa=dim_msa,
+                                            dim_pairwise=dim_pairwise,
+                                            heads=heads,
+                                            dim_head=dim_head,
+                                            dropout=attn_dropout)
+    self.pair_ff = FeedForward(dim=dim_pairwise, dropout=ff_dropout)
+    if accept_msa:
+      self.msa_attn = MsaAttentionBlock(dim_msa=dim_msa,
+                                        dim_pairwise=dim_pairwise,
+                                        heads=heads,
+                                        dim_head=dim_head,
+                                        dropout=attn_dropout,
+                                        global_column_attn=global_column_attn,
+                                        **kwargs)
+      self.msa_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
+    if accept_frames:
+      self.frame_attn = FrameAttentionBlock(dim_msa=dim_msa,
+                                            dim_pairwise=dim_pairwise,
+                                            heads=heads,
+                                            scalar_key_dim=dim_head,
+                                            scalar_value_dim=dim_head,
+                                            dropout=attn_dropout,
+                                            require_pairwise_repr=False)
+      self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
+      self.frame_update = FrameUpdate(dim=dim_msa)
 
   def forward(self, inputs, shard_size=None):
-    x, m, mask, msa_mask = inputs
-    attn, ff, msa_attn, msa_ff = self.layer
+    x, m, t, mask, msa_mask = inputs
+    # attn, ff, msa_attn, msa_ff = self.layer
+
+    assert hasattr(self, 'msa_attn') or m.shape[1] == 1
 
     # msa attention and transition
-    with profiler.record_function('msa_attn'):
-      m = msa_attn(m, mask=msa_mask, pairwise_repr=x)
-      m = msa_ff(m) + m
+    if hasattr(self, 'msa_attn'):
+      with profiler.record_function('msa_attn'):
+        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x)
+        m = self.msa_ff(m) + m
+
+    # frame attention and transition
+    if hasattr(self, 'frame_ff'):
+      with profiler.record_function('frame_attn'):
+        s = self.frame_attn(m[:, 0], mask=msa_mask[:, 0], pairwise_repr=x, frames=t)
+        m[:, 0] = self.frame_ff(s) + s
+        t = self.frame_update(m[:, 0], frames=t)
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
       with autocast(enabled=False):
-        x = attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
+        x = self.pair_attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
                  shard_size=shard_size)
-      x = ff(x) + x
+      x = self.pair_ff(x) + x
 
-    return x, m, mask, msa_mask
+    return x, m, t, mask, msa_mask
 
 
 class Evoformer(nn.Module):
@@ -161,11 +202,11 @@ class Evoformer(nn.Module):
     self.layers = nn.ModuleList(
         [EvoformerBlock(**kwargs) for _ in range(depth)])  # pylint: disable=missing-kwoa
 
-  def forward(self, x, m, mask=None, msa_mask=None, shard_size=None):
+  def forward(self, x, m, frames=None, mask=None, msa_mask=None, shard_size=None):
     with profiler.record_function('evoformer'):
-      inp = (x, m, mask, msa_mask)
-      x, m, *_ = checkpoint_sequential_nargs(self.layers,
+      inp = (x, m, frames, mask, msa_mask)
+      x, m, t, *_ = checkpoint_sequential_nargs(self.layers,
                                              len(self.layers),
                                              inp,
                                              shard_size=shard_size)
-      return x, m
+      return x, m, t

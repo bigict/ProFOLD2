@@ -348,11 +348,14 @@ class StructureModule(nn.Module):
 
     # iterative refinement with equivariant transformer in high precision
     with torch_default_dtype(torch.float32):
-      quaternions = torch.tensor([1., 0., 0., 0.],
-                                 device=device)  # initial rotations
-      quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
-      rotations = quaternion_to_matrix(quaternions)
-      translations = torch.zeros((b, n, 3), device=device)
+      if 'frames' in representations:
+        quaternions, translations = representations['frames']
+      else:
+        quaternions = torch.tensor([1., 0., 0., 0.],
+                                   device=device)  # initial rotations
+        quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
+        translations = torch.zeros((b, n, 3), device=device)
+      rotations = quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
       # feedforward
