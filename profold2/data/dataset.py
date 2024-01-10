@@ -300,8 +300,15 @@ def _protein_clips_fn(protein,
     i, j = n + 1, max_len
     while j > 0:
       _, i = torch.max(opt_h[:i, j], dim=-1)
-      new_order = list(range(max(0, i - min_len), i)) + new_order
-      i, j = i - min_len + 1, j - min_len
+
+      # To s.t. len(Ci) >= min_len
+      if new_order and i + 1 == new_order[0]:
+        window = 1
+      else:
+        window = min_len
+
+      new_order = list(range(max(0, i - window), i)) + new_order
+      i, j = i - window + 1, j - window 
     cidx = protein['seq_index'][ridx].item()
     logger.debug('_knn_sampler: ridx=%s, cidx=%s, %s', ridx, cidx,
                  str_seq_index(torch.as_tensor(new_order)))
