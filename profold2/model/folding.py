@@ -10,7 +10,8 @@ from torch.nn import functional as F
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
-from profold2.model.commons import init_zero_, embedd_dim_get
+from profold2.model.commons import (init_zero_, embedd_dim_get,
+                                    InvariantPointAttention)
 from profold2.model.functional import (l2_norm, quaternion_multiply,
                                        quaternion_to_matrix, rigids_from_angles,
                                        rigids_scale, rigids_to_positions)
@@ -18,188 +19,6 @@ from profold2.utils import (default, exists,
                             torch_allow_tf32, torch_default_dtype)
 
 logger = logging.getLogger(__name__)
-
-
-def max_neg_value(t):
-  return -torch.finfo(t.dtype).max
-
-
-# classes
-class InvariantPointAttention(nn.Module):
-  """Invariant Point Attention
-    """
-  def __init__(self,
-               *,
-               dim,
-               heads=12,
-               scalar_key_dim=16,
-               scalar_value_dim=16,
-               point_key_dim=4,
-               point_value_dim=8,
-               pairwise_repr_dim=None,
-               require_pairwise_repr=True,
-               qkv_use_bias=False,
-               eps=1e-8):
-    super().__init__()
-    self.eps = eps
-    self.heads = heads
-    self.require_pairwise_repr = require_pairwise_repr
-
-    # num attention contributions
-    num_attn_logits = 3 if require_pairwise_repr else 2
-
-    # qkv projection for scalar attention (normal)
-    self.scalar_attn_logits_scale = (num_attn_logits * scalar_key_dim)**-0.5
-
-    self.to_scalar_q = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
-    self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
-    self.to_scalar_v = nn.Linear(dim, scalar_value_dim * heads, bias=qkv_use_bias)
-
-    # qkv projection for point attention (coordinate and orientation aware)
-    point_weight_init_value = torch.log(
-        torch.exp(torch.full((heads,), 1.)) - 1.)
-    self.point_weights = nn.Parameter(point_weight_init_value)
-
-    self.point_attn_logits_scale = ((num_attn_logits * point_key_dim) *
-                                    (9 / 2))**-0.5
-
-    self.to_point_q = nn.Linear(dim, point_key_dim * heads * 3, bias=qkv_use_bias)
-    self.to_point_k = nn.Linear(dim, point_key_dim * heads * 3, bias=qkv_use_bias)
-    self.to_point_v = nn.Linear(dim, point_value_dim * heads * 3, bias=qkv_use_bias)
-
-    # pairwise representation projection to attention bias
-    pairwise_repr_dim = default(pairwise_repr_dim,
-                                dim) if require_pairwise_repr else 0
-
-    if require_pairwise_repr:
-      self.pairwise_attn_logits_scale = num_attn_logits**-0.5
-
-      self.to_pairwise_attn_bias = nn.Sequential(
-          nn.Linear(pairwise_repr_dim, heads),
-          Rearrange('b ... h -> (b h) ...'))
-
-    # combine out - scalar dim +
-    #               pairwise dim +
-    #               point dim * (3 for coordinates in R3 and then 1 for norm)
-    self.to_out = nn.Linear(
-        heads * (scalar_value_dim + pairwise_repr_dim + point_value_dim *
-                 (3 + 1)), dim)
-
-  def forward(self,
-              single_repr,
-              pairwise_repr=None,
-              *,
-              rotations,
-              translations,
-              mask=None):
-    x, b, h, eps = single_repr, single_repr.shape[0], self.heads, self.eps
-    assert not (self.require_pairwise_repr and not exists(pairwise_repr)
-               ), 'pairwise representation must be given as second argument'
-
-    # get queries, keys, values for scalar and point (coordinate-aware)
-    # attention pathways
-    q_scalar, k_scalar, v_scalar = self.to_scalar_q(x), self.to_scalar_k(
-        x), self.to_scalar_v(x)
-    q_point, k_point, v_point = self.to_point_q(x), self.to_point_k(
-        x), self.to_point_v(x)
-
-    # split out heads
-    q_scalar, k_scalar, v_scalar = map(
-        lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h),
-        (q_scalar, k_scalar, v_scalar))
-    q_point, k_point, v_point = map(
-        lambda t: rearrange(t, 'b n (h d c) -> (b h) n d c', h=h, c=3),
-        (q_point, k_point, v_point))
-
-    rotations = repeat(rotations, 'b n d r -> (b h) n d r', h=h)
-    translations = repeat(translations, 'b n c -> (b h) n () c', h=h)
-
-    # rotate qkv points into global frame
-    q_point = torch.einsum('b n d c, b n r c -> b n d r', q_point,
-                           rotations) + translations
-    k_point = torch.einsum('b n d c, b n r c -> b n d r', k_point,
-                           rotations) + translations
-    v_point = torch.einsum('b n d c, b n r c -> b n d r', v_point,
-                           rotations) + translations
-
-    # derive attn logits for scalar and pairwise
-    attn_logits_scalar = torch.einsum('b i d, b j d -> b i j', q_scalar,
-                                      k_scalar) * self.scalar_attn_logits_scale
-
-    if self.require_pairwise_repr:
-      attn_logits_pairwise = self.to_pairwise_attn_bias(
-          pairwise_repr) * self.pairwise_attn_logits_scale
-
-    # derive attn logits for point attention
-    point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(
-        k_point, 'b j d c -> b () j d c')
-    point_dist = (point_qk_diff**2).sum(dim=-2)
-
-    point_weights = F.softplus(self.point_weights)
-    point_weights = repeat(point_weights, 'h -> (b h) () () ()', b=b)
-
-    attn_logits_points = -0.5 * (point_dist * point_weights *
-                                 self.point_attn_logits_scale).sum(dim=-1)
-
-    # combine attn logits
-    attn_logits = attn_logits_scalar + attn_logits_points
-
-    if self.require_pairwise_repr:
-      attn_logits = attn_logits + attn_logits_pairwise
-
-    # mask
-    if exists(mask):
-      mask = rearrange(mask, 'b i -> b i ()') * rearrange(mask, 'b j -> b () j')
-      mask = repeat(mask, 'b i j -> (b h) i j', h=h)
-      mask_value = max_neg_value(attn_logits)
-      attn_logits = attn_logits.masked_fill(~mask, mask_value)
-
-    # attention
-    attn = F.softmax(attn_logits, dim=-1)
-
-    # disable TF32 for precision
-    # with torch_allow_tf32(allow=False), autocast(enabled=False):
-    with torch_allow_tf32(allow=False):
-
-      # aggregate values
-      results_scalar = torch.einsum('b i j, b j d -> b i d', attn, v_scalar)
-
-      attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h=h)
-
-      if self.require_pairwise_repr:
-        results_pairwise = torch.einsum('b h i j, b i j d -> b h i d',
-                                        attn_with_heads, pairwise_repr)
-
-      # aggregate point values
-      results_points = torch.einsum('b i j, b j d c -> b i d c', attn, v_point)
-
-      # rotate aggregated point values back into local frame
-      results_points = torch.einsum('b n d c, b n r c -> b n d r',
-                                    results_points - translations,
-                                    rotations.transpose(-1, -2))
-      results_points_norm = torch.sqrt(
-          torch.square(results_points).sum(dim=-1) + eps)
-
-    # merge back heads
-    results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h=h)
-    results_points = rearrange(results_points,
-                               '(b h) n d c -> b n (h d c)',
-                               h=h)
-    results_points_norm = rearrange(results_points_norm,
-                                    '(b h) n d -> b n (h d)',
-                                    h=h)
-
-    results = (results_scalar, results_points, results_points_norm)
-
-    if self.require_pairwise_repr:
-      results_pairwise = rearrange(results_pairwise,
-                                   'b h n d -> b n (h d)',
-                                   h=h)
-      results = (*results, results_pairwise)
-
-    # concat results and project out
-    results = torch.cat(results, dim=-1)
-    return self.to_out(results)
 
 
 def Transition(dim, mult=1., num_layers=2, act=nn.ReLU):  # pylint: disable=invalid-name
@@ -319,8 +138,6 @@ class StructureModule(nn.Module):
 
       self.to_affine_update = nn.Linear(dim_single, 6)
 
-    init_zero_(self.ipa_block.attn.to_out)
-
     self.single_repr_norm = nn.LayerNorm(dim_single)
     self.pairwise_repr_norm = nn.LayerNorm(dim_pairwise)
     self.single_repr_dim = nn.Sequential(nn.Linear(dim_single, dim_single))
@@ -348,11 +165,13 @@ class StructureModule(nn.Module):
 
     # iterative refinement with equivariant transformer in high precision
     with torch_default_dtype(torch.float32):
-      quaternions = torch.tensor([1., 0., 0., 0.],
-                                 device=device)  # initial rotations
-      quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
-      rotations = quaternion_to_matrix(quaternions)
-      translations = torch.zeros((b, n, 3), device=device)
+      if 'frames' in representations:
+        quaternions, translations = representations['frames']
+      else:
+        quaternions = torch.tensor([1., 0., 0., 0.], device=device)  # initial rotations
+        quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
+        translations = torch.zeros((b, n, 3), device=device)
+      rotations = quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
       # feedforward
