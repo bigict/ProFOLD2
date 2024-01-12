@@ -534,7 +534,7 @@ def tmscore_torch(x, y, n):
   # get distance
   dist = ((x - y)**2).sum(dim=1).sqrt()
   # formula (see wrapper for source):
-  return (1.0 / (1.0 + (dist / d0)**2)).mean(dim=-1)
+  return (1.0 / (1.0 + (dist / d0)**2)).nanmean(dim=-1)
 
 
 def tmscore_numpy(x, y, n):

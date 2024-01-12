@@ -7,16 +7,13 @@ import torch
 from torch import nn
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
-from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 
-from profold2.model.commons import (init_zero_, embedd_dim_get,
-                                    InvariantPointAttention)
+from profold2.model.commons import embedd_dim_get, InvariantPointAttention
 from profold2.model.functional import (l2_norm, quaternion_multiply,
                                        quaternion_to_matrix, rigids_from_angles,
                                        rigids_scale, rigids_to_positions)
-from profold2.utils import (default, exists,
-                            torch_allow_tf32, torch_default_dtype)
+from profold2.utils import exists, torch_default_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +162,11 @@ class StructureModule(nn.Module):
 
     # iterative refinement with equivariant transformer in high precision
     with torch_default_dtype(torch.float32):
-      if 'frames' in representations:
+      # initial frames
+      if 'frames' in representations and exists(representations['frames']):
         quaternions, translations = representations['frames']
       else:
-        quaternions = torch.tensor([1., 0., 0., 0.], device=device)  # initial rotations
+        quaternions = torch.tensor([1., 0., 0., 0.], device=device)
         quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
         translations = torch.zeros((b, n, 3), device=device)
       rotations = quaternion_to_matrix(quaternions).detach()

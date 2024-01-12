@@ -191,12 +191,15 @@ class WorkerModel(object):
 
   def load(self, f, map_location='cpu'):
     checkpoint = torch.load(f, map_location=map_location)
-    model = Alphafold2(dim=checkpoint['dim'],
-                       depth=checkpoint['evoformer_depth'],
-                       heads=checkpoint['evoformer_head_num'],
-                       dim_head=checkpoint['evoformer_head_dim'],
-                       embedd_dim=checkpoint['mlm_dim'],
-                       headers=checkpoint['headers'])
+    model = Alphafold2(
+        dim=checkpoint['dim'],
+        depth=checkpoint['evoformer_depth'],
+        heads=checkpoint['evoformer_head_num'],
+        dim_head=checkpoint['evoformer_head_dim'],
+        embedd_dim=checkpoint['mlm_dim'],
+        accept_msa=checkpoint.get('evoformer_accept_msa', True),
+        accept_frames=checkpoint.get('evoformer_accept_frames', False),
+        headers=checkpoint['headers'])
     model.load_state_dict(checkpoint['model'])
     if self.xpu.is_available():
       model = model.to(device=self.xpu.device)

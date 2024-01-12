@@ -72,8 +72,8 @@ class Alphafold2(nn.Module):
                attn_dropout=0.,
                ff_dropout=0.,
                disable_token_embed=False,
-               accept_msa=False,
-               accept_frames=True,
+               accept_msa=True,
+               accept_frames=False,
                recycling_single_repr=True,
                recycling_pos=False,
                recycling_pos_min_bin=3.25,
@@ -228,8 +228,7 @@ class Alphafold2(nn.Module):
     else:
       # black hole frames
       b, _, n, device = *m.shape[:3], m.device
-      quaternions = torch.tensor([1., 0., 0., 0.],
-                                 device=device)  # initial rotations
+      quaternions = torch.tensor([1., 0., 0., 0.], device=device)
       quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
       translations = torch.zeros((b, n, 3), device=device)
 
