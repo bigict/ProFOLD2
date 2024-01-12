@@ -4,13 +4,14 @@ import functools
 
 import torch
 from torch import nn
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 from profold2.model import functional, profiler
-from profold2.utils import default, exists
+from profold2.utils import default, exists, torch_allow_tf32
 
 
 # helpers
@@ -39,6 +40,9 @@ def embedd_dropout_get(p):
     assert len(p) == 2  # (p_single, p_pairwise)
     return p
   return (p, p)
+
+def max_neg_value(t):
+  return -torch.finfo(t.dtype).max
 
 def shared_dropout(x, p, broadcast_dim=None, training=True):
   if exists(broadcast_dim) and 0 < p < 1.0:
@@ -147,23 +151,23 @@ class Attention(nn.Module):
 
       k, v = map(lambda t: repeat(t, '... r i d-> ... (r h) i d', h=h), (k, v))
       if exists(mask):
-        q = torch.sum(q * mask[..., None, :, None],
-                      dim=-2) / (torch.sum(mask[..., None, :, None], dim=-2) + 1e-10)
+        q = torch.sum(
+            q * mask[..., None, :, None],
+            dim=-2) / (torch.sum(mask[..., None, :, None], dim=-2) + 1e-10)
       else:
         q = q.mean(dim=-2)
       q = repeat(q, '... h d -> ... h i d', i=n)
 
     # masking
-    attn_mask, mask_value = None, -torch.finfo(q.dtype).max
+    attn_mask, mask_value = None, max_neg_value(q)
     if exists(mask):
       mask = default(mask, lambda: torch.ones(b, i, device=device))
       context_mask = mask if not exists(context) else default(
-          context_mask,
-          lambda: torch.ones(b, k.shape[-2], device=device))
+          context_mask, lambda: torch.ones(b, k.shape[-2], device=device))
       attn_mask = rearrange(mask.bool(), '... i -> ... () i ()') * rearrange(
           context_mask.bool(), '... j -> ... () () j')
       assert attn_mask.dtype == torch.bool
-      
+
     # pytorch 2.0+
     if hasattr(F, 'scaled_dot_product_attention') and (
           not exists(attn_bias) or not self.training):
@@ -232,10 +236,8 @@ class AxialAttention(nn.Module):
     self.col_attn = col_attn
 
     self.norm = nn.LayerNorm(dim_node)
-    self.attn = Attention(dim_q=dim_node,
-                          dim_kv=dim_node,
-                          heads=heads,
-                          **kwargs)
+    self.attn = Attention(
+        dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     self.edges_to_attn_bias = nn.Sequential(
         nn.Linear(dim_edge, heads, bias=False),
         Rearrange('b i j h -> b h i j')) if accept_edges else None
@@ -262,9 +264,8 @@ class AxialAttention(nn.Module):
       _, h, w, _ = x.shape
 
       if exists(attn_bias):
-        attn_bias = repeat(attn_bias,
-                           'b h i j -> (b x) h i j',
-                           x=x.shape[axial_dim])
+        attn_bias = repeat(
+            attn_bias, 'b h i j -> (b x) h i j', x=x.shape[axial_dim])
 
       x = rearrange(x, input_fold_eq)
       if exists(mask):
@@ -454,26 +455,22 @@ class PairwiseAttentionBlock(nn.Module):
                                                broadcast_dim=1,
                                                p=dropout)
 
-  def forward(self,
-              x,
-              mask=None,
-              msa_repr=None,
-              msa_mask=None,
+  def forward(self, x, mask=None, msa_repr=None, msa_mask=None,
               shard_size=None):
     if exists(msa_repr):
       assert exists(self.outer_mean)
-      with profiler.record_function("OuterProductMean"):
+      with profiler.record_function('OuterProductMean'):
         x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
 
     if self.multiplication_first:
-      with profiler.record_function("TriangleMultiplicative"):
+      with profiler.record_function('TriangleMultiplicative'):
         x = x + self.dropout_rowwise_fn(
             self.triangle_multiply_outgoing(x, mask=mask),
             training=self.training)
         x = x + self.dropout_rowwise_fn(
             self.triangle_multiply_ingoing(x, mask=mask),
             training=self.training)
-      with profiler.record_function("TriangleAttention"):
+      with profiler.record_function('TriangleAttention'):
         x = x + self.dropout_rowwise_fn(
             self.triangle_attention_outgoing(x, edges=x, mask=mask,
                                              shard_size=shard_size),
@@ -483,7 +480,7 @@ class PairwiseAttentionBlock(nn.Module):
                                             shard_size=shard_size),
             training=self.training)
     else:
-      with profiler.record_function("TriangleAttention"):
+      with profiler.record_function('TriangleAttention'):
         x = x + self.dropout_rowwise_fn(
             self.triangle_attention_outgoing(x, edges=x, mask=mask,
                                              shard_size=shard_size),
@@ -492,7 +489,7 @@ class PairwiseAttentionBlock(nn.Module):
             self.triangle_attention_ingoing(x, edges=x, mask=mask,
                                             shard_size=shard_size),
             training=self.training)
-      with profiler.record_function("TriangleMultiplicative"):
+      with profiler.record_function('TriangleMultiplicative'):
         x = x + self.dropout_rowwise_fn(
             self.triangle_multiply_outgoing(x, mask=mask),
             training=self.training)
@@ -537,14 +534,256 @@ class MsaAttentionBlock(nn.Module):
                                         p=dropout)
 
   def forward(self, x, mask=None, pairwise_repr=None, shard_size=None):
-    with profiler.record_function("MSARowAttention"):
+    with profiler.record_function('MSARowAttention'):
       x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr,
                                             shard_size=shard_size),
                               training=self.training)
-    with profiler.record_function("MSAColumnAttention"):
+    with profiler.record_function('MSAColumnAttention'):
       x = x + self.col_attn(x, mask=mask, shard_size=shard_size)
     return x
 
+# classes
+class InvariantPointAttention(nn.Module):
+  """Invariant Point Attention
+    """
+  def __init__(self,
+               *,
+               dim,
+               heads=12,
+               scalar_key_dim=16,
+               scalar_value_dim=16,
+               point_key_dim=4,
+               point_value_dim=8,
+               pairwise_repr_dim=None,
+               require_pairwise_repr=True,
+               qkv_use_bias=False,
+               gating=False,
+               eps=1e-8):
+    super().__init__()
+    self.eps = eps
+    self.heads = heads
+    self.require_pairwise_repr = require_pairwise_repr
+
+    # num attention contributions
+    num_attn_logits = 3 if require_pairwise_repr else 2
+
+    # qkv projection for scalar attention (normal)
+    self.scalar_attn_logits_scale = (num_attn_logits * scalar_key_dim)**-0.5
+
+    self.to_scalar_q = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
+    self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias=qkv_use_bias)
+    self.to_scalar_v = nn.Linear(
+        dim, scalar_value_dim * heads, bias=qkv_use_bias)
+
+    self.gating = nn.Linear(dim, scalar_value_dim * heads) if gating else None
+    if exists(self.gating):
+      nn.init.constant_(self.gating.weight, 0.)
+      nn.init.constant_(self.gating.bias, 1.)
+
+    # qkv projection for point attention (coordinate and orientation aware)
+    point_weight_init_value = torch.log(
+        torch.exp(torch.full((heads,), 1.)) - 1.)
+    self.point_weights = nn.Parameter(point_weight_init_value)
+
+    self.point_attn_logits_scale = (
+        (num_attn_logits * point_key_dim) * (9 / 2))**-0.5
+
+    self.to_point_q = nn.Linear(
+        dim, point_key_dim * heads * 3, bias=qkv_use_bias)
+    self.to_point_k = nn.Linear(
+        dim, point_key_dim * heads * 3, bias=qkv_use_bias)
+    self.to_point_v = nn.Linear(
+        dim, point_value_dim * heads * 3, bias=qkv_use_bias)
+
+    # pairwise representation projection to attention bias
+    if require_pairwise_repr:
+      pairwise_repr_dim = default(pairwise_repr_dim, dim)
+
+    if require_pairwise_repr:
+      self.pairwise_attn_logits_scale = num_attn_logits**-0.5
+
+    self.to_pairwise_attn_bias = nn.Sequential(
+        nn.Linear(pairwise_repr_dim, heads),
+        Rearrange('b ... h -> (b h) ...'))
+
+    # combine out - scalar dim +
+    #               pairwise dim +
+    #               point dim * (3 for coordinates in R3 and then 1 for norm)
+    self.to_out = nn.Linear(
+        heads * (scalar_value_dim + (pairwise_repr_dim if require_pairwise_repr
+                                     else 0) + point_value_dim * (3 + 1)), dim)
+    init_zero_(self.to_out)
+
+  def forward(self,
+              single_repr,
+              pairwise_repr=None,
+              *,
+              rotations,
+              translations,
+              mask=None):
+    x, b, h, eps = single_repr, single_repr.shape[0], self.heads, self.eps
+    assert not (self.require_pairwise_repr and not exists(pairwise_repr)
+               ), 'pairwise representation must be given as second argument'
+
+    # get queries, keys, values for scalar and point (coordinate-aware)
+    # attention pathways
+    q_scalar, k_scalar, v_scalar = self.to_scalar_q(x), self.to_scalar_k(
+        x), self.to_scalar_v(x)
+    q_point, k_point, v_point = self.to_point_q(x), self.to_point_k(
+        x), self.to_point_v(x)
+
+    # split out heads
+    q_scalar, k_scalar, v_scalar = map(
+        lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h),
+        (q_scalar, k_scalar, v_scalar))
+    q_point, k_point, v_point = map(
+        lambda t: rearrange(t, 'b n (h d c) -> (b h) n d c', h=h, c=3),
+        (q_point, k_point, v_point))
+
+    rotations = repeat(rotations, 'b n d r -> (b h) n d r', h=h)
+    translations = repeat(translations, 'b n c -> (b h) n () c', h=h)
+
+    # rotate qkv points into global frame
+    q_point = torch.einsum('b n d c, b n r c -> b n d r', q_point,
+                           rotations) + translations
+    k_point = torch.einsum('b n d c, b n r c -> b n d r', k_point,
+                           rotations) + translations
+    v_point = torch.einsum('b n d c, b n r c -> b n d r', v_point,
+                           rotations) + translations
+
+    # derive attn logits for scalar and pairwise
+    attn_logits_scalar = torch.einsum('b i d, b j d -> b i j', q_scalar,
+                                      k_scalar) * self.scalar_attn_logits_scale
+
+    if exists(pairwise_repr):
+      attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr)
+    if self.require_pairwise_repr:
+      attn_logits_pairwise *= self.pairwise_attn_logits_scale
+
+    # derive attn logits for point attention
+    point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(
+        k_point, 'b j d c -> b () j d c')
+    point_dist = (point_qk_diff**2).sum(dim=-2)
+
+    point_weights = F.softplus(self.point_weights)
+    point_weights = repeat(point_weights, 'h -> (b h) () () ()', b=b)
+
+    attn_logits_points = -0.5 * (
+        point_dist * point_weights * self.point_attn_logits_scale).sum(dim=-1)
+
+    # combine attn logits
+    attn_logits = attn_logits_scalar + attn_logits_points
+
+    # if self.require_pairwise_repr:
+    if exists(pairwise_repr):
+      attn_logits = attn_logits + attn_logits_pairwise
+
+    # mask
+    if exists(mask):
+      mask = rearrange(mask, 'b i -> b i ()') * rearrange(mask, 'b j -> b () j')
+      mask = repeat(mask, 'b i j -> (b h) i j', h=h)
+      mask_value = max_neg_value(attn_logits)
+      attn_logits = attn_logits.masked_fill(~mask, mask_value)
+
+    # attention
+    attn = F.softmax(attn_logits, dim=-1)
+
+    # disable TF32 for precision
+    # with torch_allow_tf32(allow=False), autocast(enabled=False):
+    with torch_allow_tf32(allow=False):
+
+      # aggregate values
+      results_scalar = torch.einsum('b i j, b j d -> b i d', attn, v_scalar)
+
+      attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h=h)
+
+      if self.require_pairwise_repr:
+        results_pairwise = torch.einsum('b h i j, b i j d -> b h i d',
+                                        attn_with_heads, pairwise_repr)
+
+      # aggregate point values
+      results_points = torch.einsum('b i j, b j d c -> b i d c', attn, v_point)
+
+      # rotate aggregated point values back into local frame
+      results_points = torch.einsum('b n d c, b n r c -> b n d r',
+                                    results_points - translations,
+                                    rotations.transpose(-1, -2))
+      results_points_norm = torch.sqrt(
+          torch.square(results_points).sum(dim=-1) + eps)
+
+    # merge back heads
+    results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h=h)
+    # gating
+    if exists(self.gating):
+      gates = self.gating(x)
+      results_scalar = results_scalar * gates.sigmoid()
+
+    results_points = rearrange(
+        results_points, '(b h) n d c -> b n (h d c)', h=h)
+    results_points_norm = rearrange(
+        results_points_norm, '(b h) n d -> b n (h d)', h=h)
+
+    results = (results_scalar, results_points, results_points_norm)
+
+    if self.require_pairwise_repr:
+      results_pairwise = rearrange(
+          results_pairwise, 'b h n d -> b n (h d)', h=h)
+      results = (*results, results_pairwise)
+
+    # concat results and project out
+    results = torch.cat(results, dim=-1)
+    return self.to_out(results)
+
+class FrameAttentionBlock(nn.Module):
+  def __init__(self, *, dim_msa, dim_pairwise, dropout=.0, **kwargs):
+    super().__init__()
+
+    self.norm = nn.LayerNorm(dim_msa)
+    self.attn = InvariantPointAttention(
+        dim=dim_msa, pairwise_repr_dim=dim_pairwise, **kwargs)
+
+    dropout, _ = embedd_dropout_get(dropout)
+    self.dropout_fn = nn.Dropout(dropout)
+
+  def forward(self, x, mask, pairwise_repr, frames):
+    quaternions, translations = frames
+    # No rotation gradients between iterations to stabilize training.
+    rotations = functional.quaternion_to_matrix(quaternions).detach()
+    with autocast(enabled=False):
+      x = x + self.dropout_fn(self.attn(self.norm(x.float()),
+                                        mask=mask.bool(),
+                                        pairwise_repr=pairwise_repr.float(),
+                                        rotations=rotations.float(),
+                                        translations=translations.float()))
+    return x
+
+class FrameUpdate(nn.Module):
+  def __init__(self, dim, dropout):
+    super().__init__()
+
+    self.to_affine_norm = nn.LayerNorm(dim)
+    self.to_affine_update = nn.Linear(dim, 6)
+
+    dropout, _ = embedd_dropout_get(dropout)
+    self.dropout_fn = nn.Dropout(dropout)
+
+  def forward(self, x, frames):
+    # update quaternion and translation
+    x = self.to_affine_norm(self.dropout_fn(x))
+    quaternion_update, translation_update = self.to_affine_update(
+        x).chunk(2, dim=-1)
+    quaternion_update = F.pad(quaternion_update, (1, 0), value=1.)
+    # FIX: make sure quaternion_update is standardized
+    quaternion_update = functional.l2_norm(quaternion_update)
+
+    quaternions, translations = frames
+    # No rotation gradients between iterations to stabilize training.
+    rotations = functional.quaternion_to_matrix(quaternions).detach()
+    quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
+    translations = torch.einsum('b n c, b n r c -> b n r',
+                                translation_update,
+                                rotations) + translations
+    return quaternions, translations
 
 class RelativePositionEmbedding(nn.Module):
   """RelativePositionEmbedding

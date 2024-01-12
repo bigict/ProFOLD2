@@ -52,6 +52,7 @@ def backward_hook_wrap(name, module):
   return module
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
+  assert args.model_evoformer_accept_msa or args.model_evoformer_accept_frames
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
                 exist_ok=True)
@@ -156,6 +157,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                      dim_head=args.model_evoformer_head_dim,
                      embedd_dim=args.model_embedd_dim,
                      attn_dropout=args.model_dropout,
+                     accept_msa=args.model_evoformer_accept_msa,
+                     accept_frames=args.model_evoformer_accept_frames,
                      headers=headers)
   ####
   # HACK
@@ -366,6 +369,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
             evoformer_head_num=args.model_evoformer_head_num,
             evoformer_head_dim=args.model_evoformer_head_dim,
             mlm_dim=args.model_embedd_dim,
+            evoformer_accept_msa=args.model_evoformer_accept_msa,
+            evoformer_accept_frames=args.model_evoformer_accept_frames,
             headers=headers,
             feats=feats,
             model=model.module.state_dict()
@@ -499,6 +504,10 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_dropout', type=float, nargs=2,
       default=(0.1, 0.1),
       help='dropout of evoformer(single & pair) in model, default=(0.1, 0.1)')
+  parser.add_argument('--model_evoformer_accept_msa', action='store_true',
+      help='enable MSATransformer in evoformer, default=False')
+  parser.add_argument('--model_evoformer_accept_frames', action='store_true',
+      help='enable FrameTransformer in evoformer, default=False')
   parser.add_argument('--model_params_requires_grad', type=str,
       default=None,
       help='learn partial parameters only, default=None')
