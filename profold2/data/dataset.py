@@ -367,7 +367,7 @@ def _protein_crop_fn(protein, clip):
 
 
 def _protein_crop_fmt(clip):
-  assert clip
+  assert exists(clip), clip
   if 'd' in clip:
     clip['d'] = str_seq_index(torch.as_tensor(clip['d']))
   return clip
@@ -799,7 +799,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       clip = crop_fn(ret)
       if exists(clip):
         ret = _protein_crop_fn(ret, clip)
-        ret['clip'] = _protein_crop_fmt(clip)
+        ret['clip'] = clip
     if not exists(domains) and (self.feat_flags & FEAT_MSA):
       ret.update(self.get_msa_features_new(pkey, ret.get('clip')))
 
@@ -814,6 +814,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     elif np.random.random() < self.data_rm_mask_prob:
       ret = self.data_rm_mask(ret)
 
+    if 'clip' in ret and exists(ret['clip']):
+      ret['clip'] = _protein_crop_fmt(ret['clip'])
     return ret
 
   def get_complex(self, protein_id, chains):
@@ -952,17 +954,27 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       sequences = list(map(lambda x: self._ftext(x).strip(), f))
 
     if exists(clip):
-      i, j = clip['i'], clip['j']
-
       def _yield_msa_clip(msa):
         k = 0
-        for c in msa:
-          if k >= i:
-            yield c
-          if not c.islower():
-            k += 1
-          if k >= j:
-            break
+        if 'd' in clip:
+          new_order, j = clip['d'], 0
+          for c in msa:
+            if j >= len(new_order):
+              break
+            if not c.islower():
+              if k >= new_order[j]:
+                yield c
+                j += 1
+              k += 1
+        else:
+          i, j = clip['i'], clip['j']
+          for c in msa:
+            if k >= j:
+              break
+            if not c.islower():
+              if k >= i:
+                yield c
+              k += 1
 
       sequences = [''.join(_yield_msa_clip(s)) for s in sequences]
 
