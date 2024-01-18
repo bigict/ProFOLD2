@@ -61,6 +61,39 @@ def params_count_add_argument(parser):
   return parser
 
 
+def params_modify_main(args):
+  assert len(args.grep) % 2 == 0
+
+  x = torch.load(args.model_files[0], map_location='cpu')
+  logging.debug(x.keys())
+
+  o = {}
+  for key, val in x['model'].items():
+    key_new = key
+    for i in range(0, len(args.grep), 2):
+      key_new = re.sub(args.grep[i], args.grep[i + 1], key_new)
+    if key_new != key:
+      logging.debug('from <%s9> to <%s>', key, key_new)
+    o[key_new] = val
+  x['model'] = o
+
+  torch.save(x, args.model_files[1])
+  logging.info('done.')
+
+def params_modify_add_argument(parser):
+  parser.add_argument('model_files',
+                      type=str,
+                      nargs=2,
+                      help='list of model files')
+  parser.add_argument('-E',
+                      '--grep',
+                      type=str,
+                      nargs='+',
+                      default=None,
+                      help='parameter patterns, default=None')
+  return parser
+
+
 def strip_optim_main(args):
   x = torch.load(args.model_files[0], map_location='cpu')
   logging.debug(x.keys())
@@ -116,6 +149,7 @@ if __name__ == '__main__':
 
   commands = {
       'params_count': (params_count_main, params_count_add_argument),
+      'params_modify': (params_modify_main, params_modify_add_argument),
       'strip_optim': (strip_optim_main, strip_optim_add_argument),
       'to_state_dict': (to_state_dict_main, to_state_dict_add_argument),
   }
