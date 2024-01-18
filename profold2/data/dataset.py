@@ -272,7 +272,7 @@ def _protein_clips_fn(protein,
         ..., ca_idx, :], protein['coord_mask'][..., ca_idx]
     logger.debug('knn_sampler: seq_len=%d', n)
 
-    min_len = default(min_crop_len, 32)
+    min_len = 32  # default(min_crop_len, 32)
     max_len = default(max_crop_len, 256)
     gamma = 0.004
 
@@ -830,7 +830,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     seq_index_offset, seq_index_gap = 0, 128
     # Concat all the feats
-    ret = {}
+    ret = {'clip': None}
     for idx, chain in enumerate(chains):
       feat = self.get_monomer(compose_pid(pid, chain), seq_color=idx + 1)
       # Sequence related
@@ -909,7 +909,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       clip = self.data_crop_fn(ret)
       if exists(clip):
         ret = _protein_crop_fn(ret, clip)
-      ret['clip'] = _protein_crop_fmt(clip)
+        clip = _protein_crop_fmt(clip)
+      ret['clip'] = clip
 
     return ret
 
