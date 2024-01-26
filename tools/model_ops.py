@@ -67,6 +67,9 @@ def params_modify_main(args):
   x = torch.load(args.model_files[0], map_location='cpu')
   logging.debug(x.keys())
 
+  if 'optimizer' in x:
+    del x['optimizer']
+
   o = {}
   for key, val in x['model'].items():
     key_new = key

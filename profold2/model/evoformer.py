@@ -187,12 +187,9 @@ class EvoformerBlock(nn.Module):
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
-      with autocast(enabled=False):
-        x = self.pair_attn(x,
-                           mask=mask,
-                           msa_repr=m,
-                           msa_mask=msa_mask,
-                           shard_size=shard_size)
+      # with autocast(enabled=False):
+      x = self.pair_attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
+               shard_size=shard_size)
       x = self.pair_ff(x) + x
 
     return x, m, t, mask, msa_mask
