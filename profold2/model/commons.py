@@ -239,6 +239,7 @@ class AxialAttention(nn.Module):
     self.attn = Attention(
         dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     self.edges_to_attn_bias = nn.Sequential(
+        nn.LayerNorm(dim_edge),
         nn.Linear(dim_edge, heads, bias=False),
         Rearrange('b i j h -> b h i j')) if accept_edges else None
 
@@ -601,10 +602,14 @@ class InvariantPointAttention(nn.Module):
 
     if require_pairwise_repr:
       self.pairwise_attn_logits_scale = num_attn_logits**-0.5
-
-    self.to_pairwise_attn_bias = nn.Sequential(
-        nn.Linear(pairwise_repr_dim, heads),
-        Rearrange('b ... h -> (b h) ...'))
+      self.to_pairwise_attn_bias = nn.Sequential(
+          nn.Linear(pairwise_repr_dim, heads),
+          Rearrange('b ... h -> (b h) ...'))
+    else:
+      self.to_pairwise_attn_bias = nn.Sequential(
+          nn.LayerNorm(pairwise_repr_dim),
+          nn.Linear(pairwise_repr_dim, heads, bias=False),
+          Rearrange('b ... h -> (b h) ...'))
 
     # combine out - scalar dim +
     #               pairwise dim +
