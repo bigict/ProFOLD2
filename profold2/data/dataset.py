@@ -1044,16 +1044,18 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         else:
           ret.update(
               coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
-    pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
-    if self._fstat(pae_file):
-      with self._fileobj(pae_file) as f:
-        try:
-          pae_obj = json.loads(f.read())
-          assert len(pae_obj) == 1
-          pae_obj = torch.as_tensor(pae_obj[0]['predicted_aligned_error'])
-          ret.update(coord_pae=pae_obj)
-        except json.decoder.JSONDecodeError as e:
-          logger.error('get_structure_label_npz.pae: %s|%s', protein_id, str(e))
+      pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
+      if self._fstat(pae_file):
+        with self._fileobj(pae_file) as f:
+          try:
+            pae_obj = json.loads(f.read())
+            assert len(pae_obj) == 1
+            pae_obj = torch.as_tensor(pae_obj[0]['predicted_aligned_error'])
+            coord = ret['coord']
+            if coord.shape[0] == pae_obj.shape[0]:
+              ret.update(coord_pae=pae_obj)
+          except json.decoder.JSONDecodeError as e:
+            logger.error('get_structure_label_npz.pae: %s|%s', protein_id, e)
     return ret
 
   def get_seq_features(self, protein_id, seq_color=1):

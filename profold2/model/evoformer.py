@@ -9,7 +9,7 @@ from profold2.model.commons import (Attention,
                                     checkpoint_sequential_nargs,
                                     FeedForward,
                                     FrameAttentionBlock,
-                                    FrameUpdate,
+                                    FrameUpdater,
                                     MsaAttentionBlock,
                                     PairwiseAttentionBlock)
 from profold2.model import profiler
@@ -148,7 +148,7 @@ class EvoformerBlock(nn.Module):
                                             gating=True,
                                             require_pairwise_repr=False)
       self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
-      self.frame_update = FrameUpdate(dim=dim_msa, dropout=attn_dropout)
+      self.frame_update = FrameUpdater(dim=dim_msa, dropout=attn_dropout)
 
   def forward(self, inputs, shard_size=None):
     x, m, t, mask, msa_mask = inputs

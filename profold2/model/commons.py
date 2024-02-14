@@ -757,7 +757,7 @@ class FrameAttentionBlock(nn.Module):
                                         translations=translations.float()))
     return x
 
-class FrameUpdate(nn.Module):
+class FrameUpdater(nn.Module):
   def __init__(self, dim, dropout):
     super().__init__()
 

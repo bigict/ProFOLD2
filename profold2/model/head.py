@@ -412,6 +412,8 @@ class FoldingHead(nn.Module):
                fape_min=1e-6,
                fape_max=15,
                fape_z=15,
+               fape_backbone_clamp_ratio=1.0,
+               fape_sidechain_clamp_ratio=1.0,
                dropout=.0,
                position_scale=1.0,
                **params):
@@ -428,6 +430,8 @@ class FoldingHead(nn.Module):
     self.fape_min = fape_min
     self.fape_max = fape_max
     self.fape_z = fape_z
+    self.fape_backbone_clamp_ratio = fape_backbone_clamp_ratio
+    self.fape_sidechain_clamp_ratio = fape_sidechain_clamp_ratio
 
     self.params = params
 
@@ -472,6 +476,7 @@ class FoldingHead(nn.Module):
                             true_points,
                             frames_mask,
                             self.fape_max,
+                            clamp_ratio=self.fape_backbone_clamp_ratio,
                             dij_weight=dij_weight,
                             use_weighted_mask=batch.get(
                                 'coord_plddt_use_weighted_mask',
@@ -525,6 +530,7 @@ class FoldingHead(nn.Module):
                           points_to_fape_shape(true_points),
                           mask_to_fape_shape(point_mask),
                           self.fape_max,
+                          clamp_ratio=self.fape_sidechain_clamp_ratio,
                           dij_weight=dij_weight,
                           use_weighted_mask=batch.get(
                               'coord_plddt_use_weighted_mask',

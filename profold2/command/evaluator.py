@@ -168,7 +168,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--max_crop_len', type=int, default=None,
       help='filter out proteins whose length>LEN, default=None')
   parser.add_argument('--crop_algorithm', type=str, default='random',
-      choices=['random', 'domain'],
+      choices=['random', 'domain', 'knn'],
       help='type of crop algorithm')
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
