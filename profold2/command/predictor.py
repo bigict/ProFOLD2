@@ -229,9 +229,11 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
                     prot=protein.from_pdb_string(unrelaxed_pdbs[model_name]))
                 break
               except ValueError as e:
-                if retry <= 0:
-                  raise e
                 logging.error('Relax throw an exception: %s', e)
+                if retry <= 0:
+                  relaxed_pdb_str = unrelaxed_pdbs[model_name]
+                  logging.error('Using unrelaxed pdb instead.')
+                  # raise e
 
           relaxed_pdbs[model_name] = relaxed_pdb_str
 
