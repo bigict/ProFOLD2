@@ -82,8 +82,8 @@ def parse_seq_index(description, input_sequence, seq_index):
     for i in range(len(positions) - 1):
       p, q = positions[i]
       m, n = positions[i + 1]
-      assert p <= q and m <= n
-      assert q < m
+      assert p <= q and m <= n, (p, q, m, n, description)
+      assert q <= m
     m, n = positions[-1]
     assert m <= n
     assert sum(map(lambda p: p[1] - p[0] + 1, positions)) == len(input_sequence)
