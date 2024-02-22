@@ -206,7 +206,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
     elif exists(writer):
       if isinstance(loss, torch.Tensor):
-        loss = torch.mean(loss).item()
+        loss = torch.nanmean(loss).item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
       writer.add_scalar(prefix, loss, it)
 
@@ -287,7 +287,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           running_loss += MetricDict({h:v['loss']})
 
       if ('tmscore' in r.headers and exists(args.save_pdb) and
-          torch.mean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
+          torch.nanmean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
     for k, v in running_loss.items():

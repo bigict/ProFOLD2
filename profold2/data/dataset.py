@@ -308,7 +308,7 @@ def _protein_clips_fn(protein,
         window = min_len
 
       new_order = list(range(max(0, i - window), i)) + new_order
-      i, j = i - window + 1, j - window 
+      i, j = i - window + 1, j - window
     cidx = protein['seq_index'][ridx].item()
     logger.debug('_knn_sampler: ridx=%s, cidx=%s, %s', ridx, cidx,
                  str_seq_index(torch.as_tensor(new_order)))
@@ -748,6 +748,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return item
 
   @contextlib.contextmanager
+  def _setattr(self, name, value):
+    assert hasattr(self, name)
+    old = getattr(self, name)
+    setattr(self, name, value)
+    yield self
+    setattr(self, name, old)
+
+  @contextlib.contextmanager
   def _fileobj(self, filename):
     if os.path.isabs(filename):
       with open(filename, mode='rb') as f:
@@ -821,8 +829,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def get_complex(self, protein_id, chains):
     assert len(chains) > 1
 
-    pid, chain = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
-    assert chain in chains
+    pid, selected_chain = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
+    assert selected_chain in chains
 
     # shuffle the chains
     if self.pseudo_linker_shuffle:
@@ -832,7 +840,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     # Concat all the feats
     ret = {'clip': None}
     for idx, chain in enumerate(chains):
-      feat = self.get_monomer(compose_pid(pid, chain), seq_color=idx + 1)
+      with self._setattr(
+          'msa_as_seq_prob',
+          self.msa_as_seq_prob if chain == selected_chain else 0):
+        feat = self.get_monomer(compose_pid(pid, chain), seq_color=idx + 1)
       # Sequence related
       for field in ('str_seq',):
         ret[field] = ret.get(field, '') + feat[field]
