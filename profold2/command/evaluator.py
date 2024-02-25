@@ -43,6 +43,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       crop_probability=args.crop_probability,
       msa_as_seq_prob=args.msa_as_seq_prob,
       msa_as_seq_topn=args.msa_as_seq_topn,
+      msa_as_seq_clustering=args.msa_as_seq_clustering,
       msa_as_seq_min_alr=args.msa_as_seq_min_alr,
       feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb
                                     else dataset.FEAT_ALL),
@@ -179,6 +180,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--msa_as_seq_topn', type=int, default=None,
       help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
            'default=None')
+  parser.add_argument('--msa_as_seq_clustering', action='store_true',
+      help='take msa_{i} as sequence sampling from clusters, default=False')
   parser.add_argument('--msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
