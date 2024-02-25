@@ -1,6 +1,7 @@
 """Dataset for structure
  """
 import os
+from collections import defaultdict
 import contextlib
 import functools
 import json
@@ -540,6 +541,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                data_rm_mask_prob=0.0,
                msa_as_seq_prob=0.0,
                msa_as_seq_topn=None,
+               msa_as_seq_clustering=False,
                msa_as_seq_min_alr=0.75,
                msa_as_seq_min_ident=0.0,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
@@ -556,6 +558,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.data_rm_mask_prob = data_rm_mask_prob
     self.msa_as_seq_prob = msa_as_seq_prob
     self.msa_as_seq_topn = msa_as_seq_topn
+    self.msa_as_seq_clustering = msa_as_seq_clustering
     self.msa_as_seq_min_alr = msa_as_seq_min_alr
     self.msa_as_seq_min_ident = msa_as_seq_min_ident
     self.feat_flags = feat_flags
@@ -997,33 +1000,30 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         n = min(n, self.msa_as_seq_topn)
       assert n > 1
 
-      # clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
-      # if self._fstat(clu_file_path):
-      #   try:
-      #     with self._fileobj(clu_file_path) as f:
-      #       clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
-      #     if len(clu_list) != len(sequences):
-      #       raise ValueError('len(clu_list) != len(sequences)')
-      #     clu_list = clu_list[1:n]
+      clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
+      if self.msa_as_seq_clustering and self._fstat(clu_file_path):
+        try:
+          with self._fileobj(clu_file_path) as f:
+            clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
+          if len(clu_list) != len(sequences):
+            raise ValueError('len(clu_list) != len(sequences)')
 
-      #     clu_dict = defaultdict(list)
-      #     for i, clu in enumerate(clu_list):
-      #       clu_dict[clu].append(i + 1)
-      #     clu_list = sorted(clu_dict.items(), key=lambda x: x[0])
-      #     del clu_dict
-
-      #     n = len(clu_list) + 1
-      #   except ValueError as e:
-      #     logger.error('read clu faild: (%s) %s', protein_id, str(e))
-      # else:
-      #   clu_list = None
-
-      # if not exists(clu_list) and exists(self.max_msa_depth):
-      #   n = min(n, self.max_msa_depth)
+          clu_dict = defaultdict(int)
+          for i, clu in enumerate(clu_list):
+            clu_dict[clu] += 1
+          clu_list = np.asarray([clu_dict[clu] for clu in clu_list[1:n]])
+          del clu_dict
+        except ValueError as e:
+          clu_list = None
+          logger.error('read clu faild: (%s) %s', protein_id, str(e))
+      else:
+        clu_list = None
 
       w = np.power(np.array([1.0 / p for p in range(1, n)]), 1.0 / 3.0)
       v = np.asarray([_aligned_ratio(s, m) for s in sequences[1:n]])
       w *= v
+      if exists(clu_list):
+        w /= clu_list
       if exists(self.msa_as_seq_min_ident) and self.msa_as_seq_min_ident > 0:
         v = np.asarray([_ident_ratio(s, sequences[0]) for s in sequences[1:n]])
         w *= v
@@ -1031,10 +1031,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if t > 0:
         w /= t
         ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
-        # if exists(clu_list):
-        #   _, nn_list = clu_list[ret['msa_idx'] - 1]
-        #   nn_idx = int(np.random.randint(len(nn_list)))
-        #   ret['msa_idx'] = nn_list[nn_idx]
     ret.update(
         _make_msa_features(sequences,
                            msa_idx=ret['msa_idx'],
@@ -1251,6 +1247,8 @@ def load(data_dir,
       'msa_as_seq_topn') if 'msa_as_seq_topn' in kwargs else None
   msa_as_seq_min_alr = kwargs.pop(
       'msa_as_seq_min_alr') if 'msa_as_seq_min_alr' in kwargs else None
+  msa_as_seq_clustering = kwargs.pop(
+      'msa_as_seq_clustering') if 'msa_as_seq_clustering' in kwargs else False
   msa_as_seq_min_ident = kwargs.pop(
       'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
 
@@ -1285,6 +1283,7 @@ def load(data_dir,
                               data_rm_mask_prob=data_rm_mask_prob,
                               msa_as_seq_prob=msa_as_seq_prob,
                               msa_as_seq_topn=msa_as_seq_topn,
+                              msa_as_seq_clustering=msa_as_seq_clustering,
                               msa_as_seq_min_alr=msa_as_seq_min_alr,
                               msa_as_seq_min_ident=msa_as_seq_min_ident,
                               max_msa_depth=max_msa_depth,

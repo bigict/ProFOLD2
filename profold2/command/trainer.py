@@ -81,6 +81,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       crop_probability=0.0,
       data_msa_as_seq_prob=0.0,
       data_msa_as_seq_topn=None,
+      data_msa_as_seq_clustering=False,
       data_msa_as_seq_min_alr=None,
       data_msa_as_seq_min_ident=None,
       data_filter=data_cond):
@@ -91,6 +92,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         data_rm_mask_prob=args.data_rm_mask_prob,
         msa_as_seq_prob=data_msa_as_seq_prob,
         msa_as_seq_topn=data_msa_as_seq_topn,
+        msa_as_seq_clustering=data_msa_as_seq_clustering,
         msa_as_seq_min_alr=data_msa_as_seq_min_alr,
         msa_as_seq_min_ident=data_msa_as_seq_min_ident,
         max_msa_depth=args.max_msa_size,
@@ -117,6 +119,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       crop_probability=args.train_crop_probability,
       data_msa_as_seq_prob=args.train_msa_as_seq_prob,
       data_msa_as_seq_topn=args.train_msa_as_seq_topn,
+      data_msa_as_seq_clustering=args.train_msa_as_seq_clustering,
       data_msa_as_seq_min_alr=args.train_msa_as_seq_min_alr,
       data_msa_as_seq_min_ident=args.train_msa_as_seq_min_ident)
   if args.tuning_data:
@@ -127,6 +130,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         crop_probability=args.tuning_crop_probability,
         data_msa_as_seq_prob=args.tuning_msa_as_seq_prob,
         data_msa_as_seq_topn=args.tuning_msa_as_seq_topn,
+        data_msa_as_seq_clustering=args.tuning_msa_as_seq_clustering,
         data_msa_as_seq_min_alr=args.tuning_msa_as_seq_min_alr,
         data_msa_as_seq_min_ident=args.tuning_msa_as_seq_min_ident)
 
@@ -428,6 +432,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--train_msa_as_seq_topn', type=int, default=None,
       help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
            'default=None')
+  parser.add_argument('--train_msa_as_seq_clustering', action='store_true',
+      help='take msa_{i} as sequence sampling from clusters, default=False')
   parser.add_argument('--train_msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
@@ -445,6 +451,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--tuning_msa_as_seq_topn', type=int, default=None,
       help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
            'default=None')
+  parser.add_argument('--tuning_msa_as_seq_clustering', action='store_true',
+      help='take msa_{i} as sequence sampling from clusters, default=False')
   parser.add_argument('--tuning_msa_as_seq_min_alr', type=float, default=None,
       help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
            'default=None')
