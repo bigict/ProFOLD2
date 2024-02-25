@@ -138,23 +138,22 @@ def _protein_clips_fn(protein,
                       crop_algorithm='random',
                       **kwargs):
 
+  def _crop_length(n, crop):
+    assert exists(min_crop_len) or exists(max_crop_len)
+
+    if not exists(max_crop_len):
+      assert min_crop_len < n
+      return np.random.randint(min_crop_len, n + 1) if crop else n
+    elif not exists(min_crop_len):
+      assert max_crop_len < n
+      return max_crop_len
+    assert min_crop_len <= max_crop_len and (min_crop_len < n or
+                                             max_crop_len < n)
+    return np.random.randint(min_crop_len,
+                             min(n, max_crop_len) +
+                             1) if crop else min(max_crop_len, n)
+
   def _random_sampler(protein, n):
-
-    def _crop_length(n, crop):
-      assert exists(min_crop_len) or exists(max_crop_len)
-
-      if not exists(max_crop_len):
-        assert min_crop_len < n
-        return np.random.randint(min_crop_len, n + 1) if crop else n
-      elif not exists(min_crop_len):
-        assert max_crop_len < n
-        return max_crop_len
-      assert min_crop_len <= max_crop_len and (min_crop_len < n or
-                                               max_crop_len < n)
-      return np.random.randint(min_crop_len,
-                               min(n, max_crop_len) +
-                               1) if crop else min(max_crop_len, n)
-
     l = _crop_length(n, np.random.random() < crop_probability)
     logger.debug('min_crop_len=%s, max_crop_len=%s, n=%s, l=%s', min_crop_len,
                  max_crop_len, n, l)
@@ -273,7 +272,8 @@ def _protein_clips_fn(protein,
     logger.debug('knn_sampler: seq_len=%d', n)
 
     min_len = 32  # default(min_crop_len, 32)
-    max_len = default(max_crop_len, 256)
+    # max_len = default(max_crop_len, 256)
+    max_len = _crop_length(n, np.random.random() < crop_probability)
     gamma = 0.004
 
     ridx = np.random.randint(n)
