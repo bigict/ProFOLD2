@@ -23,8 +23,7 @@ from profold2.common import residue_constants
 logger = logging.getLogger(__file__)
 
 def lines(f):
-  for line in filter(lambda x: len(x)>0, map(lambda x: x.strip(), f)):
-    yield line
+  yield from filter(lambda x: len(x)>0, map(lambda x: x.strip(), f))
 
 def parse_fasta(filename, datasource=None):
   def iter_fasta(it):
