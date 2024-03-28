@@ -503,6 +503,10 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='json format headers of model.')
   parser.add_argument('--model_recycles', type=int, default=2,
       help='number of recycles in model.')
+  parser.add_argument('--model_recycling_frames', action='store_true',
+      help='enable frame recycling.')
+  parser.add_argument('--model_recycling_pos', action='store_true',
+      help='enable backbone atom position recycling.')
   parser.add_argument('--model_dim', type=int, nargs=3, default=(384, 256, 128),
       help='dimension of model.')
   parser.add_argument('--model_embedd_dim', type=int, default=esm.ESM_EMBED_DIM,
