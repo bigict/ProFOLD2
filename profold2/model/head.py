@@ -95,6 +95,15 @@ class ConfidenceHead(nn.Module):
                                                  mask=mask,
                                                  dim=-1)
         logger.debug('ConfidenceHead.loss: %s', metrics['loss'])
+      if 'pae' in headers and 'logits' in headers['pae']:
+        pae, mae = functional.pae(headers['pae']['logits'],
+                                  headers['pae']['breaks'],
+                                  return_mae=True)
+        metrics['pae'], metrics['mae'] = pae, mae
+        ptm = functional.ptm(headers['pae']['logits'],
+                             headers['pae']['breaks'],
+                             mask=batch.get('mask'))
+        metrics['ptm'] = ptm
     return metrics
 
 
@@ -736,6 +745,107 @@ class LDDTHead(nn.Module):
     logger.debug('LDDTHead.loss: %s', loss)
     return dict(loss=loss)
 
+class PAEHead(nn.Module):
+  """Head for protein-protein interaction
+    """
+
+  def __init__(self,
+               dim,
+               buckets_num=64,
+               buckets_first_break=0.,
+               buckets_last_break=31.,
+               min_resolution=.0,
+               max_resolution=sys.float_info.max):
+    super().__init__()
+    _, dim = embedd_dim_get(dim)
+
+    self.buckets = torch.linspace(buckets_first_break,
+                                  buckets_last_break,
+                                  steps=buckets_num - 1)
+    self.net = nn.Sequential(nn.Linear(dim, buckets_num))
+
+    self.num_buckets = buckets_num
+    self.min_resolution = min_resolution
+    self.max_resolution = max_resolution
+
+  def forward(self, headers, representations, batch):
+    assert 'folding' in headers and 'frames' in headers['folding']
+
+    x = representations['pair']
+    breaks = self.buckets.to(x.device)
+    return dict(logits=self.net(x),
+                breaks=breaks,
+                frames=headers['folding']['frames'])
+
+  def loss(self, value, batch):
+    assert 'frames' in value and 'logits' in value
+
+    # (1, num_bins - 1)
+    breaks = value['breaks']
+    # (1, num_bins)
+    logits = value['logits']
+
+    backbone_affine, backbone_affine_mask = (batch.get('backbone_affine'),
+                                             batch.get('backbone_affine_mask'))
+    if not exists(backbone_affine_mask):
+      if 'coord_mask' in batch:
+        coord_mask = batch['coord_mask']
+      else:
+        assert 'coord_exists' in gt
+        coord_mask = batch['coord_exists']
+      n_idx = residue_constants.atom_order['N']
+      ca_idx = residue_constants.atom_order['CA']
+      c_idx = residue_constants.atom_order['C']
+      backbone_affine_mask = torch.all(torch.stack(
+          (coord_mask[..., c_idx], coord_mask[..., ca_idx],
+           coord_mask[..., n_idx]),
+          dim=-1) != 0,
+                                       dim=-1)
+
+    pred_frames = value['frames']
+    with torch.no_grad():
+      true_frames = default(backbone_affine, pred_frames)
+    
+    # Compute the squared error for each alignment.
+    def to_local(affine):
+      rotations, translations = affine
+      points = translations
+
+      # inverse frames
+      rotations = rearrange(rotations, '... h w -> ... w h')
+      translations = -torch.einsum('... w,... h w -> ... h', translations,
+                                   rotations)
+      return torch.einsum(
+          '... j w,... i h w -> ... i j h', points, rotations) + rearrange(
+              translations, '... i h -> ... i () h')
+
+    # Shape (num_res, num_res)
+    # First num_res are alignment frames, second num_res are the residues.
+    with torch.no_grad():
+      ae_ca = torch.sum(torch.square(to_local(pred_frames) - to_local(true_frames)), dim=-1)
+    sq_breaks = torch.square(breaks)
+    true_bins = torch.sum(ae_ca[..., None] > sq_breaks, dim=-1)
+
+    errors = softmax_cross_entropy(labels=F.one_hot(true_bins,
+                                                    self.num_buckets),
+                                   logits=logits)
+
+    # Filter by resolution
+    b = backbone_affine_mask.shape[0]
+    mask = torch.zeros(b, device=backbone_affine_mask.device)
+    if 'resolution' in batch and exists(batch['resolution']):
+      assert len(batch['resolution']) == b
+      for i in range(b):
+        if exists(batch['resolution'][i]) and (
+            self.min_resolution <= batch['resolution'][i] and
+            batch['resolution'][i] <= self.max_resolution):
+          mask[i] = 1
+    sq_mask = backbone_affine_mask[..., None] * backbone_affine_mask[..., None, :]
+    sq_mask = torch.einsum('b,b ... -> b ...', mask, sq_mask)
+    loss = torch.sum(errors * sq_mask) / (1e-8 + torch.sum(sq_mask))
+    logger.debug('PAEHead.loss: %s', loss)
+    return dict(loss=loss)
+
 class PPIHead(nn.Module):
   """Head for protein-protein interaction
     """
@@ -1104,6 +1214,7 @@ class HeaderBuilder:
                   folding=FoldingHead,
                   lddt=LDDTHead,
                   metric=MetricDictHead,
+                  pae=PAEHead,
                   ppi=PPIHead,
                   profile=SequenceProfileHead,
                   roberta=RobertaLMHead,
