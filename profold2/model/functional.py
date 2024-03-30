@@ -320,6 +320,61 @@ def plddt(logits):
   probs = F.softmax(logits, dim=-1)
   return torch.einsum('c,... c -> ...', centers, probs)
 
+def bin_centers_from_breaks(breaks):
+  # Add half-step to get the center
+  step = (breaks[..., 1:] - breaks[..., :-1])
+  step = torch.cat((step, torch.mean(step, dim=-1, keepdim=True)), dim=-1)
+  bin_centers = breaks + step
+  bin_centers = torch.cat((bin_centers, bin_centers[...,-1:] + step[...,-1:]),
+                           dim=-1)
+  return bin_centers
+
+def pae(logits, breaks, return_mae=False):
+  """Computes aligned confidence metrics from logits
+  """
+  probs = F.softmax(logits, dim=-1)
+  bin_centers = bin_centers_from_breaks(breaks)
+
+  expected_align_error = torch.sum(probs * bin_centers, dim=-1)
+
+  if return_mae:  # return max aligned error
+    return expected_align_error, bin_centers[...,-1]
+  return expected_align_error
+
+def ptm(logits, breaks, mask=None):
+  """Compute predicted TM alignment
+  """
+  assert logits.shape[-2] == logits.shape[-3]
+  assert len(breaks.shape) == 1
+  probs = F.softmax(logits, dim=-1)
+  bin_centers = bin_centers_from_breaks(breaks)
+
+  # Clip num_res to avoid negative/undefined d0.
+  if exists(mask):
+    n = torch.clamp(torch.sum(mask, dim=-1), min=19)
+    n = repeat(n, '... -> ... d', d=bin_centers.shape[0])
+  else:
+    n = max(logits.shape[-2], 19)
+
+  # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
+  # "Scoring function for automated assessment of protein structure template
+  # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
+  d0 = 1.24 * (n - 15) ** (1./3) - 1.8
+
+  # TM-Score term for every bin.
+  tm_per_bin = 1. / ((1 + bin_centers**2) / d0**2)
+  # E_distances tm(distance).
+  # predicted_tm_term = torch.sum(probs * tm_per_bin, dim=-1)
+  predicted_tm_term = torch.einsum('... i j d, ... d->... i j', probs, tm_per_bin)
+
+  if exists(mask):
+    pair_mask = mask[..., None] * mask[..., None, :]
+    per_alignment = masked_mean(value=predicted_tm_term, mask=pair_mask, dim=-1)
+  else:
+    per_alignment = torch.mean(per_alignment, dim=-1)
+
+  return torch.amax(per_alignment, dim=-1)
+
 Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
 
 def rotations_from_vecs(v1, v2, epsilon=1e-8):
