@@ -746,7 +746,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                              dtype=item['del_msa'].dtype)
       item['seq_index'] = item['seq_index'] + del_seq
       if 'resolu' in item:
-        item['resolu'] = None  # delete it !
+        item['resolu'] = -1.  # delete it !
 
     return item
 
@@ -940,7 +940,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
-    return self.resolu.get(pid[:4], None)
+    return self.resolu.get(pid[:4], -1.)
 
   def get_msa_features_new(self, protein_id, clip=None):
 
@@ -1097,7 +1097,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
 
     ret = dict(pid=pids,
-               resolution=resolutions,
+               resolution=torch.as_tensor(resolutions),
                seq=padded_seqs,
                seq_index=padded_seqs_idx,
                seq_color=padded_seqs_clr,
