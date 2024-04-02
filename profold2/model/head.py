@@ -731,15 +731,8 @@ class LDDTHead(nn.Module):
     errors = softmax_cross_entropy(labels=labels, logits=value['logits'])
 
     # Filter by resolution
-    b = points_mask.shape[0]
-    mask = torch.zeros(b, device=points_mask.device)
-    if 'resolution' in batch and exists(batch['resolution']):
-      assert len(batch['resolution']) == b
-      for i in range(b):
-        if exists(batch['resolution'][i]) and (
-            self.min_resolution <= batch['resolution'][i] and
-            batch['resolution'][i] <= self.max_resolution):
-          mask[i] = 1
+    mask = torch.logical_and(self.min_resolution <= batch['resolution'],
+                             batch['resolution'] < self.max_resolution)
     points_mask = torch.einsum('b,b ... -> b ...', mask, points_mask)
     loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
     logger.debug('LDDTHead.loss: %s', loss)
@@ -831,15 +824,8 @@ class PAEHead(nn.Module):
                                    logits=logits)
 
     # Filter by resolution
-    b = backbone_affine_mask.shape[0]
-    mask = torch.zeros(b, device=backbone_affine_mask.device)
-    if 'resolution' in batch and exists(batch['resolution']):
-      assert len(batch['resolution']) == b
-      for i in range(b):
-        if exists(batch['resolution'][i]) and (
-            self.min_resolution <= batch['resolution'][i] and
-            batch['resolution'][i] <= self.max_resolution):
-          mask[i] = 1
+    mask = torch.logical_and(self.min_resolution <= batch['resolution'],
+                             batch['resolution'] < self.max_resolution)
     sq_mask = backbone_affine_mask[..., None] * backbone_affine_mask[..., None, :]
     sq_mask = torch.einsum('b,b ... -> b ...', mask, sq_mask)
     loss = torch.sum(errors * sq_mask) / (1e-8 + torch.sum(sq_mask))
