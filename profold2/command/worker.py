@@ -197,8 +197,10 @@ class WorkerModel(object):
         heads=checkpoint['evoformer_head_num'],
         dim_head=checkpoint['evoformer_head_dim'],
         embedd_dim=checkpoint['mlm_dim'],
-        accept_msa=checkpoint.get('evoformer_accept_msa', True),
-        accept_frames=checkpoint.get('evoformer_accept_frames', False),
+        accept_msa_attn=checkpoint.get('evoformer_accept_msa_attn', True),
+        accept_frame_attn=checkpoint.get('evoformer_accept_frame_attn', False),
+        accept_frame_update=checkpoint.get('evoformer_accept_frame_update',
+                                           False),
         headers=checkpoint['headers'])
     model.load_state_dict(checkpoint['model'])
     if self.xpu.is_available():

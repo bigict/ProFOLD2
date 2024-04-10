@@ -52,7 +52,7 @@ def backward_hook_wrap(name, module):
   return module
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
-  assert args.model_evoformer_accept_msa or args.model_evoformer_accept_frames
+  assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
                 exist_ok=True)
@@ -74,17 +74,19 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   def data_cond(batch):
     return (args.min_protein_len <= batch['seq'].shape[1] and
-        batch['seq'].shape[1] < args.max_protein_len)
+            batch['seq'].shape[1] < args.max_protein_len)
 
-  def create_cycling_data(data_dir, weights=None, data_idx='name.idx',
-      pseudo_linker_prob=0.0,
-      crop_probability=0.0,
-      data_msa_as_seq_prob=0.0,
-      data_msa_as_seq_topn=None,
-      data_msa_as_seq_clustering=False,
-      data_msa_as_seq_min_alr=None,
-      data_msa_as_seq_min_ident=None,
-      data_filter=data_cond):
+  def create_cycling_data(data_dir,
+                          weights=None,
+                          data_idx='name.idx',
+                          pseudo_linker_prob=0.0,
+                          crop_probability=0.0,
+                          data_msa_as_seq_prob=0.0,
+                          data_msa_as_seq_topn=None,
+                          data_msa_as_seq_clustering=False,
+                          data_msa_as_seq_min_alr=None,
+                          data_msa_as_seq_min_ident=None,
+                          data_filter=data_cond):
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
@@ -112,7 +114,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         num_workers=args.num_workers)
     return cycling(data_loader, data_filter)
 
-  train_data = create_cycling_data(args.train_data,
+  train_data = create_cycling_data(
+      args.train_data,
       data_idx=args.train_idx,
       weights=args.train_data_weights,
       pseudo_linker_prob=args.train_pseudo_linker_prob,
@@ -123,7 +126,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       data_msa_as_seq_min_alr=args.train_msa_as_seq_min_alr,
       data_msa_as_seq_min_ident=args.train_msa_as_seq_min_ident)
   if args.tuning_data:
-    tuning_data = create_cycling_data(args.tuning_data,
+    tuning_data = create_cycling_data(
+        args.tuning_data,
         data_idx=args.tuning_idx,
         weights=args.tuning_data_weights,
         pseudo_linker_prob=args.tuning_pseudo_linker_prob,
@@ -155,15 +159,17 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('Alphafold2.headers: %s', headers)
 
   features = FeatureBuilder(feats).to(device)
-  model = worker.wrap(dim=args.model_dim,
-                     depth=args.model_evoformer_depth,
-                     heads=args.model_evoformer_head_num,
-                     dim_head=args.model_evoformer_head_dim,
-                     embedd_dim=args.model_embedd_dim,
-                     attn_dropout=args.model_dropout,
-                     accept_msa=args.model_evoformer_accept_msa,
-                     accept_frames=args.model_evoformer_accept_frames,
-                     headers=headers)
+  model = worker.wrap(
+      dim=args.model_dim,
+      depth=args.model_evoformer_depth,
+      heads=args.model_evoformer_head_num,
+      dim_head=args.model_evoformer_head_dim,
+      embedd_dim=args.model_embedd_dim,
+      attn_dropout=args.model_dropout,
+      accept_msa_attn=args.model_evoformer_accept_msa_attn,
+      accept_frame_attn=args.model_evoformer_accept_frame_attn,
+      accept_frame_update=args.model_evoformer_accept_frame_update,
+      headers=headers)
   ####
   # HACK
   if exists(args.model_params_requires_grad):
@@ -274,7 +280,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
               dtype = torch.bfloat16
           # FIXED ME: cache_enabled=True will crash :(
           if version_cmp(torch.__version__, '1.10.0') >= 0:
-            autocast_ctx = functools.partial(autocast, dtype=dtype,
+            autocast_ctx = functools.partial(autocast,
+                                             dtype=dtype,
                                              cache_enabled=False)
           else:
             autocast_ctx = functools.partial(autocast, dtype=dtype)
@@ -285,10 +292,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         grad_scaler.scale(r.loss * loss_scaler).backward()
 
       # running loss
-      running_loss += MetricDict({'all':r.loss})
+      running_loss += MetricDict({'all': r.loss})
       for h, v in r.headers.items():
         if 'loss' in v:
-          running_loss += MetricDict({h:v['loss']})
+          running_loss += MetricDict({h: v['loss']})
 
       if ('tmscore' in r.headers and exists(args.save_pdb) and
           torch.nanmean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
@@ -368,18 +375,21 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   # save model
   if worker.is_master():
-    torch.save(dict(dim=args.model_dim,
-            evoformer_depth=args.model_evoformer_depth,
-            evoformer_head_num=args.model_evoformer_head_num,
-            evoformer_head_dim=args.model_evoformer_head_dim,
-            mlm_dim=args.model_embedd_dim,
-            evoformer_accept_msa=args.model_evoformer_accept_msa,
-            evoformer_accept_frames=args.model_evoformer_accept_frames,
-            headers=headers,
-            feats=feats,
-            model=model.module.state_dict()
-                if isinstance(model, nn.parallel.DistributedDataParallel)
-                else model.state_dict()),
+    torch.save(
+        dict(dim=args.model_dim,
+             evoformer_depth=args.model_evoformer_depth,
+             evoformer_head_num=args.model_evoformer_head_num,
+             evoformer_head_dim=args.model_evoformer_head_dim,
+             mlm_dim=args.model_embedd_dim,
+             evoformer_accept_msa_attn=args.model_evoformer_accept_msa_attn,
+             evoformer_accept_frame_attn=args.model_evoformer_accept_frame_attn,
+             evoformer_accept_frame_update=args.
+             model_evoformer_accept_frame_update,
+             headers=headers,
+             feats=feats,
+             model=model.module.state_dict() if isinstance(
+                 model,
+                 nn.parallel.DistributedDataParallel) else model.state_dict()),
         os.path.join(args.prefix, 'model.pth'))
 
 setattr(train, 'preprocess', preprocess)
@@ -512,10 +522,12 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_dropout', type=float, nargs=2,
       default=(0.1, 0.1),
       help='dropout of evoformer(single & pair) in model, default=(0.1, 0.1)')
-  parser.add_argument('--model_evoformer_accept_msa', action='store_true',
+  parser.add_argument('--model_evoformer_accept_msa_attn', action='store_true',
       help='enable MSATransformer in evoformer, default=False')
-  parser.add_argument('--model_evoformer_accept_frames', action='store_true',
+  parser.add_argument('--model_evoformer_accept_frame_attn', action='store_true',
       help='enable FrameTransformer in evoformer, default=False')
+  parser.add_argument('--model_evoformer_accept_frame_update', action='store_true',
+      help='enable FrameUpdater in evoformer, default=False')
   parser.add_argument('--model_params_requires_grad', type=str,
       default=None,
       help='learn partial parameters only, default=None')

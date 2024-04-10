@@ -72,8 +72,9 @@ class Alphafold2(nn.Module):
                attn_dropout=0.,
                ff_dropout=0.,
                disable_token_embed=False,
-               accept_msa=True,
-               accept_frames=False,
+               accept_msa_attn=True,
+               accept_frame_attn=False,
+               accept_frame_update=False,
                recycling_single_repr=True,
                recycling_pos=False,
                recycling_pos_min_bin=3.25,
@@ -103,8 +104,9 @@ class Alphafold2(nn.Module):
                                dim_pairwise=dim_pairwise,
                                heads=heads,
                                dim_head=dim_head,
-                               accept_msa=accept_msa,
-                               accept_frames=accept_frames,
+                               accept_msa_attn=accept_msa_attn,
+                               accept_frame_attn=accept_frame_attn,
+                               accept_frame_update=accept_frame_update,
                                attn_dropout=attn_dropout,
                                ff_dropout=ff_dropout)
 

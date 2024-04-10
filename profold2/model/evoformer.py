@@ -118,8 +118,9 @@ class EvoformerBlock(nn.Module):
                attn_dropout,
                ff_dropout,
                global_column_attn=False,
-               accept_msa=True,
-               accept_frames=False,
+               accept_msa_attn=True,
+               accept_frame_attn=False,
+               accept_frame_update=False,
                **kwargs):
     super().__init__()
 
@@ -129,7 +130,7 @@ class EvoformerBlock(nn.Module):
                                             dim_head=dim_head,
                                             dropout=attn_dropout)
     self.pair_ff = FeedForward(dim=dim_pairwise, dropout=ff_dropout)
-    if accept_msa:
+    if accept_msa_attn:
       self.msa_attn = MsaAttentionBlock(dim_msa=dim_msa,
                                         dim_pairwise=dim_pairwise,
                                         heads=heads,
@@ -138,7 +139,7 @@ class EvoformerBlock(nn.Module):
                                         global_column_attn=global_column_attn,
                                         **kwargs)
       self.msa_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
-    if accept_frames:
+    if accept_frame_attn:
       self.frame_attn = FrameAttentionBlock(dim_msa=dim_msa,
                                             dim_pairwise=dim_pairwise,
                                             heads=heads,
@@ -148,6 +149,7 @@ class EvoformerBlock(nn.Module):
                                             gating=True,
                                             require_pairwise_repr=False)
       self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
+    if accept_frame_update:
       self.frame_update = FrameUpdater(dim=dim_msa, dropout=attn_dropout)
 
   def forward(self, inputs, shard_size=None):
@@ -162,19 +164,35 @@ class EvoformerBlock(nn.Module):
         m = self.msa_ff(m) + m
 
     # frame attention and transition
-    if hasattr(self, 'frame_ff'):
+    if hasattr(self, 'frame_attn'):
       with profiler.record_function('frame_attn'):
-        s = self.frame_attn(m[:, 0], mask=msa_mask[:, 0], pairwise_repr=x, frames=t)
-        s = self.frame_ff(s) + s
-        t = self.frame_update(s, frames=t)
-        # m[:, 0] = self.frame_ff(s) + s
+        with autocast(enabled=False):
+          # to default float
+          m, x, t = m.float(), x.float(), tuple(map(lambda x: x.float(), t))
+
+          s = self.frame_attn(m[:, 0],
+                              mask=msa_mask[:, 0],
+                              pairwise_repr=x,
+                              frames=t)
+          s = self.frame_ff(s) + s
         m = torch.cat((s[:, None, ...], m[:, 1:, ...]), dim=1)
+
+    # frame update
+    if hasattr(self, 'frame_update'):
+      with profiler.record_function('frame_update'):
+        with autocast(enabled=False):
+          # to default float
+          m, t = m.float(), tuple(map(lambda x: x.float(), t))
+          t = self.frame_update(m[:, 0], frames=t)
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
       with autocast(enabled=False):
-        x = self.pair_attn(x.float(), mask=mask, msa_repr=m.float(), msa_mask=msa_mask,
-                 shard_size=shard_size)
+        x = self.pair_attn(x,
+                           mask=mask,
+                           msa_repr=m,
+                           msa_mask=msa_mask,
+                           shard_size=shard_size)
       x = self.pair_ff(x) + x
 
     return x, m, t, mask, msa_mask
@@ -192,7 +210,7 @@ class Evoformer(nn.Module):
     with profiler.record_function('evoformer'):
       inp = (x, m, frames, mask, msa_mask)
       x, m, t, *_ = checkpoint_sequential_nargs(self.layers,
-                                             len(self.layers),
-                                             inp,
-                                             shard_size=shard_size)
+                                                len(self.layers),
+                                                inp,
+                                                shard_size=shard_size)
       return x, m, t
