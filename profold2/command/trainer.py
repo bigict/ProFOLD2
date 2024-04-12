@@ -5,7 +5,7 @@
      for further help.
 """
 import os
-from contextlib import suppress as nullcontext
+import contextlib
 import copy
 import functools
 import json
@@ -50,6 +50,30 @@ def backward_hook_wrap(name, module):
                 module.__class__.__qualname__)
   module.register_full_backward_hook(backward_hook_print)
   return module
+
+@contextlib.contextmanager
+def no_sync_ctx(cond, module):
+  if cond and isinstance(module, nn.partial.DistributedDataParallel):
+    with module.no_sync():
+      yield
+  else:
+    yield
+
+@contextlib.contextmanager
+def autocast_ctx(cond):
+  if cond:
+    dtype = torch.float16
+    if hasattr(torch.cuda, 'is_bf16_supported'):
+      if torch.cuda.is_bf16_supported():
+        dtype = torch.bfloat16
+    ctx = functools.partial(autocast, dtype=dtype)
+    # FIXED ME: cache_enabled=True will crash :(
+    if version_cmp(torch.__version__, '1.10.0') >= 0:
+      ctx = functools.partial(autocast, cache_enabled=False)
+    with ctx():
+      yield
+  else:
+    yield
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
   assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn
@@ -262,30 +286,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           epoch, it, jt, seq.shape, ','.join(batch['pid']), batch.get('clips'))
 
       # maybe sync or not
-      sync_ctx = nullcontext
-      if (args.gradient_accumulate_nosync and
-          isinstance(model, nn.parallel.DistributedDataParallel) and
-          it != global_step and
-          jt + 1 != args.gradient_accumulate_every):
-        sync_ctx = model.no_sync
-        logging.debug('_step without sync: it: %d, jt: %d', it, jt)
-
-      # sequence embedding (msa / esm / attn / or nothing)
-      with sync_ctx():
-        autocast_ctx = nullcontext
-        if grad_scaler.is_enabled():
-          dtype = torch.float16
-          if hasattr(torch.cuda, 'is_bf16_supported'):
-            if torch.cuda.is_bf16_supported():
-              dtype = torch.bfloat16
-          # FIXED ME: cache_enabled=True will crash :(
-          if version_cmp(torch.__version__, '1.10.0') >= 0:
-            autocast_ctx = functools.partial(autocast,
-                                             dtype=dtype,
-                                             cache_enabled=False)
-          else:
-            autocast_ctx = functools.partial(autocast, dtype=dtype)
-        with autocast_ctx():
+      with no_sync_ctx(
+          (args.gradient_accumulate_nosync and it != global_step and
+           jt + 1 != args.gradient_accumulate_every), model):
+        with autocast_ctx(grad_scaler.is_enabled):
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
                                    shard_size=args.model_shard_size))
