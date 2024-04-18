@@ -54,7 +54,7 @@ def backward_hook_wrap(name, module):
 
 @contextlib.contextmanager
 def no_sync_ctx(cond, module):
-  if cond and isinstance(module, nn.partial.DistributedDataParallel):
+  if cond and isinstance(module, nn.parallel.DistributedDataParallel):
     with module.no_sync():
       yield
   else:
@@ -189,6 +189,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       depth=args.model_evoformer_depth,
       heads=args.model_evoformer_head_num,
       dim_head=args.model_evoformer_head_dim,
+      num_tokens=args.model_num_tokens,
       embedd_dim=args.model_embedd_dim,
       attn_dropout=args.model_dropout,
       accept_msa_attn=args.model_evoformer_accept_msa_attn,
