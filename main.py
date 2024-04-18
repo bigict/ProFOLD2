@@ -20,27 +20,28 @@ _COMMANDS = [
 ]
 
 def create_args():
-  parser = argparse.ArgumentParser()
+  formatter_class = argparse.ArgumentDefaultsHelpFormatter
+  parser = argparse.ArgumentParser(formatter_class=formatter_class)
 
   # distributed args
   parser.add_argument('--nnodes', type=int, default=None,
       help='number of nodes.')
   parser.add_argument('--node_rank', type=int, default=0,
-      help='rank of the node, default=0.')
+      help='rank of the node.')
   parser.add_argument('--local_rank', type=int,
       default=int(os.environ.get('LOCAL_RANK', 0)),
-      help='local rank of xpu, default=0.')
+      help='local rank of xpu.')
   parser.add_argument('--init_method', type=str, default=None,
-      help='method to initialize the process group, default=None')
+      help='method to initialize the process group.')
 
   # command args
   subparsers = parser.add_subparsers(dest='command', required=True)
   for cmd, _, add_arguments in _COMMANDS:
-    cmd_parser = subparsers.add_parser(cmd)
+    cmd_parser = subparsers.add_parser(cmd, formatter_class=formatter_class)
 
     # output dir
     cmd_parser.add_argument('-o', '--prefix', type=str, default='.',
-        help='prefix of out directory, default=\'.\'')
+        help='prefix of out directory.')
     add_arguments(cmd_parser)
     # verbose
     cmd_parser.add_argument('-v', '--verbose', action='store_true',

@@ -19,6 +19,7 @@ from torch import nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import Adam
 
+from profold2.common import residue_constants
 from profold2.data import dataset, esm
 from profold2.data.utils import (
     cycling,
@@ -76,7 +77,7 @@ def autocast_ctx(cond):
     yield
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
-  assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn
+  assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn  # pylint: disable=line-too-long
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
                 exist_ok=True)
@@ -384,11 +385,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
              evoformer_depth=args.model_evoformer_depth,
              evoformer_head_num=args.model_evoformer_head_num,
              evoformer_head_dim=args.model_evoformer_head_dim,
-             mlm_dim=args.model_embedd_dim,
              evoformer_accept_msa_attn=args.model_evoformer_accept_msa_attn,
              evoformer_accept_frame_attn=args.model_evoformer_accept_frame_attn,
-             evoformer_accept_frame_update=args.
-             model_evoformer_accept_frame_update,
+             evoformer_accept_frame_update=args.model_evoformer_accept_frame_update,  # pylint: disable=line-too-long
+             mlm_dim=args.model_embedd_dim,
+             num_tokens=args.model_num_tokens,
              headers=headers,
              feats=feats,
              model=model.module.state_dict() if isinstance(
@@ -399,150 +400,143 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 setattr(train, 'preprocess', preprocess)
 
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-t', '--train_data', type=str, default='train',
-      help='train dataset dir, default=\'train\'')
+  parser.add_argument('-t', '--train_data', type=str, default='train.zip',
+      help='train dataset dir.')
   parser.add_argument('--train_idx', type=str, default='name.idx',
-      help='train dataset idx, default=\'name.idx\'')
+      help='train dataset idx.')
   parser.add_argument('--train_data_weights', type=str, default=None,
-      help='sample train data by weights, default=None')
+      help='sample train data by weights.')
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
-      help='number of batches, default=10^5')
+      help='number of batches.')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
-      help='eval dataset dir, default=None')
+      help='eval dataset dir.')
   parser.add_argument('--eval_idx', type=str, default='name.idx',
-      help='eval dataset idx, default=\'name.idx\'')
+      help='eval dataset idx.')
   parser.add_argument('--tuning_data', type=str, default=None,
-      help='eval dataset dir, default=None')
+      help='eval dataset dir.')
   parser.add_argument('--tuning_idx', type=str, default='name.idx',
-      help='tuning dataset idx, default=\'name.idx\'')
+      help='tuning dataset idx.')
   parser.add_argument('--tuning_data_weights', type=str, default=None,
-      help='sample tuning data by weights, default=None')
+      help='sample tuning data by weights.')
   parser.add_argument('--tuning_with_coords', action='store_true',
-      help='use `coord` when tuning')
+      help='use `coord` when tuning.')
   parser.add_argument('--min_protein_len', type=int, default=50,
-      help='filter out proteins whose length<LEN, default=50')
+      help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_protein_len', type=int, default=1024,
-      help='filter out proteins whose length>LEN, default=1024')
+      help='filter out proteins whose length>LEN.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='sampling MSAs with depth<=SIZE, default=1024')
+      help='sampling MSAs with depth<=SIZE.')
   parser.add_argument('--min_crop_len', type=int, default=80,
-      help='do not crop protein whose length<LEN, default=80')
+      help='do not crop protein whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=255,
-      help='crop protein whose length>LEN, default=255')
+      help='crop protein whose length>LEN.')
   parser.add_argument('--crop_algorithm', type=str, default='random',
       choices=['random', 'domain', 'knn'],
-      help='type of crop algorithm')
+      help='type of crop algorithm.')
   parser.add_argument('--train_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
-          'length>MIN_CROP_LEN, default=0.0')
+          'length>MIN_CROP_LEN.')
   parser.add_argument('--train_pseudo_linker_prob', type=float, default=0.0,
-      help='enable loading complex data, default=0.0')
+      help='enable loading complex data.')
   parser.add_argument('--data_rm_mask_prob', type=float, default=0.0,
-      help='remove masked amino acid with probability DATA_RM_MASK_PROB '
-           'default=0.0')
+      help='remove masked amino acid with probability DATA_RM_MASK_PROB.')
   parser.add_argument('--train_msa_as_seq_prob', type=float, default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
-           'default=0.0')
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
   parser.add_argument('--train_msa_as_seq_topn', type=int, default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
-           'default=None')
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.')
   parser.add_argument('--train_msa_as_seq_clustering', action='store_true',
-      help='take msa_{i} as sequence sampling from clusters, default=False')
+      help='take msa_{i} as sequence sampling from clusters.')
   parser.add_argument('--train_msa_as_seq_min_alr', type=float, default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
-           'default=None')
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.')
   parser.add_argument('--train_msa_as_seq_min_ident', type=float, default=None,
-      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT'
-           'default=None')
+      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.')
   parser.add_argument('--tuning_pseudo_linker_prob', type=float, default=0.0,
-      help='enable loading complex data, default=0.0')
+      help='enable loading complex data.')
   parser.add_argument('--tuning_crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
-          'length>MIN_CROP_LEN, default=0.0')
+          'length>MIN_CROP_LEN.')
   parser.add_argument('--tuning_msa_as_seq_prob', type=float, default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
-           'default=0.0')
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
   parser.add_argument('--tuning_msa_as_seq_topn', type=int, default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
-           'default=None')
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.')
   parser.add_argument('--tuning_msa_as_seq_clustering', action='store_true',
-      help='take msa_{i} as sequence sampling from clusters, default=False')
+      help='take msa_{i} as sequence sampling from clusters.')
   parser.add_argument('--tuning_msa_as_seq_min_alr', type=float, default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
-           'default=None')
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.')
   parser.add_argument('--tuning_msa_as_seq_min_ident', type=float, default=None,
-      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT'
-           'default=None')
+      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.')
   parser.add_argument('--intra_domain_probability', type=float, default=0.0,
       help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
-          'instead of domain, default=0.0')
+          'instead of domain.')
   parser.add_argument('--random_seed', type=int, default=None,
-      help='random seed, default=None')
+      help='random seed.')
 
   parser.add_argument('--checkpoint_max_to_keep', type=int, default=5,
-      help='the maximum number of checkpoints to keep, default=5')
+      help='the maximum number of checkpoints to keep.')
   parser.add_argument('--checkpoint_every', type=int, default=100,
-      help='save a checkpoint every K times, default=100')
+      help='save a checkpoint every K times.')
   parser.add_argument('--tuning_every', type=int, default=10,
-      help='tuning model every K times, default=10')
+      help='tuning model every K times.')
   parser.add_argument('--eval_every', type=int, default=100,
-      help='eval model every K times, default=100')
+      help='eval model every K times.')
   parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
-      help='accumulate grads every k times, default=16')
+      help='accumulate grads every k times.')
   parser.add_argument(
       '--gradient_accumulate_nosync', action='store_true',
-      help='accumulate grads without sync')
+      help='accumulate grads without sync.')
   parser.add_argument('-b', '--batch_size', type=int, default=1,
-      help='batch size, default=1')
+      help='batch size')
   parser.add_argument('--num_workers', type=int, default=1,
-      help='number of workers, default=1')
+      help='number of workers.')
   parser.add_argument('--prefetch_factor', type=int, default=2,
-      help='number of batches loaded in advance by each worker, default=2')
+      help='number of batches loaded in advance by each worker.')
   parser.add_argument('-l', '--learning_rate', type=float, default='1e-3',
-      help='learning rate, default=1e-3')
+      help='learning rate.')
 
   parser.add_argument('--model_features', type=str,
       default='model_features_main.json',
-      help='json format features of model, default=model_features_main.json')
+      help='json format features of model.')
   parser.add_argument('--model_headers', type=str,
       default='model_headers_main.json',
-      help='json format headers of model, default=model_headers_main.json')
+      help='json format headers of model.')
   parser.add_argument('--model_recycles', type=int, default=2,
-      help='number of recycles in model, default=2')
+      help='number of recycles in model.')
   parser.add_argument('--model_dim', type=int, nargs=3, default=(384, 256, 128),
-      help='dimension of model, default=(384, 256, 128)')
-  parser.add_argument('--model_embedd_dim', type=int,
-      default=esm.ESM_EMBED_DIM,
-      help=f'dimension of alphafold2, default={esm.ESM_EMBED_DIM}')
+      help='dimension of model.')
+  parser.add_argument('--model_embedd_dim', type=int, default=esm.ESM_EMBED_DIM,
+      help='dimension of embedd style input.')
+  parser.add_argument('--model_num_tokens', type=int,
+      default=len(residue_constants.restype_order_with_x),
+      help='number of tokens in the model.')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
-      help='depth of evoformer in model, default=1')
+      help='depth of evoformer in model.')
   parser.add_argument('--model_evoformer_head_num', type=int, default=48,
-      help='number of heads in evoformer model, default=48')
+      help='number of heads in evoformer model.')
   parser.add_argument('--model_evoformer_head_dim', type=int, default=32,
-      help='dimensions of each head in evoformer model, default=32')
+      help='dimensions of each head in evoformer model.')
   parser.add_argument('--model_shard_size', type=int, default=None,
-      help='shard size in evoformer model, default=None')
+      help='shard size in evoformer model.')
   parser.add_argument('--model_dropout', type=float, nargs=2,
-      default=(0.1, 0.1),
-      help='dropout of evoformer(single & pair) in model, default=(0.1, 0.1)')
+      default=(0.15, 0.25),
+      help='dropout of evoformer(single & pair) in model.')
   parser.add_argument('--model_evoformer_accept_msa_attn', action='store_true',
-      help='enable MSATransformer in evoformer, default=False')
-  parser.add_argument('--model_evoformer_accept_frame_attn', action='store_true',
-      help='enable FrameTransformer in evoformer, default=False')
-  parser.add_argument('--model_evoformer_accept_frame_update', action='store_true',
-      help='enable FrameUpdater in evoformer, default=False')
-  parser.add_argument('--model_params_requires_grad', type=str,
-      default=None,
-      help='learn partial parameters only, default=None')
-  parser.add_argument('--model_params_requires_hook', type=str,
-      default=None,
-      help='hook partial parameters, default=None')
+      help='enable MSATransformer in evoformer.')
+  parser.add_argument('--model_evoformer_accept_frame_attn',
+      action='store_true',
+      help='enable FrameTransformer in evoformer.')
+  parser.add_argument('--model_evoformer_accept_frame_update',
+      action='store_true',
+      help='enable FrameUpdater in evoformer.')
+  parser.add_argument('--model_params_requires_grad', type=str, default=None,
+      help='learn partial parameters only.')
+  parser.add_argument('--model_params_requires_hook', type=str, default=None,
+      help='hook partial parameters.')
 
   parser.add_argument('--save_pdb', type=float, default=None,
-      help='save pdb files when TMscore>=VALUE, default=1.0')
+      help='save pdb files when TMscore>=VALUE.')
   parser.add_argument('--amp_enabled', action='store_true',
-      help='enable automatic mixed precision, default=False')
+      help='enable automatic mixed precision.')
 
 if __name__ == '__main__':
   import argparse

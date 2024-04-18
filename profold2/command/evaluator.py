@@ -148,61 +148,58 @@ setattr(evaluate, 'preprocess', preprocess)
 
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
-      help='remapped to an alternative set of devices, default=None')
+      help='remapped to an alternative set of devices.')
   parser.add_argument('--model', type=str, default='model.pth',
-      help='model of profold2, default=\'model.pth\'')
+      help='model of profold2.')
 
   parser.add_argument('--eval_data', type=str, default=None,
-      help='eval dataset, default=None')
+      help='eval dataset.')
   parser.add_argument('--eval_idx', type=str, default='name.idx',
-      help='eval dataset idx, default=\'name.idx\'')
+      help='eval dataset idx.')
   parser.add_argument('--eval_without_pdb', action='store_true',
-      help='DO NOT load pdb data')
+      help='DO NOT load pdb data.')
   parser.add_argument('--min_protein_len', type=int, default=0,
-      help='filter out proteins whose length<LEN, default=0')
+      help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_protein_len', type=int, default=1024,
-      help='filter out proteins whose length>LEN, default=1024')
+      help='filter out proteins whose length>LEN.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE, default=1024')
+      help='filter out msas whose size>SIZE.')
   parser.add_argument('--min_crop_len', type=int, default=None,
-      help='filter out proteins whose length<LEN, default=None')
+      help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=None,
-      help='filter out proteins whose length>LEN, default=None')
+      help='filter out proteins whose length>LEN.')
   parser.add_argument('--crop_algorithm', type=str, default='random',
       choices=['random', 'domain', 'knn'],
-      help='type of crop algorithm')
+      help='type of crop algorithm.')
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
-          'length>MIN_CROP_LEN, default=0.0')
+          'length>MIN_CROP_LEN.')
   parser.add_argument('--msa_as_seq_prob', type=float, default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB '
-           'default=0.0')
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
   parser.add_argument('--msa_as_seq_topn', type=int, default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN '
-           'default=None')
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.')
   parser.add_argument('--msa_as_seq_clustering', action='store_true',
-      help='take msa_{i} as sequence sampling from clusters, default=False')
+      help='take msa_{i} as sequence sampling from clusters.')
   parser.add_argument('--msa_as_seq_min_alr', type=float, default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR'
-           'default=None')
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.')
 
   parser.add_argument('-b', '--batch_size', type=int, default=1,
-      help='batch size, default=1')
+      help='batch size.')
   parser.add_argument('--num_workers', type=int, default=1,
-      help='number of workers, default=1')
+      help='number of workers.')
 
   parser.add_argument('--model_sequence_max_input_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
+      help='predict sequence embedding segment by seqment.')
   parser.add_argument('--model_sequence_max_step_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
+      help='predict sequence embedding segment by seqment.')
   parser.add_argument('--model_recycles', type=int, default=0,
-      help='number of recycles in profold2, default=0')
+      help='number of recycles in profold2.')
   parser.add_argument('--model_shard_size', type=int, default=None,
-      help='shard size in evoformer model, default=None')
+      help='shard size in evoformer model.')
 
-  parser.add_argument('--save_pdb', action='store_true', help='save pdb files')
+  parser.add_argument('--save_pdb', action='store_true', help='save pdb files.')
   parser.add_argument('--enable_profiler', action='store_true',
-      help='enable profiler')
+      help='enable profiler.')
 
 if __name__ == '__main__':
   import argparse

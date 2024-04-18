@@ -286,48 +286,48 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
-      help='remapped to an alternative set of devices, default=None')
+      help='remapped to an alternative set of devices.')
   parser.add_argument('fasta_files', type=str, nargs='*',
-      help='fasta files')
+      help='fasta files.')
   parser.add_argument('--fasta_file_list', type=str, default=None,
-      help='fasta file list, default=None')
+      help='fasta file list.')
   parser.add_argument('--fasta_fmt', type=str, default='single',
       choices=['single', 'a3m', 'a4m'],
-      help='format of fasta files, default=\'single\'')
+      help='format of fasta files.')
 
   parser.add_argument('--data_dir', type=str, default=None,
-      help='load data from dataset, default=None')
+      help='load data from dataset.')
   parser.add_argument('--data_idx', type=str, default=None,
-      help='dataset idx, default=None')
+      help='dataset idx.')
   parser.add_argument('--add_pseudo_linker', action='store_true',
-      help='enable loading complex data')
+      help='enable loading complex data.')
   parser.add_argument('--pseudo_linker_len', type=int, default=100,
-      help='add a pseudolinker with length=PSEUDO_LINKER_LEN, default=100')
+      help='add a pseudolinker with length=PSEUDO_LINKER_LEN.')
 
-  parser.add_argument('--models', type=str, nargs='+',
+  parser.add_argument('--models', type=str, nargs='+', required=True,
       metavar='[MODEL_NAME=]MODEL_PATH',
-      help=' Models to be loaded using [model_name=]model_location format')
+      help=' Models to be loaded using [model_name=]model_location format.')
   parser.add_argument('--model_sequence_max_input_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
+      help='predict sequence embedding segment by seqment.')
   parser.add_argument('--model_sequence_max_step_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment, default=None')
+      help='predict sequence embedding segment by seqment.')
   parser.add_argument('--model_recycles', type=int, default=0,
-      help='number of recycles in profold2, default=0')
+      help='number of recycles in profold2.')
   parser.add_argument('--model_shard_size', type=int, default=None,
-      help='shard size in evoformer model, default=None')
+      help='shard size in evoformer model.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE, default=1024')
+      help='filter out msas whose size>SIZE.')
 
   parser.add_argument('--num_workers', type=int, default=1,
-      help='number of workers, default=1')
+      help='number of workers.')
   parser.add_argument('--no_relaxer', action='store_true',
-      help='do NOT run relaxer')
+      help='do NOT run relaxer.')
   parser.add_argument('--no_pth', action='store_true',
-      help='do NOT save prediction header')
+      help='do NOT save prediction header.')
   parser.add_argument('--no_gpu_relax', action='store_true',
-      help='run relax on cpu')
+      help='run relax on cpu.')
   parser.add_argument('--enable_profiler', action='store_true',
-      help='enable profiler')
+      help='enable profiler.')
 
 if __name__ == '__main__':
   import argparse
