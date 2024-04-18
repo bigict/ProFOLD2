@@ -180,18 +180,17 @@ class WorkerModel(object):
       model.to(self.xpu.device)
 
       logging.info('wrap model with nn.parallel.DistributedDataParallel class')
-      model = nn.parallel.DistributedDataParallel(
-          model,
-          device_ids=[self.xpu.device],
-          output_device=self.xpu.device,
-          find_unused_parameters=False)
+      model = nn.parallel.DistributedDataParallel(model,
+                                                  device_ids=[self.xpu.device],
+                                                  output_device=self.xpu.device,
+                                                  find_unused_parameters=False)
       model._set_static_graph()  # pylint: disable=protected-access
 
     return model
 
   def load(self, f, map_location='cpu'):
     checkpoint = torch.load(f, map_location=map_location)
-    model = Alphafold2(
+    kwargs = dict(
         dim=checkpoint['dim'],
         depth=checkpoint['evoformer_depth'],
         heads=checkpoint['evoformer_head_num'],
@@ -202,6 +201,13 @@ class WorkerModel(object):
         accept_frame_update=checkpoint.get('evoformer_accept_frame_update',
                                            False),
         headers=checkpoint['headers'])
+
+    # optional args.
+    for key in ('num_tokens', 'recycling_single_repr', 'recycling_pos'):
+      if key in checkpoint:
+        kwargs[key] = checkpoint[key]
+
+    model = Alphafold2(**kwargs)
     model.load_state_dict(checkpoint['model'])
     if self.xpu.is_available():
       model = model.to(device=self.xpu.device)
