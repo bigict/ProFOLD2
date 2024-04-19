@@ -316,8 +316,16 @@ def _protein_clips_fn(protein,
     return dict(d=new_order, c=cidx, l=n)
 
 
+  def _auto_sampler(protein, n):
+    if ((min_crop_pae and 'coord_pae' in protein) or
+        (max_crop_plddt and 'coord_plddt' in protein)):
+      return _random_sampler(protein, n)
+    return _knn_sampler(protein, n)
+
+
   logger.debug('protein_clips_fn: crop_algorithm=%s', crop_algorithm)
   sampler_list = dict(random=_random_sampler,
+                      auto=_auto_sampler,
                       domain=_domain_sampler,
                       knn=_knn_sampler)
 
