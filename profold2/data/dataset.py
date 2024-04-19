@@ -318,7 +318,8 @@ def _protein_clips_fn(protein,
 
   def _auto_sampler(protein, n):
     if ((min_crop_pae and 'coord_pae' in protein) or
-        (max_crop_plddt and 'coord_plddt' in protein)):
+        (max_crop_plddt and 'coord_plddt' in protein and
+         torch.any(protein['coord_plddt'] < 1.0))):
       return _random_sampler(protein, n)
     return _knn_sampler(protein, n)
 
