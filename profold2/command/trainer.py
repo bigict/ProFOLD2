@@ -291,7 +291,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with no_sync_ctx(
           (args.gradient_accumulate_nosync and it != global_step and
            jt + 1 != args.gradient_accumulate_every), model):
-        with autocast_ctx(grad_scaler.is_enabled):
+        with autocast_ctx(grad_scaler.is_enabled()):
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
                                    shard_size=args.model_shard_size))
@@ -508,7 +508,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_embedd_dim', type=int, default=esm.ESM_EMBED_DIM,
       help='dimension of embedd style input.')
   parser.add_argument('--model_num_tokens', type=int,
-      default=len(residue_constants.restype_order_with_x),
+      default=len(residue_constants.restypes_with_x),
       help='number of tokens in the model.')
   parser.add_argument('--model_evoformer_depth', type=int, default=1,
       help='depth of evoformer in model.')
