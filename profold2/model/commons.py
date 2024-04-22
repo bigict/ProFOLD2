@@ -239,7 +239,8 @@ class AxialAttention(nn.Module):
     self.attn = Attention(
         dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     self.edges_to_attn_bias = nn.Sequential(
-        nn.Linear(dim_edge, heads, bias=False),
+        nn.Identity(dim_edge),
+        nn.Linear(dim_edge, heads, bias=True),
         Rearrange('b i j h -> b h i j')) if accept_edges else None
 
   def forward(self, x, edges=None, mask=None, shard_size=None):
