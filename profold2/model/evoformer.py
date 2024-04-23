@@ -147,6 +147,7 @@ class EvoformerBlock(nn.Module):
                                             scalar_value_dim=dim_head,
                                             dropout=attn_dropout,
                                             gating=True,
+                                            point_weight_init=5e-3,
                                             require_pairwise_repr=False)
       self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
     if accept_frame_update:

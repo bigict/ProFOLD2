@@ -1,5 +1,6 @@
 """A lot of modules in Alphafold2
   """
+import os
 import functools
 
 import torch
