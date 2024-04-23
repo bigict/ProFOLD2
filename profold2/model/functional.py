@@ -362,7 +362,7 @@ def ptm(logits, breaks, mask=None):
   d0 = 1.24 * (n - 15) ** (1./3) - 1.8
 
   # TM-Score term for every bin.
-  tm_per_bin = 1. / ((1 + bin_centers**2) / d0**2)
+  tm_per_bin = 1. / (1 + (bin_centers / d0)**2)
   # E_distances tm(distance).
   # predicted_tm_term = torch.sum(probs * tm_per_bin, dim=-1)
   predicted_tm_term = torch.einsum('... i j d, ... d->... i j', probs, tm_per_bin)
