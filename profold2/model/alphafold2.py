@@ -76,6 +76,7 @@ class Alphafold2(nn.Module):
                accept_frame_attn=False,
                accept_frame_update=False,
                recycling_single_repr=True,
+               recycling_frames=False,
                recycling_pos=False,
                recycling_pos_min_bin=3.25,
                recycling_pos_max_bin=20.75,
@@ -118,6 +119,7 @@ class Alphafold2(nn.Module):
         dim_single, dim_msa) if recycling_single_repr else None
     self.recycling_pos_linear = nn.Linear(
         recycling_pos_num_bin, dim_pairwise) if recycling_pos else None
+    self.recycling_frames = recycling_frames
     if recycling_pos:
       self.recycling_pos_breaks = torch.linspace(
           recycling_pos_min_bin,
@@ -276,7 +278,9 @@ class Alphafold2(nn.Module):
       coords = None
       if 'folding' in ret.headers and 'coords' in ret.headers['folding']:
         coords = ret.headers['folding']['coords'].detach()
-      ret.recyclables = Recyclables(msa_first_row_repr, pairwise_repr, coords)
+      frames = representations['frames'] if self.recycling_frames else None
+      ret.recyclables = Recyclables(msa_first_row_repr, pairwise_repr, coords,
+                                    frames)
 
     return ret.asdict()
 

@@ -1,5 +1,6 @@
 """A lot of modules in Alphafold2
   """
+import os
 import functools
 
 import torch
@@ -238,9 +239,11 @@ class AxialAttention(nn.Module):
     self.norm = nn.LayerNorm(dim_node)
     self.attn = Attention(
         dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
+    # FIX: to be backward compatible
+    accept_edge_norm = int(os.environ.get('AxialAttention_accept_edge_norm', 1))
     self.edges_to_attn_bias = nn.Sequential(
-        nn.Identity(dim_edge),
-        nn.Linear(dim_edge, heads, bias=True),
+        nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
+        nn.Linear(dim_edge, heads, bias=False if accept_edge_norm else True),
         Rearrange('b i j h -> b h i j')) if accept_edges else None
 
   def forward(self, x, edges=None, mask=None, shard_size=None):
@@ -559,6 +562,7 @@ class InvariantPointAttention(nn.Module):
                require_pairwise_repr=True,
                qkv_use_bias=False,
                gating=False,
+               point_weight_init = 1.,
                eps=1e-8):
     super().__init__()
     self.eps = eps
@@ -583,7 +587,7 @@ class InvariantPointAttention(nn.Module):
 
     # qkv projection for point attention (coordinate and orientation aware)
     point_weight_init_value = torch.log(
-        torch.exp(torch.full((heads,), 1.)) - 1.)
+        torch.exp(torch.full((heads,), point_weight_init)) - 1.)
     self.point_weights = nn.Parameter(point_weight_init_value)
 
     self.point_attn_logits_scale = (
@@ -602,10 +606,14 @@ class InvariantPointAttention(nn.Module):
 
     if require_pairwise_repr:
       self.pairwise_attn_logits_scale = num_attn_logits**-0.5
-
-    self.to_pairwise_attn_bias = nn.Sequential(
-        nn.Linear(pairwise_repr_dim, heads),
-        Rearrange('b ... h -> (b h) ...'))
+      self.to_pairwise_attn_bias = nn.Sequential(
+          nn.Linear(pairwise_repr_dim, heads),
+          Rearrange('b ... h -> (b h) ...'))
+    else:
+      self.to_pairwise_attn_bias = nn.Sequential(
+          nn.LayerNorm(pairwise_repr_dim),
+          nn.Linear(pairwise_repr_dim, heads, bias=False),
+          Rearrange('b ... h -> (b h) ...'))
 
     # combine out - scalar dim +
     #               pairwise dim +
@@ -750,12 +758,12 @@ class FrameAttentionBlock(nn.Module):
     quaternions, translations = frames
     # No rotation gradients between iterations to stabilize training.
     rotations = functional.quaternion_to_matrix(quaternions).detach()
-    with autocast(enabled=False):
-      x = x + self.dropout_fn(self.attn(self.norm(x.float()),
-                                        mask=mask.bool(),
-                                        pairwise_repr=pairwise_repr.float(),
-                                        rotations=rotations.float(),
-                                        translations=translations.float()))
+    # with autocast(enabled=False):
+    x = x + self.dropout_fn(self.attn(self.norm(x.float()),
+                                      mask=mask.bool(),
+                                      pairwise_repr=pairwise_repr.float(),
+                                      rotations=rotations.float(),
+                                      translations=translations.float()))
     return x
 
 class FrameUpdater(nn.Module):

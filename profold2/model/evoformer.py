@@ -147,6 +147,7 @@ class EvoformerBlock(nn.Module):
                                             scalar_value_dim=dim_head,
                                             dropout=attn_dropout,
                                             gating=True,
+                                            point_weight_init=5e-3,
                                             require_pairwise_repr=False)
       self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
     if accept_frame_update:
@@ -169,7 +170,6 @@ class EvoformerBlock(nn.Module):
         with autocast(enabled=False):
           # to default float
           m, x, t = m.float(), x.float(), tuple(map(lambda x: x.float(), t))
-
           s = self.frame_attn(m[:, 0],
                               mask=msa_mask[:, 0],
                               pairwise_repr=x,
@@ -187,12 +187,12 @@ class EvoformerBlock(nn.Module):
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
-      with autocast(enabled=False):
-        x = self.pair_attn(x,
-                           mask=mask,
-                           msa_repr=m,
-                           msa_mask=msa_mask,
-                           shard_size=shard_size)
+      # with autocast(enabled=False):
+      x = self.pair_attn(x,
+                         mask=mask,
+                         msa_repr=m,
+                         msa_mask=msa_mask,
+                         shard_size=shard_size)
       x = self.pair_ff(x) + x
 
     return x, m, t, mask, msa_mask
@@ -206,7 +206,13 @@ class Evoformer(nn.Module):
     self.layers = nn.ModuleList(
         [EvoformerBlock(**kwargs) for _ in range(depth)])  # pylint: disable=missing-kwoa
 
-  def forward(self, x, m, frames=None, mask=None, msa_mask=None, shard_size=None):
+  def forward(self,
+              x,
+              m,
+              frames=None,
+              mask=None,
+              msa_mask=None,
+              shard_size=None):
     with profiler.record_function('evoformer'):
       inp = (x, m, frames, mask, msa_mask)
       x, m, t, *_ = checkpoint_sequential_nargs(self.layers,
