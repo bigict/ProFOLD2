@@ -22,6 +22,11 @@ import numpy as np
 
 # Internal import (35fd).
 
+# molecule type
+PROT = 1
+DNA = 2
+RNA = 3
+
 # Distance from one CA to next CA [trans configuration: omega = 180].
 ca_ca = 3.80209737096
 
@@ -55,6 +60,16 @@ chi_angles_atoms = {
     'TRP': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
     'TYR': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
     'VAL': [['N', 'CA', 'CB', 'CG1']],
+    ' DA': [],
+    ' DC': [],
+    ' DG': [],
+    ' DT': [],
+    ' DX': [],
+    '  A': [],
+    '  C': [],
+    '  G': [],
+    '  U': [],
+    '  X': [],
 }
 
 # If chi angles given in fixed-length array, this matrix determines how to mask
@@ -80,6 +95,17 @@ chi_angles_mask = [
     [1.0, 1.0, 0.0, 0.0],  # TRP
     [1.0, 1.0, 0.0, 0.0],  # TYR
     [1.0, 0.0, 0.0, 0.0],  # VAL
+    [0.0, 0.0, 0.0, 0.0],  #  DA
+    [0.0, 0.0, 0.0, 0.0],  #  DC
+    [0.0, 0.0, 0.0, 0.0],  #  DG
+    [0.0, 0.0, 0.0, 0.0],  #  DT
+    [0.0, 0.0, 0.0, 0.0],  #  DX
+    [0.0, 0.0, 0.0, 0.0],  #   A
+    [0.0, 0.0, 0.0, 0.0],  #   C
+    [0.0, 0.0, 0.0, 0.0],  #   G
+    [0.0, 0.0, 0.0, 0.0],  #   U
+    [0.0, 0.0, 0.0, 0.0],  #   X
+    [0.0, 0.0, 0.0, 0.0],  # UNK
 ]
 
 # The following chi angles are pi periodic: they can be rotated by a multiple
@@ -105,6 +131,16 @@ chi_pi_periodic = [
     [0.0, 0.0, 0.0, 0.0],  # TRP
     [0.0, 1.0, 0.0, 0.0],  # TYR
     [0.0, 0.0, 0.0, 0.0],  # VAL
+    [0.0, 0.0, 0.0, 0.0],  #  DA
+    [0.0, 0.0, 0.0, 0.0],  #  DC
+    [0.0, 0.0, 0.0, 0.0],  #  DG
+    [0.0, 0.0, 0.0, 0.0],  #  DT
+    [0.0, 0.0, 0.0, 0.0],  #  DX
+    [0.0, 0.0, 0.0, 0.0],  #   A
+    [0.0, 0.0, 0.0, 0.0],  #   C
+    [0.0, 0.0, 0.0, 0.0],  #   G
+    [0.0, 0.0, 0.0, 0.0],  #   U
+    [0.0, 0.0, 0.0, 0.0],  #   X
     [0.0, 0.0, 0.0, 0.0],  # UNK
 ]
 
@@ -329,6 +365,76 @@ rigid_group_atom_positions = {
         ['CG1', 4, (0.540, 1.429, -0.000)],
         ['CG2', 4, (0.533, -0.776, 1.203)],
     ],
+    ' DA': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    ' DC': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    ' DG': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    ' DT': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    ' DX': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    '  A': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    '  C': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    '  G': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    '  U': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
+    '  X': [
+        ['N', 0, (-0.7319, 1.2920, 0.000)],     # OP1
+        ['CA', 0, (0.000, 0.000, 0.000)],       # P
+        ['C', 0, (1.4855, 0.000, 0.000)],       # OP2
+        ["CB", 0, (0.7411, 1.2354, 0.000)],     # C5'
+        ['O', 3, (-0.4948, -0.8559,  1.2489)],  # O5'
+    ],
 }
 
 # A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -522,8 +628,17 @@ restype_name_to_atom14_names = {
     'TRP': ['N', 'CA', 'C', 'O', 'CB', 'CG',  'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2'],
     'TYR': ['N', 'CA', 'C', 'O', 'CB', 'CG',  'CD1', 'CD2', 'CE1', 'CE2', 'CZ',  'OH',  '',    ''],
     'VAL': ['N', 'CA', 'C', 'O', 'CB', 'CG1', 'CG2', '',    '',    '',    '',    '',    '',    ''],
+    ' DA': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    ' DC': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    ' DG': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    ' DT': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    ' DX': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    '  A': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    '  C': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    '  G': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    '  U': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
+    '  X': ['N', 'CA', 'C', 'O', 'CB', '',    '',    '',    '',    '',    '',    '',    '',    ''],
     'UNK': ['N', 'CA', 'C', 'O',  '',   '',    '',   '',    '',    '',    '',    '',    '',    ''],
-
 }
 # pylint: enable=line-too-long
 # pylint: enable=bad-whitespace
@@ -532,20 +647,48 @@ restype_name_to_atom14_names = {
 # Reproduce it by taking 3-letter AA codes and sorting them alphabetically.
 restypes = (
     'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
-    'S', 'T', 'W', 'Y', 'V'
+    'S', 'T', 'W', 'Y', 'V', 'A', 'C', 'G', 'T', 'X', 'A', 'C', 'G', 'U', 'X'
 )
-restype_order = {restype: i for i, restype in enumerate(restypes)}
+
+prot_from_idx, prot_to_idx = 0, 19
+dna_from_idx, dna_to_idx, dna_gap_idx = 20, 24, 32
+rna_from_idx, rna_to_idx, rna_gap_idx = 25, 29, 33
+
+def moltype(mol_idx):
+  if dna_from_idx <= mol_idx <= dna_to_idx or mol_idx == dna_gap_idx:    # dna gap .
+    return DNA
+  elif rna_from_idx <= mol_idx <= rna_to_idx or mol_idx == rna_gap_idx:  # rna gap *
+    return RNA
+  return PROT
+
+
+restype_order = {(restype, moltype(i)): i for i, restype in enumerate(restypes)}
 restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
+
+def is_aa(restype):
+  return moltype(restype) == PROT
+
+
 restypes_with_x = restypes + ('X', )
-restype_order_with_x = {restype: i for i, restype in enumerate(restypes_with_x)}
+restype_order_with_x = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x)
+}
+
+
+bptypes = (
+    'cWW', 'tWW', 'cWH', 'tWH', 'cWS', 'tWS', 'cHH', 'tHH', 'cHS', 'tHS', 'cSS', 'tSS'
+)
+bptype_order = {bptype: i for i, bptype in enumerate(bptypes)}
 
 
 def sequence_to_onehot(
     sequence: str,
     mapping: Mapping[str, int],
-    map_unknown_to_x: bool = False
+    map_unknown_to_x: bool = False,
+    mol_type: int = PROT
 ) -> np.ndarray:
   """Maps the given sequence into a one-hot encoded matrix.
 
@@ -577,38 +720,48 @@ def sequence_to_onehot(
 
   for aa_index, aa_type in enumerate(sequence):
     if map_unknown_to_x:
-      if aa_type.isalpha() and aa_type.isupper():
-        aa_id = mapping.get(aa_type, mapping['X'])
+      if aa_type.isalpha():  # and aa_type.isupper():
+        aa_id = mapping.get((aa_type, mol_type), mapping[('X', mol_type)])
       else:
         raise ValueError(f'Invalid character in the sequence: {aa_type}')
     else:
-      aa_id = mapping[aa_type]
+      aa_id = mapping[(aa_type, mol_type)]
     one_hot_arr[aa_index, aa_id] = 1
 
   return one_hot_arr
 
 
 restype_1to3 = {
-    'A': 'ALA',
-    'R': 'ARG',
-    'N': 'ASN',
-    'D': 'ASP',
-    'C': 'CYS',
-    'Q': 'GLN',
-    'E': 'GLU',
-    'G': 'GLY',
-    'H': 'HIS',
-    'I': 'ILE',
-    'L': 'LEU',
-    'K': 'LYS',
-    'M': 'MET',
-    'F': 'PHE',
-    'P': 'PRO',
-    'S': 'SER',
-    'T': 'THR',
-    'W': 'TRP',
-    'Y': 'TYR',
-    'V': 'VAL',
+    ('A', PROT): 'ALA',
+    ('R', PROT): 'ARG',
+    ('N', PROT): 'ASN',
+    ('D', PROT): 'ASP',
+    ('C', PROT): 'CYS',
+    ('Q', PROT): 'GLN',
+    ('E', PROT): 'GLU',
+    ('G', PROT): 'GLY',
+    ('H', PROT): 'HIS',
+    ('I', PROT): 'ILE',
+    ('L', PROT): 'LEU',
+    ('K', PROT): 'LYS',
+    ('M', PROT): 'MET',
+    ('F', PROT): 'PHE',
+    ('P', PROT): 'PRO',
+    ('S', PROT): 'SER',
+    ('T', PROT): 'THR',
+    ('W', PROT): 'TRP',
+    ('Y', PROT): 'TYR',
+    ('V', PROT): 'VAL',
+    ('A', DNA ): ' DA',
+    ('C', DNA ): ' DC',
+    ('G', DNA ): ' DG',
+    ('T', DNA ): ' DT',
+    ('X', DNA ): ' DX',
+    ('A', RNA ): '  A',
+    ('C', RNA ): '  C',
+    ('G', RNA ): '  G',
+    ('U', RNA ): '  U',
+    ('X', RNA ): '  X',
 }
 
 # NB: restype_3to1 differs from Bio.PDB.protein_letters_3to1 by being a simple
@@ -619,8 +772,11 @@ restype_3to1 = {v: k for k, v in restype_1to3.items()}
 
 # Define a restype name for all unknown residues.
 unk_restype = 'UNK'
+unk_dnatype = ' DX'
+unk_rnatype = '  X'
 
-resnames = [restype_1to3[r] for r in restypes] + [unk_restype]
+resnames = [restype_1to3[(r, moltype(i))]
+            for i, r in enumerate(restypes)] + [(unk_restype, PROT)]
 resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 
 # The mapping here uses hhblits convention, so that B is mapped to D, J and O
@@ -631,64 +787,117 @@ resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 # codes is put at the end (20 and 21) so that they can easily be ignored if
 # desired.
 HHBLITS_AA_TO_ID = {
-    'A': 0,
-    'B': 2,
-    'C': 1,
-    'D': 2,
-    'E': 3,
-    'F': 4,
-    'G': 5,
-    'H': 6,
-    'I': 7,
-    'J': 20,
-    'K': 8,
-    'L': 9,
-    'M': 10,
-    'N': 11,
-    'O': 20,
-    'P': 12,
-    'Q': 13,
-    'R': 14,
-    'S': 15,
-    'T': 16,
-    'U': 1,
-    'V': 17,
-    'W': 18,
-    'X': 20,
-    'Y': 19,
-    'Z': 3,
-    '-': 21,
+    ('A', PROT): 0,
+    ('B', PROT): 2,
+    ('C', PROT): 1,
+    ('D', PROT): 2,
+    ('E', PROT): 3,
+    ('F', PROT): 4,
+    ('G', PROT): 5,
+    ('H', PROT): 6,
+    ('I', PROT): 7,
+    ('J', PROT): 20,
+    ('K', PROT): 8,
+    ('L', PROT): 9,
+    ('M', PROT): 10,
+    ('N', PROT): 11,
+    ('O', PROT): 20,
+    ('P', PROT): 12,
+    ('Q', PROT): 13,
+    ('R', PROT): 14,
+    ('S', PROT): 15,
+    ('T', PROT): 16,
+    ('U', PROT): 1,
+    ('V', PROT): 17,
+    ('W', PROT): 18,
+    ('X', PROT): 20,
+    ('Y', PROT): 19,
+    ('Z', PROT): 3,
+    ('A', DNA ): 21,
+    ('C', DNA ): 22,
+    ('G', DNA ): 23,
+    ('T', DNA ): 24,
+    ('U', DNA ): 24,
+    ('X', DNA ): 25,
+    ('B', DNA ): 25,
+    ('D', DNA ): 25,
+    ('H', DNA ): 25,
+    ('K', DNA ): 25,
+    ('M', DNA ): 25,
+    ('N', DNA ): 25,
+    ('R', DNA ): 25,
+    ('S', DNA ): 25,
+    ('V', DNA ): 25,
+    ('W', DNA ): 25,
+    ('Y', DNA ): 25,
+    ('A', RNA ): 26,
+    ('C', RNA ): 27,
+    ('G', RNA ): 28,
+    ('U', RNA ): 29,
+    ('T', RNA ): 29,
+    ('X', RNA ): 30,
+    ('B', RNA ): 30,
+    ('D', RNA ): 30,
+    ('H', RNA ): 30,
+    ('K', RNA ): 30,
+    ('M', RNA ): 30,
+    ('N', RNA ): 30,
+    ('R', RNA ): 30,
+    ('S', RNA ): 30,
+    ('V', RNA ): 30,
+    ('W', RNA ): 30,
+    ('Y', RNA ): 30,
+    ('-', PROT): 31,
+    ('-', DNA ): 32,
+    ('-', RNA ): 33,
 }
 
 # Partial inversion of HHBLITS_AA_TO_ID.
 ID_TO_HHBLITS_AA = {
-    0: 'A',
-    1: 'C',  # Also U.
-    2: 'D',  # Also B.
-    3: 'E',  # Also Z.
-    4: 'F',
-    5: 'G',
-    6: 'H',
-    7: 'I',
-    8: 'K',
-    9: 'L',
-    10: 'M',
-    11: 'N',
-    12: 'P',
-    13: 'Q',
-    14: 'R',
-    15: 'S',
-    16: 'T',
-    17: 'V',
-    18: 'W',
-    19: 'Y',
-    20: 'X',  # Includes J and O.
-    21: '-',
+     0: ('A', PROT),
+     1: ('C', PROT),  # Also U.
+     2: ('D', PROT),  # Also B.
+     3: ('E', PROT),  # Also Z.
+     4: ('F', PROT),
+     5: ('G', PROT),
+     6: ('H', PROT),
+     7: ('I', PROT),
+     8: ('K', PROT),
+     9: ('L', PROT),
+    10: ('M', PROT),
+    11: ('N', PROT),
+    12: ('P', PROT),
+    13: ('Q', PROT),
+    14: ('R', PROT),
+    15: ('S', PROT),
+    16: ('T', PROT),
+    17: ('V', PROT),
+    18: ('W', PROT),
+    19: ('Y', PROT),
+    20: ('X', PROT),  # Includes J and O.
+    21: ('A', DNA),
+    22: ('C', DNA),  # Also U.
+    23: ('G', DNA),  # Also B.
+    24: ('T', DNA),  # Also T.
+    25: ('X', DNA),
+    26: ('A', RNA),
+    27: ('C', RNA),  # Also U.
+    28: ('G', RNA),  # Also B.
+    29: ('U', RNA),  # Also T.
+    30: ('X', RNA),
+    31: ('-', PROT),
+    32: ('.', DNA),
+    33: ('*', RNA),
 }
 
-restypes_with_x_and_gap = restypes + ('X', '-')
+restypes_gap = ('-', '.', '*')
+restypes_with_x_and_gap = restypes_with_x + restypes_gap
+restype_order_with_x_and_gap = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x_and_gap)
+}
 MAP_HHBLITS_AATYPE_TO_OUR_AATYPE = tuple(
-    restypes_with_x_and_gap.index(ID_TO_HHBLITS_AA[i])
+    restype_order_with_x_and_gap[ID_TO_HHBLITS_AA[i]]
     for i in range(len(restypes_with_x_and_gap))
 )
 
@@ -698,7 +907,7 @@ def _make_standard_atom_mask() -> np.ndarray:
   # +1 to account for unknown (all 0s).
   mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.int32)
   for restype, restype_letter in enumerate(restypes):
-    restype_name = restype_1to3[restype_letter]
+    restype_name = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[restype_name]  # pylint: disable=redefined-outer-name
     for atom_type, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if atom_name:
@@ -721,8 +930,8 @@ def chi_angle_atom(atom_index: int) -> np.ndarray:
     indices.extend([-1] * (4 - len(indices)))
     chi_angles_index[k] = indices
 
-  for r in restypes:
-    res3 = restype_1to3[r]
+  for i, r in enumerate(restypes):
+    res3 = restype_1to3[(r, moltype(i))]
     one_hot = np.eye(atom_type_num)[chi_angles_index[res3]]
     one_hots.append(one_hot)
 
@@ -737,7 +946,9 @@ chi_atom_1_one_hot = chi_angle_atom(1)
 chi_atom_2_one_hot = chi_angle_atom(2)
 
 # An array like chi_angles_atoms but using indices rather than names.
-chi_angles_atom_indices = [chi_angles_atoms[restype_1to3[r]] for r in restypes]
+chi_angles_atom_indices = [
+    chi_angles_atoms[restype_1to3[(r, moltype(i))]] for i, r in enumerate(restypes)
+]
 chi_angles_atom_indices = list(
     map(
         lambda atom_name_index: list(
@@ -756,8 +967,8 @@ chi_angles_atom_indices = np.array(
     ]
 )
 
-chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int32)
-chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.bool_)
+chi_angles_atom14_indices = np.zeros((restype_num + 1, 7, 4), dtype=np.int32)
+chi_angles_atom14_exists = np.zeros((restype_num + 1, 7), dtype=np.bool_)
 for res_name, res_chi_angles in chi_angles_atoms.items():
   res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
@@ -817,16 +1028,22 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and an array with (restype, atomtype, coord) for the atom positions
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
-restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int32)
-restype_atom37_mask = np.zeros([21, 37], dtype=np.bool_)
-restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
-restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int32)
-restype_atom14_mask = np.zeros([21, 14], dtype=np.bool_)
-restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
-restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
-restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int32)
-restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int32)
-restype_rigid_group_mask = np.zeros([21, 8], dtype=np.bool_)
+restype_atom37_to_rigid_group = np.zeros([restype_num + 1, 37], dtype=np.int32)
+restype_atom37_mask = np.zeros([restype_num + 1, 37], dtype=np.bool_)
+restype_atom37_rigid_group_positions = np.zeros(
+    [restype_num + 1, 37, 3], dtype=np.float32
+)
+restype_atom14_to_rigid_group = np.zeros([restype_num + 1, 14], dtype=np.int32)
+restype_atom14_mask = np.zeros([restype_num + 1, 14], dtype=np.bool_)
+restype_atom14_rigid_group_positions = np.zeros(
+    [restype_num + 1, 14, 3], dtype=np.float32
+)
+restype_rigid_group_default_frame = np.zeros(
+    [restype_num + 1, 8, 4, 4], dtype=np.float32
+)
+restype_rigid_group_atom37_idx = np.zeros([restype_num + 1, 8, 3], dtype=np.int32)
+restype_rigid_group_atom14_idx = np.zeros([restype_num + 1, 8, 3], dtype=np.int32)
+restype_rigid_group_mask = np.zeros([restype_num + 1, 8], dtype=np.bool_)
 
 
 def _make_rigid_group_constants():
@@ -838,7 +1055,7 @@ def _make_rigid_group_constants():
 
   # Fill the arrays above.
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     for atomname, group_idx, atom_position in rigid_group_atom_positions[resname]:
       atomtype = atom_order[atomname]
       restype_atom37_to_rigid_group[restype, atomtype] = group_idx
@@ -851,7 +1068,7 @@ def _make_rigid_group_constants():
       restype_atom14_rigid_group_positions[restype, atom14idx, :] = atom_position
 
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_positions = {
         name: np.array(pos)
         for name, _, pos in rigid_group_atom_positions[resname]
@@ -924,12 +1141,15 @@ def _make_rigid_group_constants():
 
 _make_rigid_group_constants()
 
-atom14_van_der_waals_radius = np.zeros((21, 14), dtype=np.float32)
+atom14_van_der_waals_radius = np.zeros((restype_num + 1, 14), dtype=np.float32)
 
 
 def _make_atom14_van_der_waals_radius():
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
     for atom_idx, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if not atom_name:
@@ -943,12 +1163,15 @@ _make_atom14_van_der_waals_radius()
 
 def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor=15):
   """compute upper and lower bounds for bonds to assess violations."""
-  restype_atom14_bond_lower_bound = np.zeros([21, 14, 14], np.float32)
-  restype_atom14_bond_upper_bound = np.zeros([21, 14, 14], np.float32)
-  restype_atom14_bond_stddev = np.zeros([21, 14, 14], np.float32)
+  restype_atom14_bond_lower_bound = np.zeros([restype_num + 1, 14, 14], np.float32)
+  restype_atom14_bond_upper_bound = np.zeros([restype_num + 1, 14, 14], np.float32)
+  restype_atom14_bond_stddev = np.zeros([restype_num + 1, 14, 14], np.float32)
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
 
     # create lower and upper bounds for clashes
