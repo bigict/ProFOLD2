@@ -273,7 +273,8 @@ def quaternion_multiply(a, b):
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   """Create pseudo beta features."""
 
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
+  is_gly = torch.eq(
+      aatype, residue_constants.restype_order[('G', residue_constants.PROT)])
   ca_idx = residue_constants.atom_order['CA']
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
@@ -603,8 +604,12 @@ def rigids_from_positions(aatypes, coords, coord_mask):
 
   # The frames for ambiguous rigid groups are just rotated by 180 degree around
   # the x-axis. The ambiguous group is always the last chi-group.
-  restype_rigid_group_is_ambiguous = np.zeros([21, 8], dtype=np.float32)
-  restype_rigid_group_rotations = np.tile(np.eye(3, dtype=np.float32), [21, 8, 1, 1])
+  restype_rigid_group_is_ambiguous = np.zeros(
+      [residue_constants.restype_num + 1, 8], dtype=np.float32
+  )
+  restype_rigid_group_rotations = np.tile(
+      np.eye(3, dtype=np.float32), [residue_constants.restype_num + 1, 8, 1, 1]
+  )
 
   for resname, _ in residue_constants.residue_atom_renaming_swaps.items():
     restype = residue_constants.restype_order[residue_constants.restype_3to1[resname]]
