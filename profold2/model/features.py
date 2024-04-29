@@ -44,16 +44,18 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if exists(includes):
       includes = set(includes)
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        resname = residue_constants.restype_1to3[(
+            restype, residue_constants.moltype(i))]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
           if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
             restype_atom14_mask[i, j] = 0
     if exists(excludes):
       excludes = set(excludes)
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        resname = residue_constants.restype_1to3[(
+            restype, residue_constants.moltype(i))]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
           if restype_atom14_mask[i, j] > 0 and atom_list[j] in excludes:
@@ -236,10 +238,12 @@ def make_bert_mask(
   return protein
 
 
-def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
-  """Create pseudo beta features."""
+def pseudo_beta_alphafold(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from AlphaFold)."""
 
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
+  is_gly = torch.eq(
+      aatype, residue_constants.restype_order[('G', residue_constants.PROT)]
+  )
   ca_idx = residue_constants.atom_order['CA']
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
@@ -247,7 +251,7 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
       all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
   )
 
-  if all_atom_masks is not None:
+  if exists(all_atom_masks):
     pseudo_beta_mask = torch.where(
         is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
     )
@@ -257,9 +261,33 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
   return pseudo_beta
 
 
+def pseudo_beta_rosetta(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from RoseTTAFold)."""
+
+  n_idx = residue_constants.atom_order['N']
+  ca_idx = residue_constants.atom_order['CA']
+  c_idx = residue_constants.atom_order['C']
+
+  b = all_atom_positions[..., ca_idx, :] - all_atom_positions[..., n_idx, :]
+  c = all_atom_positions[..., c_idx, :] - all_atom_positions[..., ca_idx, :]
+  a = torch.cross(b, c, dim=-1)
+  pseudo_beta = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + all_atom_positions[
+      ..., ca_idx, :]
+
+  if exists(all_atom_masks):
+    pseudo_beta_mask = all_atom_masks[..., n_idx] * all_atom_masks[
+        ..., ca_idx] * all_atom_masks[..., c_idx]
+    pseudo_beta_mask = pseudo_beta_mask.float()
+    return pseudo_beta, pseudo_beta_mask
+
+  return pseudo_beta
+
+
 @take1st
-def make_pseudo_beta(protein, prefix='', is_training=True):
+def make_pseudo_beta(protein, prefix='', is_training=True, type='alphafold'):
   del is_training
+  assert type in ('alphafold', 'rosettafold')
+  pseudo_beta_fn = pseudo_beta_alphafold if type == 'alphafold' else pseudo_beta_rosetta
 
   if (
       prefix + 'seq' in protein and prefix + 'coord' in protein and
@@ -271,98 +299,6 @@ def make_pseudo_beta(protein, prefix='', is_training=True):
             protein[prefix + 'coord_mask']
         )
     )
-  return protein
-
-
-@take1st
-def make_mutation(
-    protein, mutation_prob=0.0, replace_fraction=0.6, cutoff=8, is_training=True
-):
-  assert 0.0 <= mutation_prob <= 1.0
-  if is_training and 'pseudo_beta' in protein and 'pseudo_beta_mask' in protein:
-    assert 'seq_color' in protein
-    assert 'sequence_profile' in protein
-    seq_color = protein['seq_color']
-    positions = protein['pseudo_beta']
-    mask = protein['pseudo_beta_mask']
-
-    squared_mask = rearrange(mask, '... i -> ... i ()'
-                            ) * rearrange(mask, '... j -> ... () j')
-    pair_clr_mask = (
-        rearrange(seq_color, '... i -> ... i ()') !=
-        rearrange(seq_color, '... j -> ... () j')
-    )
-
-    dist2 = functional.squared_cdist(positions, positions)
-    contacts = squared_mask * pair_clr_mask * (dist2 <= cutoff**2)
-
-    b, n = mask.shape[0], torch.amax(seq_color)
-
-    # ppi label && mask
-    ppi_label = torch.scatter_add(
-        torch.zeros(b, n, device=contacts.device), -1,
-        seq_color.long() - 1, torch.sum(contacts, dim=-1)
-    ) > 0
-    ppi_mask = torch.scatter_add(
-        torch.zeros(b, n, device=contacts.device), -1,
-        seq_color.long() - 1, mask
-    ) > 0
-
-    if np.random.random() < mutation_prob and replace_fraction > 0:
-      # Select one chain randomly
-      selected_clr = 1 + torch.floor(
-          torch.rand(b, device=mask.device) * torch.amax(seq_color, dim=-1)
-      ).int()
-
-      # masked_clr = (seq_color == selected_clr[..., None])
-      masked_clr = (seq_color == selected_clr)
-
-      # Number of contacts for each chain with selected chain except itself.
-      contacts = torch.sum(contacts * masked_clr[..., None], dim=-1)
-      if torch.any(contacts > 0):
-        # Nuber of AAs to be mutated
-        d = int(max(4, torch.max(torch.sum(contacts > 0, dim=-1)) * replace_fraction))
-        # Sample muations based on contacts
-        mutation_idx = torch.multinomial(contacts + 0.1, d)
-
-        c = protein['sequence_profile'].shape[-1]
-        p = torch.gather(
-            protein['sequence_profile'], -2,
-            repeat(mutation_idx[..., None], '... r -> ... (r c)', c=c)
-        )
-
-        mask = 'X-'
-        # Shape (k, c)
-        m = functional.make_mask(
-            residue_constants.restypes_with_x_and_gap, mask=mask, device=p.device
-        )
-
-        p = rearrange(m, 'c -> () () c') / (p + 1e-4)
-        mutation_aa = torch.multinomial(rearrange(p, 'b i c -> (b i) c'), 1).int()
-
-        mutation_aa = rearrange(mutation_aa, '(b i) c -> b (i c)', b=b)
-        wt_aa = torch.gather(protein['seq'], -1, mutation_idx)
-
-        def yield_mutation_str(i):  # pylint: disable=unused-variable
-          for idx, x, y in zip(mutation_idx[i], mutation_aa[i], wt_aa[i]):
-            x, y = residue_constants.restypes[x], residue_constants.restypes[y]
-            yield f'{y}{idx}{x}'
-
-        # protein['mutation_str'] = '|'.join(
-        #     ','.join(yield_mutation_str(i)) for i in range(b))
-        protein['mutation_idx'] = selected_clr
-        # ppi_label = torch.scatter(
-        #     ppi_label, -1, selected_clr - 1,
-        #     torch.zeros(b, n, device=ppi_label.device, dtype=torch.bool))
-        ppi_label = ppi_label.masked_fill(
-            F.one_hot(selected_clr.long() - 1, num_classes=n), False
-        )
-
-        protein['true_seq'] = protein['seq']
-        protein['seq'] = torch.scatter(protein['seq'], -1, mutation_idx, mutation_aa)
-        protein['loss.folding.w'] = torch.zeros_like(selected_clr)  # FIXME
-    protein['ppi_label'], protein['ppi_mask'] = ppi_label, ppi_mask
-
   return protein
 
 
