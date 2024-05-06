@@ -285,16 +285,14 @@ class CoevolutionHead(nn.Module):
     alpha = _make_dynamic_regularization(self.alpha)
     if exists(alpha):
       r1 = torch.sum(torch.abs(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L1(%s): %s',
-                   alpha, torch.mean(r1))
+      logger.debug('CoevolutionHead.loss.L1(%s): %s', alpha, torch.mean(r1))
       avg_error += torch.mean(alpha[..., None, None] * r1)
 
     # L2 regularization
     beta = _make_dynamic_regularization(self.beta)
     if exists(beta):
       r2 = torch.sum(torch.square(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L2(%s): %s',
-                  beta, torch.mean(r2))
+      logger.debug('CoevolutionHead.loss.L2(%s): %s', beta, torch.mean(r2))
       avg_error += torch.mean(beta[..., None, None] * r2)
 
     # LH regularization
@@ -398,8 +396,7 @@ class DistogramHead(nn.Module):
 
     if 'loss.distogram.w' in batch:
       logger.debug('DistogramHead.loss.w: %s', batch['loss.distogram.w'])
-      errors = torch.einsum('b ...,b -> b ...',
-                            errors,
+      errors = torch.einsum('b ...,b -> b ...', errors,
                             batch['loss.distogram.w'])
     avg_error = functional.masked_mean(value=errors * square_weight,
                                        mask=square_mask,
@@ -798,7 +795,7 @@ class PAEHead(nn.Module):
     pred_frames = value['frames']
     with torch.no_grad():
       true_frames = default(backbone_affine, pred_frames)
-    
+
     # Compute the squared error for each alignment.
     def to_local(affine):
       rotations, translations = affine
@@ -815,7 +812,8 @@ class PAEHead(nn.Module):
     # Shape (num_res, num_res)
     # First num_res are alignment frames, second num_res are the residues.
     with torch.no_grad():
-      ae_ca = torch.sum(torch.square(to_local(pred_frames) - to_local(true_frames)), dim=-1)
+      ae_ca = torch.sum(
+          torch.square(to_local(pred_frames) - to_local(true_frames)), dim=-1)
     sq_breaks = torch.square(breaks)
     true_bins = torch.sum(ae_ca[..., None] > sq_breaks, dim=-1)
 
@@ -826,7 +824,8 @@ class PAEHead(nn.Module):
     # Filter by resolution
     mask = torch.logical_and(self.min_resolution <= batch['resolution'],
                              batch['resolution'] < self.max_resolution)
-    sq_mask = backbone_affine_mask[..., None] * backbone_affine_mask[..., None, :]
+    sq_mask = backbone_affine_mask[..., None] * backbone_affine_mask[...,
+                                                                     None, :]
     sq_mask = torch.einsum('b,b ... -> b ...', mask, sq_mask)
     loss = torch.sum(errors * sq_mask) / (1e-8 + torch.sum(sq_mask))
     logger.debug('PAEHead.loss: %s', loss)
@@ -874,11 +873,9 @@ class PPIHead(nn.Module):
 
     # Prob. that chain i has contact with the other chains
     b, n = seq_mask.shape[0], torch.amax(seq_color)
-    probs = 1.0 - torch.exp(torch.scatter_add(
-        torch.zeros(b, n, device=probs.device),
-        -1,
-        seq_color.long() - 1,
-        torch.log(1.0 - probs)))
+    probs = 1.0 - torch.exp(
+        torch.scatter_add(torch.zeros(b, n, device=probs.device), -1,
+                          seq_color.long() - 1, torch.log(1.0 - probs)))
 
     logger.debug('PPIHead.probs: %s', probs)
     return dict(probs=probs)
@@ -1055,10 +1052,23 @@ class MetricDictHead(nn.Module):
 
             errors = -torch.sum(mask * torch.log(prob + 10e-8), dim=-1)
             avg_error = torch.exp(
-                functional.masked_mean(value=errors, mask=torch.sum(mask,
-                                                                    dim=-1)))
+                functional.masked_mean(value=errors,
+                                       mask=torch.sum(mask, dim=-1)))
             logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error)
             metrics['coevolution']['perplexity'] = avg_error
+
+      if 'folding' in headers and 'coords' in headers['folding'] and (
+          'coord_mask' in batch or 'coord_exists' in batch):
+        points, point_mask = headers['folding']['coords'], batch.get(
+            'coord_exists', batch.get('coord_mask'))
+        seq_index = batch.get('seq_index')
+        assert exists(point_mask)
+        ca_ca_distance_error = functional.between_ca_ca_distance_loss(
+            points, point_mask, seq_index)
+        metrics['violation'] = MetricDict()
+        metrics['violation']['ca_ca_distance'] = ca_ca_distance_error
+        logger.debug('MetricDictHead.violation.ca_ca_distance: %s',
+                     ca_ca_distance_error)
 
     return dict(loss=metrics) if metrics else None
 
@@ -1134,7 +1144,8 @@ class TMscoreHead(nn.Module):
       true_points = batch['coord'][..., :self.num_atoms, :]
       coord_mask = batch['coord_mask'][..., :self.num_atoms]
       with torch.no_grad():
-        tms = batched_tmscore(pred_points, true_points, coord_mask, batch['mask'])
+        tms = batched_tmscore(pred_points, true_points, coord_mask,
+                              batch['mask'])
       return dict(loss=tms)
     return None
 
