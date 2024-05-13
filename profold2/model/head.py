@@ -85,12 +85,10 @@ class ConfidenceHead(nn.Module):
     metrics = {}
     with torch.no_grad():
       if 'lddt' in headers and 'logits' in headers['lddt']:
-        metrics['plddt'] = functional.plddt(headers['lddt']['logits'])
+        metrics['plddt'] = functional.plddt(headers['lddt']['logits']) * 100
       if 'plddt' in metrics:
         mask = batch['mask']
         # metrics['loss'] = functional.masked_mean(value=metrics['plddt'], mask=mask)
-        metrics['loss'] = torch.sum(metrics['plddt'] * mask,
-                                    dim=-1) / (torch.sum(mask, dim=-1) + 1e-6)
         metrics['loss'] = functional.masked_mean(value=metrics['plddt'],
                                                  mask=mask,
                                                  dim=-1)
@@ -1061,14 +1059,28 @@ class MetricDictHead(nn.Module):
           'coord_mask' in batch or 'coord_exists' in batch):
         points, point_mask = headers['folding']['coords'], batch.get(
             'coord_exists', batch.get('coord_mask'))
-        seq_index = batch.get('seq_index')
         assert exists(point_mask)
+
+        seq_index = batch.get('seq_index')
         ca_ca_distance_error = functional.between_ca_ca_distance_loss(
             points, point_mask, seq_index)
         metrics['violation'] = MetricDict()
         metrics['violation']['ca_ca_distance'] = ca_ca_distance_error
         logger.debug('MetricDictHead.violation.ca_ca_distance: %s',
                      ca_ca_distance_error)
+
+        if 'coord' in batch:
+          ca_idx = residue_constants.atom_order['CA']
+          # Shape (b, l, d)
+          pred_points = points[..., ca_idx, :]
+          true_points = batch['coord'][..., ca_idx, :]
+          points_mask = point_mask[..., ca_idx]
+
+          # Shape (b, l)
+          lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+          avg_lddt_ca = functional.masked_mean(value=lddt_ca, mask=points_mask)
+          metrics['lddt'] = avg_lddt_ca
+          logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
 
     return dict(loss=metrics) if metrics else None
 
