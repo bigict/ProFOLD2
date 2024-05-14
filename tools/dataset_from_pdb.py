@@ -141,7 +141,7 @@ def mmcif_yield_chain(mmcif_dict, args):
         # occupancy & B factor
         tempfactor = 0.0
         try:
-          tempfactor = float(b_factor_list[i])
+          tempfactor = float(b_factor_list[i]) / 100.
         except ValueError as e:
           raise PDBConstructionException('Invalid or missing B factor') from e
         bfactors[atom14idx] = tempfactor
