@@ -732,11 +732,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                              max_seq_len=None))
 
       # Apply new coord_mask based on aatypes
+      restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
+      includes = set(['N', 'CA', 'C', 'CB', 'O'])
+      for i in range(residue_constants.restype_num):
+        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+        atom_list = residue_constants.restype_name_to_atom14_names[resname]
+        for j in range(restype_atom14_mask.shape[1]):
+          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
+            restype_atom14_mask[i, j] = 0
       coord_exists = torch.gather(
-          torch.from_numpy(residue_constants.restype_atom14_mask), 0,
+          torch.from_numpy(restype_atom14_mask), 0,
           repeat(item['seq'].long(),
                  'i -> i n',
-                 n=residue_constants.restype_atom14_mask.shape[-1]))
+                 n=restype_atom14_mask.shape[-1]))
       for field in ('coord', 'coord_mask', 'coord_plddt'):
         if field in item:
           item[field] = torch.einsum('i n ...,i n -> i n ...', item[field],
