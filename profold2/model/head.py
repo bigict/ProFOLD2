@@ -15,6 +15,14 @@ from profold2.utils import *
 logger = logging.getLogger(__name__)
 
 
+def clipped_sigmoid_cross_entropy(logits,
+                                  labels,
+                                  clip_negative_at_logit,
+                                  clip_positive_at_logit,
+                                  epsilon=1e-7):
+  loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none')
+  return loss
+
 def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
   """Computes softmax cross entropy given logits and one-hot class labels."""
   if not exists(mask):
@@ -214,29 +222,31 @@ class CoevolutionHead(nn.Module):
          Dictionary containing:
            * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
         """
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+
+    si, zij = representations['single'], representations['pair']
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                             self.mask,
+                             device=si.device)
+
+    ei = self.single(si)
+    eij = self.pairwize(
+        (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+
+    eij = eij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
+                          'i j -> i j ()')  # eii = 0
+
+    ret = dict(wij=eij, bi=ei)
     if self.training or 'msa' in batch:
       assert 'msa' in batch
-      num_class = len(residue_constants.restypes_with_x_and_gap)
-
-      si, zij = representations['single'], representations['pair']
-      m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                               self.mask,
-                               device=si.device)
-
-      ei = self.single(si)
-      eij = self.pairwize(
-          (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
-
-      eij = eij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
-                            'i j -> i j ()')  # eii = 0
       hi = torch.einsum(
           'b m j d,b i j c d,d -> b m i c',
           F.one_hot(batch['msa'].long(), num_class).float(),
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
           m)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
-      return dict(logits=logits, wij=eij, bi=ei)
-    return None
+      ret.update(logits=logits)
+    return ret
 
   def loss(self, value, batch):
     """Log loss of a msa rebuilding."""
@@ -1084,6 +1094,103 @@ class MetricDictHead(nn.Module):
 
     return dict(loss=metrics) if metrics else None
 
+class FitnessHead(nn.Module):
+  """Head to predict fitness.
+    """
+
+  def __init__(self, dim, num_var_as_ref=0):
+    super().__init__()
+    del dim
+
+    self.sigma = nn.Linear(1, 1)
+
+    assert num_var_as_ref >= 0
+    self.num_var_as_ref = num_var_as_ref
+
+  def forward(self, headers, representations, batch):
+    assert 'coevolution' in headers
+    eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
+
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    if 'variant' in batch:
+      variant = batch['variant']
+      variant_mask = batch['variant_mask']
+    else:
+      assert 'seq' in batch
+      variant = rearrange(batch['seq'], 'b i -> b () i')
+      variant_mask = rearrange(batch['mask'], 'b i -> b () i')
+    variant = F.one_hot(variant.long(), num_class)
+    hi = torch.einsum(
+        'b m j d,b i j c d -> b m i c',
+        variant.float(),
+        rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class))
+    logits = rearrange(ei, 'b i c -> b () i c') + hi
+    logits = torch.einsum('b m i c, b m i c -> b m i', logits, variant.float())
+    logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+    variant_logit = torch.sum(
+        (logits - logits[:, :1, ...]) * variant_mask, dim=-1)
+    # if self.training:
+    #   variant_diff = torch.clamp(variant_diff, max=0.0)
+    # variant_logit = torch.sum(self.sigma(variant_diff), dim=-1)
+    return dict(logits=logits, variant_logit=variant_logit)
+
+  def loss(self, value, batch):
+    logits, logits_ref = value['logits'], None
+    if 'variant' in batch:
+      variant_mask = batch['variant_mask']
+      variant_label = batch['variant_label']
+
+      if self.num_var_as_ref > 0:
+        # minimum of variants in batch
+        label_mask = torch.sum(variant_mask, dim=-1) > 0
+        label_num = torch.min(torch.sum(label_mask, dim=-1)).item()
+
+        num_var_as_ref = min(self.num_var_as_ref, label_num)
+        if num_var_as_ref > 0:
+          variant_label = batch['variant_label'][:, :label_num] * label_mask
+
+          b, _, n = logits.shape
+          # sample reference based on variant_label
+          ref_idx = torch.multinomial(variant_label + 1e-3,
+                                      num_var_as_ref,
+                                      replacement=False)
+          ref_idx = torch.cat((torch.zeros(
+              (b, 1), dtype=ref_idx.dtype, device=logits.device), ref_idx),
+                              dim=-1)
+          logger.debug("FitnessHead.ref_idx: %s", ref_idx)
+
+          logits_ref = torch.gather(
+              logits, 1, repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
+          mask_ref = torch.gather(
+              variant_mask, 1,
+              repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
+          label_ref = torch.gather(variant_label, 1, ref_idx)
+    else:
+      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i')
+      b = variant_mask.shape[0]
+      variant_label = torch.ones((b, 1), device=variant_mask.device)
+
+    if not exists(logits_ref):
+      logits_ref = logits[:, :1, ...]
+      mask_ref = variant_mask[:, :1, ...]
+      label_ref = variant_label[:, :1, ...]
+
+    variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
+        logits_ref, 'b n i -> b () n i')
+    variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
+        mask_ref, 'b n i -> b () n i')
+    variant_label = rearrange(variant_label, 'b m -> b m ()') - rearrange(
+        label_ref, 'b n -> b () n')
+    variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
+    variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    errors = F.binary_cross_entropy_with_logits(variant_logit,
+                                                variant_label,
+                                                reduction='none')
+    variant_mask = torch.sum(variant_mask, dim=-1) > 0
+    avg_error = functional.masked_mean(value=errors, mask=variant_mask)
+    logger.debug('FitnessHead.loss: %s', avg_error)
+    return dict(loss=avg_error)
+
 
 class SequenceProfileHead(nn.Module):
   """Head to predict sequence profile.
@@ -1220,6 +1327,7 @@ class HeaderBuilder:
                   confidence=ConfidenceHead,
                   contact=ContactHead,
                   distogram=DistogramHead,
+                  fitness=FitnessHead,
                   folding=FoldingHead,
                   lddt=LDDTHead,
                   metric=MetricDictHead,

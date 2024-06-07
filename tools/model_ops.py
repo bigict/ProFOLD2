@@ -63,6 +63,7 @@ def params_count_add_argument(parser):
 
 def params_modify_main(args):
   assert len(args.grep) % 2 == 0
+  logging.debug(args.grep)
 
   x = torch.load(args.model_files[0], map_location='cpu')
   logging.debug(x.keys())
@@ -76,7 +77,7 @@ def params_modify_main(args):
     for i in range(0, len(args.grep), 2):
       key_new = re.sub(args.grep[i], args.grep[i + 1], key_new)
     if key_new != key:
-      logging.debug('from <%s9> to <%s>', key, key_new)
+      logging.debug('from <%s> to <%s>', key, key_new)
     o[key_new] = val
   x['model'] = o
 

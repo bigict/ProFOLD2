@@ -36,7 +36,9 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = dataset.load(
       data_dir=args.eval_data,
       data_idx=args.eval_idx,
+      pseudo_linker_prob=args.pseudo_linker_prob,
       max_msa_depth=args.max_msa_size,
+      max_var_depth=args.max_var_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -75,6 +77,13 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       metric_dict['confidence'] = r.headers['confidence']['loss'].item()
       logging.debug('%d pid: %s Confidence: %s',
             idx, fasta_name, r.headers['confidence']['loss'].item())
+    if 'fitness' in r.headers:
+      fitness = torch.sigmoid(r.headers['fitness']['variant_logit'])
+      logging.info('no: %d pid: %s, fitness: pred=%s', idx, fasta_name,
+                   fitness.tolist())
+      if 'variant_label' in batch:
+        logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
+                     batch['variant_label'].tolist())
     if 'metric' in r.headers:
       metrics = r.headers['metric']['loss']
       if 'contact' in metrics:
@@ -164,7 +173,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE.')
+      help='filter out MSAs whose size>SIZE.')
+  parser.add_argument('--max_var_size', type=int, default=None,
+      help='filter out VARs whose size>SIZE.')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=None,
@@ -175,6 +186,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN.')
+  parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
+      help='enable loading complex data.')
   parser.add_argument('--msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
   parser.add_argument('--msa_as_seq_topn', type=int, default=None,
