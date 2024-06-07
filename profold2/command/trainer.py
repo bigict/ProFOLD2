@@ -106,6 +106,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         msa_as_seq_min_alr=data_msa_as_seq_min_alr,
         msa_as_seq_min_ident=data_msa_as_seq_min_ident,
         max_msa_depth=args.max_msa_size,
+        max_var_depth=args.max_var_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         min_crop_pae=True,
@@ -410,6 +411,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='filter out proteins whose length>LEN.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
       help='sampling MSAs with depth<=SIZE.')
+  parser.add_argument('--max_var_size', type=int, default=8192,
+      help='sampling VARs with depth<=SIZE.')
   parser.add_argument('--min_crop_len', type=int, default=80,
       help='do not crop protein whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=255,
