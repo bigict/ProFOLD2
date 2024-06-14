@@ -1098,20 +1098,37 @@ class FitnessHead(nn.Module):
   """Head to predict fitness.
     """
 
-  def __init__(self, dim, num_var_as_ref=0):
+  def __init__(self, dim, mask='-', num_var_as_ref=0, shard_size=2048):
     super().__init__()
     del dim
 
-    self.sigma = nn.Linear(1, 1)
+    self.sigma = nn.Linear(1, 1, bias=False)
+    self.mask = mask
 
     assert num_var_as_ref >= 0
     self.num_var_as_ref = num_var_as_ref
+    self.shard_size = shard_size
 
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
     eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                             self.mask,
+                             device=ei.device)
+
+    def _hamilton(variant):
+      variant = F.one_hot(variant.long(), num_class)
+      hi = torch.einsum(
+          'b m j d,b i j c d,d -> b m i c',
+          variant.float(),
+          rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
+          m)
+      logits = rearrange(ei, 'b i c -> b () i c') + hi
+      logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
+      return logits
+
     if 'variant' in batch:
       variant = batch['variant']
       variant_mask = batch['variant_mask']
@@ -1119,16 +1136,22 @@ class FitnessHead(nn.Module):
       assert 'seq' in batch
       variant = rearrange(batch['seq'], 'b i -> b () i')
       variant_mask = rearrange(batch['mask'], 'b i -> b () i')
-    variant = F.one_hot(variant.long(), num_class)
-    hi = torch.einsum(
-        'b m j d,b i j c d -> b m i c',
-        variant.float(),
-        rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class))
-    logits = rearrange(ei, 'b i c -> b () i c') + hi
-    logits = torch.einsum('b m i c, b m i c -> b m i', logits, variant.float())
+    logits = functional.sharded_apply(
+        _hamilton, [variant],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=1,
+        cat_dim=1)
+    # variant = F.one_hot(variant.long(), num_class)
+    # hi = torch.einsum(
+    #     'b m j d,b i j c d,d -> b m i c',
+    #     variant.float(),
+    #     rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
+    #     m)
+    # logits = rearrange(ei, 'b i c -> b () i c') + hi
+    # logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
     logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
-    variant_logit = torch.sum(
-        (logits - logits[:, :1, ...]) * variant_mask, dim=-1)
+    variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
+                              dim=-1)
     # if self.training:
     #   variant_diff = torch.clamp(variant_diff, max=0.0)
     # variant_logit = torch.sum(self.sigma(variant_diff), dim=-1)
@@ -1183,6 +1206,8 @@ class FitnessHead(nn.Module):
         label_ref, 'b n -> b () n')
     variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
     variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    logger.debug('FitnessHead.logit: %s', str(variant_logit))
+    logger.debug('FitnessHead.label: %s', str(variant_label))
     errors = F.binary_cross_entropy_with_logits(variant_logit,
                                                 variant_label,
                                                 reduction='none')
