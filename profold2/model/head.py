@@ -17,11 +17,16 @@ logger = logging.getLogger(__name__)
 
 def clipped_sigmoid_cross_entropy(logits,
                                   labels,
-                                  clip_negative_at_logit,
-                                  clip_positive_at_logit,
+                                  alpha=1.0,
+                                  gammar=0,
                                   epsilon=1e-7):
-  loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='none')
-  return loss
+  prob = torch.sigmoid(logits)
+  prob = torch.clamp(prob, min=epsilon, max=1. - epsilon)
+  if gammar > 0:  # focal loss enabled.
+    return  -alpha * labels * ((1. - prob)**gammar) * torch.log(
+        prob) - (1. - labels) * (prob ** gammar) * torch.log(1. - prob)
+  return -alpha * labels * torch.log(
+      prob) - (1. - labels) * torch.log(1. - prob)
 
 def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
   """Computes softmax cross entropy given logits and one-hot class labels."""
@@ -1098,7 +1103,13 @@ class FitnessHead(nn.Module):
   """Head to predict fitness.
     """
 
-  def __init__(self, dim, mask='-', num_var_as_ref=0, shard_size=2048):
+  def __init__(self,
+               dim,
+               mask='-',
+               num_var_as_ref=0,
+               pos_weight=1.,
+               focal_loss=0.,
+               shard_size=2048):
     super().__init__()
     del dim
 
@@ -1107,6 +1118,8 @@ class FitnessHead(nn.Module):
 
     assert num_var_as_ref >= 0
     self.num_var_as_ref = num_var_as_ref
+    self.pos_weight = pos_weight
+    self.focal_loss = focal_loss
     self.shard_size = shard_size
 
   def forward(self, headers, representations, batch):
@@ -1198,6 +1211,12 @@ class FitnessHead(nn.Module):
       mask_ref = variant_mask[:, :1, ...]
       label_ref = variant_label[:, :1, ...]
 
+    # variant_weight = None
+    # if exists(self.pos_weight):
+    #   weight_delta = (self.pos_weight - 1) * variant_label
+    #   variant_weight = repeat(
+    #                       torch.ones_like(variant_label) + weight_delta,
+    #                       'b m -> b m n', n=label_ref.shape[1])
     variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
         logits_ref, 'b n i -> b () n i')
     variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
@@ -1208,9 +1227,15 @@ class FitnessHead(nn.Module):
     variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
-    errors = F.binary_cross_entropy_with_logits(variant_logit,
-                                                variant_label,
-                                                reduction='none')
+    # errors = F.binary_cross_entropy_with_logits(variant_logit,
+    #                                             variant_label,
+    #                                             weight=variant_weight,
+    #                                             reduction='none')
+    with autocast(enabled=False):
+      errors = clipped_sigmoid_cross_entropy(variant_logit.float(),
+                                             variant_label.float(),
+                                             alpha=self.pos_weight,
+                                             gammar=self.focal_loss)
     variant_mask = torch.sum(variant_mask, dim=-1) > 0
     avg_error = functional.masked_mean(value=errors, mask=variant_mask)
     logger.debug('FitnessHead.loss: %s', avg_error)
