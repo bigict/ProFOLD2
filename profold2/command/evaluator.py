@@ -84,6 +84,9 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       if 'variant_label' in batch:
         logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
                      batch['variant_label'].tolist())
+      if 'variant_pid' in batch:
+        logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
+                     batch['variant_pid'])
     if 'metric' in r.headers:
       metrics = r.headers['metric']['loss']
       if 'contact' in metrics:
