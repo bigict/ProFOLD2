@@ -618,6 +618,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def __init__(self,
                data_dir,
                data_idx=None,
+               attr_idx=None,
                data_crop_fn=None,
                max_msa_depth=128,
                max_var_depth=1024,
@@ -685,8 +686,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             self.chain_list[chains[0]] = [chains[1:]]
 
     self.attr_list = {}
-    if self._fstat('attr.idx'):
-      with self._fileobj('attr.idx') as f:
+    attr_idx = default(attr_idx, 'attr.idx')
+    if self._fstat(attr_idx):
+      logger.info('load attr data from: %s', attr_idx)
+      with self._fileobj(attr_idx) as f:
         for line in filter(lambda x: len(x) > 0,
                            map(lambda x: self._ftext(x).strip(), f)):
           k, v = line.split(maxsplit=1)
@@ -877,6 +880,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         yield f
 
   def _fstat(self, filename):
+    if os.path.isabs(filename):
+      return os.path.exists(filename)
     if isinstance(self.data_dir, zipfile.ZipFile):
       try:
         self.data_dir.getinfo(filename)
@@ -1054,10 +1059,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       del ret['var']
 
       def _is_aligned(k, chain_list):
-        for c, *_ in chain_list:
-          x = self.get_chain_list(compose_pid(k, c))
-          if exists(x) and len(x) == len(chain_list):
-            return True
+        if k in self.attr_list:
+          for c, *_ in chain_list:
+            x = self.get_chain_list(compose_pid(k, c))
+            if exists(x) and len(x) == len(chain_list):
+              return True
         return False
 
       # filter complex with all chains aligned
@@ -1502,6 +1508,8 @@ def load(data_dir,
       'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
   max_var_depth = kwargs.pop(
       'max_var_depth') if 'max_var_depth' in kwargs else 1024
+  attr_idx = kwargs.pop(
+      'attr_idx') if 'attr_idx' in kwargs else None
 
   data_dir = data_dir.split(',')
   if exists(data_idx):
@@ -1509,6 +1517,11 @@ def load(data_dir,
   else:
     data_idx = [None] * len(data_dir)
   assert len(data_dir) == len(data_idx)
+  if exists(attr_idx):
+    attr_idx = attr_idx.split(',')
+  else:
+    attr_idx = [None] * len(data_dir)
+  assert len(data_dir) == len(attr_idx)
 
   if 'data_crop_fn' not in kwargs:
     crop_fn_kwargs = {}
@@ -1529,6 +1542,7 @@ def load(data_dir,
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
+                              attr_idx=attr_idx[i],
                               data_crop_fn=data_crop_fn,
                               pseudo_linker_prob=pseudo_linker_prob,
                               data_rm_mask_prob=data_rm_mask_prob,

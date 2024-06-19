@@ -36,6 +36,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = dataset.load(
       data_dir=args.eval_data,
       data_idx=args.eval_idx,
+      attr_idx=args.eval_attr,
       pseudo_linker_prob=args.pseudo_linker_prob,
       max_msa_depth=args.max_msa_size,
       max_var_depth=args.max_var_size,
@@ -167,8 +168,10 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
   parser.add_argument('--eval_data', type=str, default=None,
       help='eval dataset.')
-  parser.add_argument('--eval_idx', type=str, default='name.idx',
+  parser.add_argument('--eval_idx', type=str, default=None,
       help='eval dataset idx.')
+  parser.add_argument('--eval_attr', type=str, default=None,
+      help='eval dataset attr idx.')
   parser.add_argument('--eval_without_pdb', action='store_true',
       help='DO NOT load pdb data.')
   parser.add_argument('--min_protein_len', type=int, default=0,
