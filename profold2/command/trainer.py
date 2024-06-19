@@ -87,6 +87,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   def create_cycling_data(data_dir,
                           weights=None,
                           data_idx='name.idx',
+                          attr_idx='attr.idx',
                           pseudo_linker_prob=0.0,
                           crop_probability=0.0,
                           data_msa_as_seq_prob=0.0,
@@ -98,6 +99,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
+        attr_idx=attr_idx,
         pseudo_linker_prob=pseudo_linker_prob,
         data_rm_mask_prob=args.data_rm_mask_prob,
         msa_as_seq_prob=data_msa_as_seq_prob,
@@ -126,6 +128,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   train_data = create_cycling_data(
       args.train_data,
       data_idx=args.train_idx,
+      attr_idx=args.train_attr,
       weights=args.train_data_weights,
       pseudo_linker_prob=args.train_pseudo_linker_prob,
       crop_probability=args.train_crop_probability,
@@ -138,6 +141,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     tuning_data = create_cycling_data(
         args.tuning_data,
         data_idx=args.tuning_idx,
+        attr_idx=args.tuning_attr,
         weights=args.tuning_data_weights,
         pseudo_linker_prob=args.tuning_pseudo_linker_prob,
         crop_probability=args.tuning_crop_probability,
@@ -151,6 +155,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     eval_loader = dataset.load(
         data_dir=args.eval_data,
         data_idx=args.eval_idx,
+        attr_idx=args.eval_attr,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
@@ -387,20 +392,26 @@ setattr(train, 'preprocess', preprocess)
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('-t', '--train_data', type=str, default='train.zip',
       help='train dataset dir.')
-  parser.add_argument('--train_idx', type=str, default='name.idx',
+  parser.add_argument('--train_idx', type=str, default=None,
       help='train dataset idx.')
+  parser.add_argument('--train_attr', type=str, default=None,
+      help='train dataset attr idx.')
   parser.add_argument('--train_data_weights', type=str, default=None,
       help='sample train data by weights.')
   parser.add_argument('-n', '--num_batches', type=int, default=100000,
       help='number of batches.')
   parser.add_argument('-e', '--eval_data', type=str, default=None,
       help='eval dataset dir.')
-  parser.add_argument('--eval_idx', type=str, default='name.idx',
+  parser.add_argument('--eval_idx', type=str, default=None,
       help='eval dataset idx.')
+  parser.add_argument('--eval_attr', type=str, default=None,
+      help='eval dataset attr idx.')
   parser.add_argument('--tuning_data', type=str, default=None,
       help='eval dataset dir.')
-  parser.add_argument('--tuning_idx', type=str, default='name.idx',
+  parser.add_argument('--tuning_idx', type=str, default=None,
       help='tuning dataset idx.')
+  parser.add_argument('--tuning_attr', type=str, default=None,
+      help='tuning dataset attr idx.')
   parser.add_argument('--tuning_data_weights', type=str, default=None,
       help='sample tuning data by weights.')
   parser.add_argument('--tuning_with_coords', action='store_true',
