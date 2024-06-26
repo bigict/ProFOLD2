@@ -186,6 +186,7 @@ class CoevolutionHead(nn.Module):
 
   def __init__(self,
                dim,
+               gating=False,
                mask='-',
                alpha=0.0,
                beta=0.0,
@@ -205,6 +206,12 @@ class CoevolutionHead(nn.Module):
     self.pairwize = nn.Sequential(nn.LayerNorm(dim_pairwise),
                                   nn.Linear(dim_pairwise, num_class**2),
                                   nn.ReLU())
+    self.gating = nn.Sequential(nn.LayerNorm(dim_pairwise),
+                                nn.Linear(dim_pairwise, 1),
+                                nn.Sigmoid()) if gating else None
+    if exists(self.gating):
+      nn.init.constant_(self.gating[1].weight, 0.)
+      nn.init.constant_(self.gating[1].bias, 6.907)
     self.mask = mask
 
     self.alpha = alpha
@@ -230,14 +237,15 @@ class CoevolutionHead(nn.Module):
     num_class = len(residue_constants.restypes_with_x_and_gap)
 
     si, zij = representations['single'], representations['pair']
+    zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
                              self.mask,
                              device=si.device)
 
-    ei = self.single(si)
-    eij = self.pairwize(
-        (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+    ei, eij = self.single(si), self.pairwize(zij)
 
+    if exists(self.gating):
+      eij = self.gating(zij) * eij
     eij = eij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
                           'i j -> i j ()')  # eii = 0
 
