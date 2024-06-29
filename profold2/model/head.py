@@ -1114,6 +1114,7 @@ class FitnessHead(nn.Module):
   def __init__(self,
                dim,
                mask='-',
+               alpha=None,
                num_var_as_ref=0,
                pos_weight=1.,
                focal_loss=0.,
@@ -1122,32 +1123,31 @@ class FitnessHead(nn.Module):
     del dim
 
     self.sigma = nn.Linear(1, 1, bias=False)
-    self.mask = mask
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
+                             mask)
+    self.register_buffer('mask', m, persistent=False)
 
     assert num_var_as_ref >= 0
     self.num_var_as_ref = num_var_as_ref
     self.pos_weight = pos_weight
+    self.alpha = alpha
     self.focal_loss = focal_loss
     self.shard_size = shard_size
 
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
     eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
+    num_class = self.mask.shape[0]
 
-    num_class = len(residue_constants.restypes_with_x_and_gap)
-    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                             self.mask,
-                             device=ei.device)
-
-    def _hamilton(variant):
-      variant = F.one_hot(variant.long(), num_class)
+    def _hamiton(variant):
       hi = torch.einsum(
           'b m j d,b i j c d,d -> b m i c',
           variant.float(),
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-          m)
+          self.mask)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
-      logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
+      # logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
       return logits
 
     if 'variant' in batch:
@@ -1157,32 +1157,49 @@ class FitnessHead(nn.Module):
       assert 'seq' in batch
       variant = rearrange(batch['seq'], 'b i -> b () i')
       variant_mask = rearrange(batch['mask'], 'b i -> b () i')
-    logits = functional.sharded_apply(
-        _hamilton, [variant],
+
+    variant = F.one_hot(variant.long(), num_class)
+    motifs = functional.sharded_apply(
+        _hamiton, [variant],
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
         cat_dim=1)
-    # variant = F.one_hot(variant.long(), num_class)
     # hi = torch.einsum(
     #     'b m j d,b i j c d,d -> b m i c',
     #     variant.float(),
     #     rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
     #     m)
     # logits = rearrange(ei, 'b i c -> b () i c') + hi
-    # logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
+    logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
     logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
     variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
                               dim=-1)
     # if self.training:
     #   variant_diff = torch.clamp(variant_diff, max=0.0)
     # variant_logit = torch.sum(self.sigma(variant_diff), dim=-1)
-    return dict(logits=logits, variant_logit=variant_logit)
+    return dict(motifs=motifs, logits=logits, variant_logit=variant_logit)
 
   def loss(self, value, batch):
     logits, logits_ref = value['logits'], None
+    num_class = self.mask.shape[0]
+    avg_error_motif = 0
+
     if 'variant' in batch:
       variant_mask = batch['variant_mask']
       variant_label = batch['variant_label']
+
+      if exists(self.alpha) and self.alpha > 0:
+        motifs = value['motifs']
+        labels = F.one_hot(batch['variant'].long(), num_class)
+
+        errors = softmax_cross_entropy(labels=labels,
+                                       logits=motifs,
+                                       mask=self.mask,
+                                       gammar=self.focal_loss)
+        motif_mask = (variant_label[..., None] > 0) * variant_mask
+        avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
+        logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
+        avg_error_motif = self.alpha * avg_error_motif
 
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
@@ -1245,9 +1262,9 @@ class FitnessHead(nn.Module):
                                              alpha=self.pos_weight,
                                              gammar=self.focal_loss)
     variant_mask = torch.sum(variant_mask, dim=-1) > 0
-    avg_error = functional.masked_mean(value=errors, mask=variant_mask)
-    logger.debug('FitnessHead.loss: %s', avg_error)
-    return dict(loss=avg_error)
+    avg_error_fitness = functional.masked_mean(value=errors, mask=variant_mask)
+    logger.debug('FitnessHead.loss: %s', avg_error_fitness)
+    return dict(loss=avg_error_motif + avg_error_fitness)
 
 
 class SequenceProfileHead(nn.Module):

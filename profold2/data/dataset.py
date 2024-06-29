@@ -1092,16 +1092,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant_pid'].append(var_pid)
       ret['num_var'] = len(ret['variant'])
 
-      data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label']))
+      data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label'], ret['variant_pid']))
       if exists(self.max_var_depth) and self.max_var_depth < len(ret['variant']):
         if self.max_var_depth > 1:
           new_order = np.random.choice(len(data) - 1,
                                        size=self.max_var_depth - 1,
                                        replace=False)
           data = data[:1] + [data[i + 1] for i in new_order]
-          ret['variant_pid'] = ret['variant_pid'][:1] + [ret['variant_pid'][i + 1] for i in new_order]
+      data.sort(key=lambda x: x[2], reverse=True)
       for idx, field in enumerate(('variant', 'variant_mask', 'variant_label')):
         ret[field] = torch.stack([item[idx] for item in data], dim=0)
+      ret['variant_pid'] = [item[3] for item in data]
 
     if exists(self.data_crop_fn):
       clip = self.data_crop_fn(ret)
@@ -1261,7 +1262,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if exists(self.attr_list):
         ret['variant_label'] = torch.as_tensor(_make_label_features(
             ret['desc_var'], self.attr_list),
-                                              dtype=torch.float32)
+                                               dtype=torch.float32)
       return ret
     return {}
 
@@ -1374,7 +1375,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       padded_vars = pad_for_batch(variants, max_batch_len, 'msa')
       variant_msks = pad_for_batch(variant_msks, max_batch_len, 'msa_mask')
       variant_labels = pad_for_batch(variant_labels, max_batch_len,
-                                    'msa_row_mask')
+                                     'msa_row_mask')
       # padded_dels = pad_for_batch(del_vars, max_batch_len, 'del_msa')
       ret.update(variant=padded_vars,
                  variant_mask=variant_msks,
@@ -1508,8 +1509,7 @@ def load(data_dir,
       'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
   max_var_depth = kwargs.pop(
       'max_var_depth') if 'max_var_depth' in kwargs else 1024
-  attr_idx = kwargs.pop(
-      'attr_idx') if 'attr_idx' in kwargs else None
+  attr_idx = kwargs.pop('attr_idx') if 'attr_idx' in kwargs else None
 
   data_dir = data_dir.split(',')
   if exists(data_idx):
