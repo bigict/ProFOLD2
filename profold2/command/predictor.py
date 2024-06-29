@@ -72,6 +72,7 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
         data_dir=args.data_dir,
         data_idx=args.data_idx,
         pseudo_linker_prob=1.0 if args.add_pseudo_linker else 0.0,
+        pseudo_linker_shuffle=False,
         max_msa_depth=args.max_msa_size,
         num_workers=args.num_workers, **kwargs)
 
