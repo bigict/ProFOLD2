@@ -1092,17 +1092,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant_pid'].append(var_pid)
       ret['num_var'] = len(ret['variant'])
 
-      data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label'], ret['variant_pid']))
+      data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label']))
       if exists(self.max_var_depth) and self.max_var_depth < len(ret['variant']):
         if self.max_var_depth > 1:
           new_order = np.random.choice(len(data) - 1,
                                        size=self.max_var_depth - 1,
                                        replace=False)
           data = data[:1] + [data[i + 1] for i in new_order]
-      data.sort(key=lambda x: x[2], reverse=True)
+          ret['variant_pid'] = ret['variant_pid'][:1] + [ret['variant_pid'][i + 1] for i in new_order]
       for idx, field in enumerate(('variant', 'variant_mask', 'variant_label')):
         ret[field] = torch.stack([item[idx] for item in data], dim=0)
-      ret['variant_pid'] = [item[3] for item in data]
 
     if exists(self.data_crop_fn):
       clip = self.data_crop_fn(ret)
@@ -1487,6 +1486,7 @@ def pad_for_batch(items, batch_length, dtype):
 def load(data_dir,
          data_idx=None,
          pseudo_linker_prob=0.0,
+         pseudo_linker_shuffle=True,
          data_rm_mask_prob=0.0,
          msa_as_seq_prob=0.0,
          min_crop_len=None,
@@ -1545,6 +1545,7 @@ def load(data_dir,
                               attr_idx=attr_idx[i],
                               data_crop_fn=data_crop_fn,
                               pseudo_linker_prob=pseudo_linker_prob,
+                              pseudo_linker_shuffle=pseudo_linker_shuffle,
                               data_rm_mask_prob=data_rm_mask_prob,
                               msa_as_seq_prob=msa_as_seq_prob,
                               msa_as_seq_topn=msa_as_seq_topn,

@@ -212,7 +212,8 @@ class CoevolutionHead(nn.Module):
     if exists(self.gating):
       nn.init.constant_(self.gating[1].weight, 0.)
       nn.init.constant_(self.gating[1].bias, 6.907)
-    self.mask = mask
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
+    self.register_buffer('mask', m, persistent=False)
 
     self.alpha = alpha
     self.beta = beta
@@ -234,13 +235,10 @@ class CoevolutionHead(nn.Module):
          Dictionary containing:
            * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
         """
-    num_class = len(residue_constants.restypes_with_x_and_gap)
+    num_class = self.mask.shape[0]
 
     si, zij = representations['single'], representations['pair']
     zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
-    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                             self.mask,
-                             device=si.device)
 
     ei, eij = self.single(si), self.pairwize(zij)
 
@@ -256,14 +254,14 @@ class CoevolutionHead(nn.Module):
           'b m j d,b i j c d,d -> b m i c',
           F.one_hot(batch['msa'].long(), num_class).float(),
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-          m)
+          self.mask)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
       ret.update(logits=logits)
     return ret
 
   def loss(self, value, batch):
     """Log loss of a msa rebuilding."""
-    num_class = len(residue_constants.restypes_with_x_and_gap)
+    num_class = self.mask.shape[0]
 
     logits = value['logits']
     labels = F.one_hot(batch['msa'].long(), num_class)
@@ -272,16 +270,12 @@ class CoevolutionHead(nn.Module):
 
     assert len(logits.shape) == 4
     assert 'msa' in batch
-    label_mask = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                                      self.mask,
-                                      device=logits.device)
-
     errors = softmax_cross_entropy(labels=labels,
                                    logits=logits,
-                                   mask=label_mask,
+                                   mask=self.mask,
                                    gammar=self.focal_loss)
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
-                        labels.float(), label_mask)
+                        labels.float(), self.mask)
     if 'msa_row_mask' in batch:
       mask = torch.einsum('b m i,b m -> b m i', mask, batch['msa_row_mask'])
 
@@ -1124,8 +1118,7 @@ class FitnessHead(nn.Module):
 
     self.sigma = nn.Linear(1, 1, bias=False)
     num_class = len(residue_constants.restypes_with_x_and_gap)
-    m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                             mask)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
 
     assert num_var_as_ref >= 0
@@ -1164,19 +1157,10 @@ class FitnessHead(nn.Module):
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
         cat_dim=1)
-    # hi = torch.einsum(
-    #     'b m j d,b i j c d,d -> b m i c',
-    #     variant.float(),
-    #     rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-    #     m)
-    # logits = rearrange(ei, 'b i c -> b () i c') + hi
     logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
     logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
     variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
                               dim=-1)
-    # if self.training:
-    #   variant_diff = torch.clamp(variant_diff, max=0.0)
-    # variant_logit = torch.sum(self.sigma(variant_diff), dim=-1)
     return dict(motifs=motifs, logits=logits, variant_logit=variant_logit)
 
   def loss(self, value, batch):
@@ -1189,13 +1173,15 @@ class FitnessHead(nn.Module):
       variant_label = batch['variant_label']
 
       if exists(self.alpha) and self.alpha > 0:
+        # predict motifs
         motifs = value['motifs']
         labels = F.one_hot(batch['variant'].long(), num_class)
 
-        errors = softmax_cross_entropy(labels=labels,
-                                       logits=motifs,
-                                       mask=self.mask,
-                                       gammar=self.focal_loss)
+        with autocast(enabled=False):
+          errors = softmax_cross_entropy(labels=labels,
+                                         logits=motifs,
+                                         mask=self.mask,
+                                         gammar=self.focal_loss)
         motif_mask = (variant_label[..., None] > 0) * variant_mask
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
@@ -1236,12 +1222,7 @@ class FitnessHead(nn.Module):
       mask_ref = variant_mask[:, :1, ...]
       label_ref = variant_label[:, :1, ...]
 
-    # variant_weight = None
-    # if exists(self.pos_weight):
-    #   weight_delta = (self.pos_weight - 1) * variant_label
-    #   variant_weight = repeat(
-    #                       torch.ones_like(variant_label) + weight_delta,
-    #                       'b m -> b m n', n=label_ref.shape[1])
+    # pairwise logistic loss
     variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
         logits_ref, 'b n i -> b () n i')
     variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
@@ -1252,10 +1233,6 @@ class FitnessHead(nn.Module):
     variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
-    # errors = F.binary_cross_entropy_with_logits(variant_logit,
-    #                                             variant_label,
-    #                                             weight=variant_weight,
-    #                                             reduction='none')
     with autocast(enabled=False):
       errors = clipped_sigmoid_cross_entropy(variant_logit.float(),
                                              variant_label.float(),
