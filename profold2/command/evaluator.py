@@ -6,6 +6,7 @@
 """
 import os
 import logging
+import pickle
 
 import torch
 from einops import rearrange
@@ -82,12 +83,25 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       fitness = torch.sigmoid(r.headers['fitness']['variant_logit'])
       logging.info('no: %d pid: %s, fitness: pred=%s', idx, fasta_name,
                    fitness.tolist())
+      dump_pkl = {'variant_pred': fitness}
+      if 'motifs' in r.headers['fitness']:
+        dump_pkl['motifs'] = r.headers['fitness']['motifs'].cpu().numpy()
+        # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
+        #              r.headers['fitness']['motifs'].tolist())
+      if 'seq_color' in batch:
+        dump_pkl['color'] = batch['seq_color'].cpu().numpy()
+        # logging.info('no: %d pid: %s, fitness: color=%s', idx, fasta_name,
+        #              batch['seq_color'].tolist())
       if 'variant_label' in batch:
+        dump_pkl['label'] = batch['variant_label'].cpu().numpy()
         logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
                      batch['variant_label'].tolist())
       if 'variant_pid' in batch:
+        dump_pkl['pid'] = batch['variant_pid']
         logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
                      batch['variant_pid'])
+      with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
+        pickle.dump(dump_pkl, f)
     if 'metric' in r.headers:
       metrics = r.headers['metric']['loss']
       if 'contact' in metrics:
