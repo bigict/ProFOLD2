@@ -187,7 +187,7 @@ class CoevolutionHead(nn.Module):
 
   def __init__(self,
                dim,
-               gating=False,
+               gating=True,
                mask='-',
                alpha=0.0,
                beta=0.0,
@@ -197,6 +197,7 @@ class CoevolutionHead(nn.Module):
                loss_min=None,
                loss_max=None):
     super().__init__()
+    del gating, alpha, beta, gammar  # Deprecated
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -204,21 +205,17 @@ class CoevolutionHead(nn.Module):
                                 nn.GELU(),
                                 nn.LayerNorm(dim_single),
                                 nn.Linear(dim_single, num_class))
-    self.pairwize = nn.Sequential(nn.LayerNorm(dim_pairwise),
-                                  nn.Linear(dim_pairwise, num_class**2),
-                                  nn.ReLU())
+    self.pairwise = nn.Parameter(torch.randn(num_class, num_class))
     self.gating = nn.Sequential(nn.LayerNorm(dim_pairwise),
                                 nn.Linear(dim_pairwise, 1),
-                                nn.Sigmoid()) if gating else None
+                                nn.Flatten(start_dim=-2, end_dim=-1),
+                                nn.Sigmoid())
     if exists(self.gating):
       nn.init.constant_(self.gating[1].weight, 0.)
-      nn.init.constant_(self.gating[1].bias, 6.907)
+      nn.init.constant_(self.gating[1].bias, 1.)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
 
-    self.alpha = alpha
-    self.beta = beta
-    self.gammar = gammar
     self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
@@ -241,21 +238,16 @@ class CoevolutionHead(nn.Module):
     si, zij = representations['single'], representations['pair']
     zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
 
-    ei, eij = self.single(si), self.pairwize(zij)
+    ei, eij = self.single(si), self.gating(zij)
 
-    if exists(self.gating):
-      eij = self.gating(zij) * eij
-    eij = eij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
-                          'i j -> i j ()')  # eii = 0
+    eij = eij * (1 - torch.eye(zij.shape[-2], device=zij.device))  # eii = 0
 
-    ret = dict(wij=eij, bi=ei)
+    ret = dict(wij=eij, bi=ei, wab=self.pairwise)
     if self.training or 'msa' in batch:
       assert 'msa' in batch
-      hi = torch.einsum(
-          'b m j d,b i j c d,d -> b m i c',
-          F.one_hot(batch['msa'].long(), num_class).float(),
-          rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-          self.mask)
+      hi = torch.einsum('b m j d,b i j,c d,d -> b m i c',
+                        F.one_hot(batch['msa'].long(), num_class).float(),
+                        eij, self.pairwise, self.mask)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
       ret.update(logits=logits, mask=self.mask)
     return ret
@@ -283,45 +275,6 @@ class CoevolutionHead(nn.Module):
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
     logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error)
-
-    def _make_dynamic_regularization(w):
-      if isinstance(w, float) and w > 0:
-        b, device = value['wij'].shape[0], value['wij'].device
-        return torch.full((b,), w, device=device)
-      elif isinstance(w, list):
-        assert 'num_msa' in batch
-        min_w, max_w = w
-        num_msa = torch.clamp(batch['num_msa'], max=self.num_pivot)
-        return max_w + (min_w - max_w) * num_msa / self.num_pivot
-      return None
-
-    square_mask = (rearrange(batch['mask'], '... i -> ... i ()') *
-                   rearrange(batch['mask'], '... j -> ... () j'))
-    # L1 regularization
-    alpha = _make_dynamic_regularization(self.alpha)
-    if exists(alpha):
-      r1 = torch.sum(torch.abs(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L1(%s): %s', alpha, torch.mean(r1))
-      avg_error += torch.mean(alpha[..., None, None] * r1)
-
-    # L2 regularization
-    beta = _make_dynamic_regularization(self.beta)
-    if exists(beta):
-      r2 = torch.sum(torch.square(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L2(%s): %s', beta, torch.mean(r2))
-      avg_error += torch.mean(beta[..., None, None] * r2)
-
-    # LH regularization
-    if self.gammar > 0:
-      epsilon = 1e-10
-      M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
-      p = torch.sum(M, dim=-1)
-      rlh = torch.sum(
-          torch.square(
-              torch.einsum('... i, ... i j, ... j', p, M, p) /
-              (torch.einsum('... i,... i', p, p) + epsilon)))
-      logger.debug('CoevolutionHead.loss.LH: %s', rlh)
-      avg_error += 0.5 * self.gammar * rlh
 
     if exists(self.loss_min) or exists(self.loss_max):
       avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
@@ -1139,15 +1092,13 @@ class FitnessHead(nn.Module):
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
     eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
+    wab = headers['coevolution']['wab']
     num_class = self.mask.shape[0]
 
     def _hamiton_run(variant):
       variant = F.one_hot(variant.long(), num_class)
-      hi = torch.einsum(
-          'b m j d,b i j c d,d -> b m i c',
-          variant.float(),
-          rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-          self.mask)
+      hi = torch.einsum('b m j d,b i j,c d,d -> b m i c',
+                        variant.float(), eij, wab, self.mask)
       motifs = rearrange(ei, 'b i c -> b () i c') + hi
       logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
       logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
