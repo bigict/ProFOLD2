@@ -108,8 +108,8 @@ def _plddt_mean(args, feat, data, idx):  # pylint: disable=redefined-outer-name
   with timing(f'process {idx} {pid}', logger.info):
     prot = feat(prot)
     if 'plddt_mean' in prot:
-      return pid, prot['plddt_mean']
-    return pid, None
+      return pid, prot['plddt_mean'], len(prot['str_seq'])
+    return pid, None, len(prot['str_seq'])
 
 
 def plddt(data, args):  # pylint: disable=redefined-outer-name
@@ -124,10 +124,10 @@ def plddt(data, args):  # pylint: disable=redefined-outer-name
           f.write(f'plddt\t{pid}\t{score.item()}\n')
     else:
       with mp.Pool(args.num_workers) as p:
-        for pid, score in p.imap_unordered(
+        for pid, score, seq_len in p.imap_unordered(
             work_fn, range(len(data)), chunksize=args.chunksize):
           if exists(score):
-            f.write(f'plddt\t{pid}\t{score.item()}\n')
+            f.write(f'plddt\t{pid}\t{score.item()}\t{seq_len}\n')
 
 
 def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
