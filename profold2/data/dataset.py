@@ -306,7 +306,7 @@ def _protein_clips_fn(protein,
       if new_order and i + 1 == new_order[0]:
         window = 1
       else:
-        window = min_len
+        window = min(j, min_len)
 
       new_order = list(range(max(0, i - window), i)) + new_order
       i, j = i - window + 1, j - window
