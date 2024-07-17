@@ -1,3 +1,4 @@
+import os
 import sys
 import logging
 
@@ -1127,21 +1128,36 @@ class FitnessHead(nn.Module):
     self.alpha = alpha
     self.focal_loss = focal_loss
     self.shard_size = shard_size
+    if 'profold2_fitness_shard_size' in os.environ:
+      self.shard_size = int(os.environ['profold2_fitness_shard_size'])
+    self.return_motifs = True
+    if 'profold2_fitness_return_motifs' in os.environ:
+      self.return_motifs = bool(os.environ['profold2_fitness_return_motifs'])
 
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
     eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
     num_class = self.mask.shape[0]
 
-    def _hamiton(variant):
+    def _hamiton_run(variant):
+      variant = F.one_hot(variant.long(), num_class)
       hi = torch.einsum(
           'b m j d,b i j c d,d -> b m i c',
           variant.float(),
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
           self.mask)
-      logits = rearrange(ei, 'b i c -> b () i c') + hi
-      # logits = torch.einsum('b m i c,b m i c -> b m i', logits, variant.float())
-      return logits
+      motifs = rearrange(ei, 'b i c -> b () i c') + hi
+      logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
+      logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+      if self.return_motifs:
+        return motifs, logits
+      return None, logits
+
+    def _hamiton_cat(logits):
+      motifs, logits = zip(*logits)
+      motifs = torch.cat(motifs, dim=1) if self.return_motifs else None
+      logits = torch.cat(logits, dim=1)
+      return motifs, logits
 
     if 'variant' in batch:
       variant = batch['variant']
@@ -1151,17 +1167,18 @@ class FitnessHead(nn.Module):
       variant = rearrange(batch['seq'], 'b i -> b () i')
       variant_mask = rearrange(batch['mask'], 'b i -> b () i')
 
-    variant = F.one_hot(variant.long(), num_class)
-    motifs = functional.sharded_apply(
-        _hamiton, [variant],
+    motifs, logits = functional.sharded_apply(
+        _hamiton_run, [variant],
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
-        cat_dim=1)
-    logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
-    logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+        cat_dim=_hamiton_cat)
     variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
                               dim=-1)
-    return dict(motifs=motifs, logits=logits, variant_logit=variant_logit)
+
+    r = dict(logits=logits, variant_logit=variant_logit)
+    if exists(motifs):
+      r.update(motifs=motifs)
+    return r
 
   def loss(self, value, batch):
     logits, logits_ref = value['logits'], None
