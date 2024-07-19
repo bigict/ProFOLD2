@@ -70,7 +70,7 @@ def autocast_ctx(cond):
     ctx = functools.partial(autocast, dtype=dtype)
     # FIXED ME: cache_enabled=True will crash :(
     if version_cmp(torch.__version__, '1.10.0') >= 0:
-      ctx = functools.partial(autocast, cache_enabled=False)
+      ctx = functools.partial(ctx, cache_enabled=False)
     with ctx():
       yield
   else:
@@ -201,7 +201,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   if exists(args.model_params_requires_grad):
     params_requires_grad_pattern = re.compile(args.model_params_requires_grad)
     for name, param in model.named_parameters():
-      if params_requires_grad_pattern.match(name):
+      if not params_requires_grad_pattern.match(name):
         param.requires_grad = False
       else:
         logging.info('name: %s, param: %s', name, param)
