@@ -1095,9 +1095,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label']))
       if exists(self.max_var_depth) and self.max_var_depth < len(ret['variant']):
         if self.max_var_depth > 1:
+          def _variant_w(var_pid, defval=1.0):
+            if var_pid in self.attr_list:
+              return self.attr_list[var_pid].get('weight', defval)
+            return defval
+          w = np.asarray([_variant_w(var_pid) for var_pid in ret['variant_pid'][1:]])
+          w /= (np.sum(w) + 1e-8)
           new_order = np.random.choice(len(data) - 1,
                                        size=self.max_var_depth - 1,
-                                       replace=False)
+                                       replace=False,
+                                       p=w)
           data = data[:1] + [data[i + 1] for i in new_order]
           ret['variant_pid'] = ret['variant_pid'][:1] + [ret['variant_pid'][i + 1] for i in new_order]
       for idx, field in enumerate(('variant', 'variant_mask', 'variant_label')):
