@@ -57,10 +57,10 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
     return x
   return F.dropout(x, p=p, training=training)
 
-def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0):
+def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
   assert kernel.is_available()
-  dtype_from, dtype_to = q.dtype, torch.float16
-  if hasattr(torch.cuda, 'is_bf16_supported'):
+  dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
+  if not exists(dtype) and hasattr(torch.cuda, 'is_bf16_supported'):
     if torch.cuda.is_bf16_supported():
       dtype_to = torch.bfloat16
   q, k, v = map(
@@ -267,7 +267,13 @@ class AxialAttention(nn.Module):
         nn.Linear(dim_edge, heads, bias=False if accept_edge_norm else True),
         Rearrange('... i j h -> ... h i j')) if accept_edges else None
     accept_kernel_fn = int(os.environ.get('AxialAttention_accept_kernel_fn', 0))
-    self.attn_fn = evoformer_attn if accept_kernel_fn else None
+    accept_kernel_dtype = os.environ.get('AxialAttention_accept_kernel_dtype')
+    if accept_kernel_dtype in ('float16', 'f16'):
+      accept_kernel_dtype = torch.float16
+    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
+      accept_kernel_dtype = torch.bfloat16
+    self.attn_fn = functools.partial(
+        evoformer_attn, dtype=accept_kernel_dtype) if accept_kernel_fn else None
 
   def forward(self, x, edges=None, mask=None, shard_size=None):
     assert self.row_attn ^ self.col_attn, 'has to be either row or column attention, but not both'  # pylint: disable=line-too-long
