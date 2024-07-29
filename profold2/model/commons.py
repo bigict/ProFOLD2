@@ -11,8 +11,8 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from profold2.model import functional, profiler
-from profold2.utils import default, exists, torch_allow_tf32
+from profold2.model import functional, kernel, profiler
+from profold2.utils import default, exists, torch_allow_tf32, version_cmp
 
 
 # helpers
@@ -56,6 +56,23 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
       return m * x / (1 - p)
     return x
   return F.dropout(x, p=p, training=training)
+
+def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0):
+  assert kernel.is_available()
+  dtype_from, dtype_to = q.dtype, torch.float16
+  if hasattr(torch.cuda, 'is_bf16_supported'):
+    if torch.cuda.is_bf16_supported():
+      dtype_to = torch.bfloat16
+  q, k, v = map(
+      lambda t: rearrange(t.to(dtype=dtype_to), '... h i d -> ... i h d'),
+      (q, k, v))
+  mask, attn_bias = attn_mask
+  if exists(mask):
+    mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
+  if exists(attn_bias):
+    attn_bias = attn_bias.to(dtype=dtype_to)
+  o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
+  return rearrange(o.to(dtype=dtype_to), '... i h d -> ... h i d')
 
 # helper classes
 class Always(nn.Module):
@@ -131,7 +148,8 @@ class Attention(nn.Module):
               mask=None,
               attn_bias=None,
               context=None,
-              context_mask=None):
+              context_mask=None,
+              attn_fn=None):
     device, h, d = x.device, self.heads, self.dim_head
 
     m = default(context, x)
@@ -170,7 +188,10 @@ class Attention(nn.Module):
       assert attn_mask.dtype == torch.bool
 
     # pytorch 2.0+
-    if hasattr(F, 'scaled_dot_product_attention') and (
+    if exists(attn_fn):
+      dropout_p = self.dropout.p if self.training else 0.0
+      out = attn_fn(q, k, v, attn_mask=[mask, attn_bias], dropout_p=dropout_p)
+    elif hasattr(F, 'scaled_dot_product_attention') and (
           not exists(attn_bias) or not self.training):
       if exists(attn_mask) and exists(attn_bias):
         attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
@@ -244,7 +265,9 @@ class AxialAttention(nn.Module):
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
         nn.Linear(dim_edge, heads, bias=False if accept_edge_norm else True),
-        Rearrange('b i j h -> b h i j')) if accept_edges else None
+        Rearrange('... i j h -> ... h i j')) if accept_edges else None
+    accept_kernel_fn = int(os.environ.get('AxialAttention_accept_kernel_fn', 0))
+    self.attn_fn = evoformer_attn if accept_kernel_fn else None
 
   def forward(self, x, edges=None, mask=None, shard_size=None):
     assert self.row_attn ^ self.col_attn, 'has to be either row or column attention, but not both'  # pylint: disable=line-too-long
@@ -254,27 +277,28 @@ class AxialAttention(nn.Module):
     # axial attention
     if self.col_attn:
       axial_dim = 2
-      mask_fold_axial_eq = 'b h w -> (b w) h'
-      input_fold_eq = 'b h w d -> (b w) h d'
-      output_fold_eq = '(b w) h d -> b h w d'
+      mask_fold_axial_eq = '... h w -> ... w h'
+      input_fold_eq = '... h w d -> ... w h d'
+      output_fold_eq = '... w h d -> ... h w d'
 
     elif self.row_attn:
       axial_dim = 1
-      mask_fold_axial_eq = 'b h w -> (b h) w'
-      input_fold_eq = 'b h w d -> (b h) w d'
-      output_fold_eq = '(b h) w d -> b h w d'
+      mask_fold_axial_eq = '... h w -> ... h w'
+      input_fold_eq = '... h w d -> ... h w d'
+      output_fold_eq = '... h w d -> ... h w d'
 
     def run_attn(x, mask, attn_bias):
       _, h, w, _ = x.shape
 
+      attn_fn = None
       if exists(attn_bias):
-        attn_bias = repeat(
-            attn_bias, 'b h i j -> (b x) h i j', x=x.shape[axial_dim])
+        attn_bias = rearrange(attn_bias, '... h i j -> ... () h i j')
+        attn_fn = self.attn_fn
 
       x = rearrange(x, input_fold_eq)
       if exists(mask):
         mask = rearrange(mask, mask_fold_axial_eq)
-      out = self.attn(x, mask=mask, attn_bias=attn_bias)
+      out = self.attn(x, mask=mask, attn_bias=attn_bias, attn_fn=attn_fn)
       out = rearrange(out, output_fold_eq, h=h, w=w)
       return out
 
