@@ -289,8 +289,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
       # maybe sync or not
       with no_sync_ctx(
-          (args.gradient_accumulate_nosync and it != global_step and
-           jt + 1 != args.gradient_accumulate_every), model):
+          it != global_step and jt + 1 != args.gradient_accumulate_every,
+          model):
         with autocast_ctx(grad_scaler.is_enabled()):
           r = ReturnValues(**model(batch=batch,
                                    num_recycle=args.model_recycles,
@@ -483,9 +483,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument(
       '--gradient_accumulate_every', type=int, default=16,
       help='accumulate grads every k times.')
-  parser.add_argument(
-      '--gradient_accumulate_nosync', action='store_true',
-      help='accumulate grads without sync.')
   parser.add_argument('-b', '--batch_size', type=int, default=1,
       help='batch size')
   parser.add_argument('--num_workers', type=int, default=1,
