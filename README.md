@@ -14,8 +14,14 @@ ProFOLD2 - A protein 3D structure prediction application
 1.  Clone this repository and `cd` into it.
   ```bash
   $git clone https://github.com/bigict/ProFOLD2.git
+  $cd ProFOLD2
+  $git submodule update --init  # required if use FusedEvoformer, recommended.
   ```
 2.  Create a [virtual enviroment](https://docs.python.org/3/library/venv.html) and install [dependencies](https://github.com/bigict/ProFOLD2/network/dependencies)
+  ```bash
+  $bash install_env.sh
+  ```
+  or
   ```bash
   $python -m venv env
   $./env/bin/pip install -r requirements.txt
