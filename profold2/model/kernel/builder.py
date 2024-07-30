@@ -6,6 +6,8 @@ import logging
 import torch
 from torch.utils.cpp_extension import BuildExtension, CUDA_HOME, CUDAExtension, load
 
+from profold2.utils import package_dir
+
 
 logger = logging.getLogger(__name__)
 
@@ -103,14 +105,17 @@ ATTENTION_CORE_SRC = [
     os.path.join('csrc', 'attention_cu.cu'),
 ]
 
-ATTENTION_CORE_INC = []
 if 'CUTLASS_PATH' not in os.environ:
-  logger.warning('Please specify the environment variable $CUTLASS_PATH')
-else:
-  ATTENTION_CORE_INC = [
-      os.path.join(os.environ['CUTLASS_PATH'], 'include'),
-      os.path.join(os.environ['CUTLASS_PATH'], 'tools/util/include'),
-  ]
+  def_cutlass_path = os.path.join(package_dir(), 'cutlass')
+  logger.warning(
+      'You can specify the environment variable $CUTLASS_PATH to override `%s`',
+      def_cutlass_path)
+  os.environ['CUTLASS_PATH'] = def_cutlass_path
+
+ATTENTION_CORE_INC = [
+    os.path.join(os.environ['CUTLASS_PATH'], 'include'),
+    os.path.join(os.environ['CUTLASS_PATH'], 'tools/util/include'),
+]
 
 _loaded_ops = {}
 

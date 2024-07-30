@@ -1,5 +1,6 @@
 """Utils for profold2
 """
+import os
 import contextlib
 from functools import wraps
 from inspect import isfunction
@@ -29,6 +30,12 @@ def version_cmp(x, y):
     elif int(a) < int(b):
       return -1
   return 0
+
+
+def package_dir():
+  cwd = os.path.dirname(__file__)
+  return os.path.dirname(cwd)
+
 
 def unique_id():
   """Generate a unique ID as specified in RFC 4122."""
