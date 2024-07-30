@@ -243,13 +243,18 @@ class CoevolutionHead(nn.Module):
     eij = eij * (1 - torch.eye(zij.shape[-2], device=zij.device))  # eii = 0
 
     ret = dict(wij=eij, bi=ei, wab=self.pairwise)
-    if self.training or 'msa' in batch:
-      assert 'msa' in batch
+    if 'msa' in batch:
       hi = torch.einsum('b m j d,b i j,c d,d -> b m i c',
                         F.one_hot(batch['msa'].long(), num_class).float(),
                         eij, self.pairwise, self.mask)
-      logits = rearrange(ei, 'b i c -> b () i c') + hi
-      ret.update(logits=logits, mask=self.mask)
+    else:
+      assert 'seq' in batch
+      hi = torch.einsum('b j d,b i j,c d,d -> b i c',
+                        F.one_hot(batch['seq'].long(), num_class).float(),
+                        eij, self.pairwise, self.mask)
+      hi = rearrange(hi, 'b i c -> b () i c')
+    logits = rearrange(ei, 'b i c -> b () i c') + hi
+    ret.update(logits=logits, mask=self.mask)
     return ret
 
   def loss(self, value, batch):
