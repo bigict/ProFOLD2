@@ -894,7 +894,8 @@ def checkpoint_sequential_nargs(functions, segments, inputs, **kwargs):
     if torch.is_grad_enabled():
       inputs = checkpoint(run_function(start, end, functions),
                           *inputs,
-                          preserve_rng_state=preserve)
+                          preserve_rng_state=preserve,
+                          use_reentrant=True)  # compatible with torch 2.4+
     else:
       inputs = run_function(start, end, functions)(*inputs)
   return run_function(end + 1, len(functions) - 1, functions)(*inputs)
