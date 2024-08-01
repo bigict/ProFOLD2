@@ -161,7 +161,7 @@ class EvoformerBlock(nn.Module):
     # msa attention and transition
     if hasattr(self, 'msa_attn'):
       with profiler.record_function('msa_attn'):
-        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x)
+        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x, pairwise_mask=mask)
         m = self.msa_ff(m) + m
 
     # frame attention and transition

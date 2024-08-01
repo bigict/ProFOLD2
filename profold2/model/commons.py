@@ -67,11 +67,12 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
       lambda t: rearrange(t.to(dtype=dtype_to), '... h i d -> ... i h d'),
       (q, k, v))
   mask, attn_bias = attn_mask
+  mask_value = max_neg_value(q)
   if exists(mask):
     mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
-    mask = 1e9 * (mask - 1.0)
+    mask = mask_value * (1.0 - mask)
   if exists(attn_bias):
-    attn_bias = attn_bias.to(dtype=dtype_to)
+    attn_bias = torch.clamp(attn_bias, min=mask_value).to(dtype=dtype_to)
   o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
   return rearrange(o.to(dtype=dtype_to), '... i h d -> ... h i d')
 
@@ -276,7 +277,7 @@ class AxialAttention(nn.Module):
     self.attn_fn = functools.partial(
         evoformer_attn, dtype=accept_kernel_dtype) if accept_kernel_fn else None
 
-  def forward(self, x, edges=None, mask=None, shard_size=None):
+  def forward(self, x, edges=None, mask=None, edge_mask=None, shard_size=None):
     assert self.row_attn ^ self.col_attn, 'has to be either row or column attention, but not both'  # pylint: disable=line-too-long
 
     x = self.norm(x)
@@ -312,6 +313,9 @@ class AxialAttention(nn.Module):
     attn_bias = None
     if exists(self.edges_to_attn_bias) and exists(edges):
       attn_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
+      if exists(edge_mask):
+        attn_mask = rearrange(edge_mask, '... i j -> ... () i j')
+        attn_bias = attn_bias.masked_fill(~attn_mask, max_neg_value(attn_bias))
     if exists(attn_bias) and self.col_attn:
       attn_bias = rearrange(attn_bias, '... i j -> ... j i')
 
@@ -507,21 +511,21 @@ class PairwiseAttentionBlock(nn.Module):
             training=self.training)
       with profiler.record_function('TriangleAttention'):
         x = x + self.dropout_rowwise_fn(
-            self.triangle_attention_outgoing(x, edges=x, mask=mask,
+            self.triangle_attention_outgoing(x, edges=x, mask=mask, edge_mask=mask,
                                              shard_size=shard_size),
             training=self.training)
         x = x + self.dropout_column_fn(
-            self.triangle_attention_ingoing(x, edges=x, mask=mask,
+            self.triangle_attention_ingoing(x, edges=x, mask=mask, edge_mask=mask,
                                             shard_size=shard_size),
             training=self.training)
     else:
       with profiler.record_function('TriangleAttention'):
         x = x + self.dropout_rowwise_fn(
-            self.triangle_attention_outgoing(x, edges=x, mask=mask,
+            self.triangle_attention_outgoing(x, edges=x, mask=mask, edge_mask=mask,
                                              shard_size=shard_size),
             training=self.training)
         x = x + self.dropout_column_fn(
-            self.triangle_attention_ingoing(x, edges=x, mask=mask,
+            self.triangle_attention_ingoing(x, edges=x, mask=mask, edge_mask=mask,
                                             shard_size=shard_size),
             training=self.training)
       with profiler.record_function('TriangleMultiplicative'):
@@ -568,9 +572,9 @@ class MsaAttentionBlock(nn.Module):
                                         broadcast_dim=0,
                                         p=dropout)
 
-  def forward(self, x, mask=None, pairwise_repr=None, shard_size=None):
+  def forward(self, x, mask=None, pairwise_repr=None, pairwise_mask=None, shard_size=None):
     with profiler.record_function('MSARowAttention'):
-      x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr,
+      x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr, edge_mask=pairwise_mask,
                                             shard_size=shard_size),
                               training=self.training)
     with profiler.record_function('MSAColumnAttention'):
