@@ -5,7 +5,6 @@ import functools
 
 import torch
 from torch import nn
-from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
@@ -74,7 +73,7 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
   if exists(attn_bias):
     attn_bias = torch.clamp(attn_bias, min=mask_value).to(dtype=dtype_to)
   o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
-  return rearrange(o.to(dtype=dtype_to), '... i h d -> ... h i d')
+  return rearrange(o.to(dtype=dtype_from), '... i h d -> ... h i d')
 
 # helper classes
 class Always(nn.Module):
@@ -266,7 +265,7 @@ class AxialAttention(nn.Module):
     accept_edge_norm = int(os.environ.get('AxialAttention_accept_edge_norm', 1))
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
-        nn.Linear(dim_edge, heads, bias=False if accept_edge_norm else True),
+        nn.Linear(dim_edge, heads, bias=not accept_edge_norm),
         Rearrange('... i j h -> ... h i j')) if accept_edges else None
     accept_kernel_fn = int(os.environ.get('AxialAttention_accept_kernel_fn', 0))
     accept_kernel_dtype = os.environ.get('AxialAttention_accept_kernel_dtype')
@@ -572,11 +571,13 @@ class MsaAttentionBlock(nn.Module):
                                         broadcast_dim=0,
                                         p=dropout)
 
-  def forward(self, x, mask=None, pairwise_repr=None, pairwise_mask=None, shard_size=None):
+  def forward(self, x, mask=None, pairwise_repr=None, pairwise_mask=None,
+              shard_size=None):
     with profiler.record_function('MSARowAttention'):
-      x = x + self.dropout_fn(self.row_attn(x, mask=mask, edges=pairwise_repr, edge_mask=pairwise_mask,
-                                            shard_size=shard_size),
-                              training=self.training)
+      x = x + self.dropout_fn(
+          self.row_attn(x, mask=mask, edges=pairwise_repr, edge_mask=pairwise_mask,
+                        shard_size=shard_size),
+          training=self.training)
     with profiler.record_function('MSAColumnAttention'):
       x = x + self.col_attn(x, mask=mask, shard_size=shard_size)
     return x
@@ -733,7 +734,6 @@ class InvariantPointAttention(nn.Module):
     attn = F.softmax(attn_logits, dim=-1)
 
     # disable TF32 for precision
-    # with torch_allow_tf32(allow=False), autocast(enabled=False):
     with torch_allow_tf32(allow=False):
 
       # aggregate values
@@ -793,7 +793,6 @@ class FrameAttentionBlock(nn.Module):
     quaternions, translations = frames
     # No rotation gradients between iterations to stabilize training.
     rotations = functional.quaternion_to_matrix(quaternions).detach()
-    # with autocast(enabled=False):
     x = x + self.dropout_fn(self.attn(self.norm(x.float()),
                                       mask=mask.bool(),
                                       pairwise_repr=pairwise_repr.float(),
@@ -859,7 +858,7 @@ class PairwiseEmbedding(nn.Module):
         dim, max_rel_dist) if max_rel_dist > 0 else None
 
   def embeddings(self):
-    return dict(position=self.relative_pos_emb.embedding.weight)
+    return {'position': self.relative_pos_emb.embedding.weight}
 
   def forward(self, x, x_mask, seq_index=None):
     (_, n), device = x.shape[:2], x.device
