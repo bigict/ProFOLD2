@@ -67,7 +67,7 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
       (q, k, v))
   mask, attn_bias = attn_mask
   # HACK: experience value
-  mask_value = 1e6  # max_neg_value(q)
+  mask_value = 1e4 if dtype == torch.float16 else 1e6  # max_neg_value(q)
   if exists(mask):
     mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
     mask = mask_value * (mask - 1.0)
