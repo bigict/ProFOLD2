@@ -66,12 +66,13 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
       lambda t: rearrange(t.to(dtype=dtype_to), '... h i d -> ... i h d'),
       (q, k, v))
   mask, attn_bias = attn_mask
-  mask_value = max_neg_value(q)
+  # HACK: experience value
+  mask_value = 1e6  # max_neg_value(q)
   if exists(mask):
     mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
-    mask = mask_value * (1.0 - mask)
+    mask = mask_value * (mask - 1.0)
   if exists(attn_bias):
-    attn_bias = torch.clamp(attn_bias, min=mask_value).to(dtype=dtype_to)
+    attn_bias = torch.clamp(attn_bias, min=-mask_value).to(dtype=dtype_to)
   o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
   return rearrange(o.to(dtype=dtype_from), '... i h d -> ... h i d')
 
