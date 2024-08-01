@@ -69,6 +69,7 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
   mask, attn_bias = attn_mask
   if exists(mask):
     mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
+    mask = 1e9 * (mask - 1.0)
   if exists(attn_bias):
     attn_bias = attn_bias.to(dtype=dtype_to)
   o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
@@ -191,16 +192,16 @@ class Attention(nn.Module):
     if exists(attn_fn):
       dropout_p = self.dropout.p if self.training else 0.0
       out = attn_fn(q, k, v, attn_mask=[mask, attn_bias], dropout_p=dropout_p)
-    elif hasattr(F, 'scaled_dot_product_attention') and (
-          not exists(attn_bias) or not self.training):
-      if exists(attn_mask) and exists(attn_bias):
-        attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
-      elif exists(attn_bias):
-        attn_mask = attn_bias
-      # See: https://github.com/pytorch/pytorch/issues/96099
-      dropout_p = self.dropout.p if self.training else 0.0
-      out = F.scaled_dot_product_attention(
-          q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
+    # elif hasattr(F, 'scaled_dot_product_attention') and (
+    #       not exists(attn_bias) or not self.training):
+    #   if exists(attn_mask) and exists(attn_bias):
+    #     attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
+    #   elif exists(attn_bias):
+    #     attn_mask = attn_bias
+    #   # See: https://github.com/pytorch/pytorch/issues/96099
+    #   dropout_p = self.dropout.p if self.training else 0.0
+    #   out = F.scaled_dot_product_attention(
+    #       q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
     else:
       # scale
       q = q * self.scale
