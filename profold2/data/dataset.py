@@ -1036,7 +1036,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # Var related
       if self.feat_flags & FEAT_VAR:
         if 'var' not in ret:
-          ret['var'] = defaultdict(list)
+          ret['var'] = {
+              'chain_list': defaultdict(list),
+              'feat_list': defaultdict(dict)
+          }
 
         if 'length' not in ret:
           ret['length'] = []
@@ -1047,11 +1050,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             # remove domains pid/1-100
             var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
             var_pid = compose_pid(var_pid, c)
+            ret['var']['feat_list'][var_pid] = (feat['variant'][var_idx],
+                                                feat['variant_mask'][var_idx],
+                                                chains[idx])
             for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
               var_pid, c = decompose_pid(var_pid)
-              ret['var'][var_pid].append(
-                  (c, feat['variant'][var_idx], feat['variant_mask'][var_idx],
-                   chains[idx]))
+              ret['var']['chain_list'][var_pid].append(c)
 
     ret['pid'] = compose_pid(pid, ','.join(chains))
     if self.feat_flags & FEAT_VAR and 'var' in ret:
@@ -1067,19 +1071,24 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         return False
 
       # filter complex with all chains aligned
-      var_dict = {k: v for k, v in var_dict.items() if _is_aligned(k, v)}
+      var_dict['chain_list'] = {
+          k: v for k, v in var_dict['chain_list'].items() if _is_aligned(k, v)
+      }
 
       # realign the complex: iterate each target chain
       ret['variant_label'] = torch.as_tensor(
-          [1] + _make_label_features(var_dict.keys(), self.attr_list),
+          [1] + _make_label_features(var_dict['chain_list'].keys(), self.attr_list),
           dtype=torch.float32)
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
-      for var_pid, chain_list in var_dict.items():
+      for var_pid, chain_list in var_dict['chain_list'].items():
         variant, variant_mask = [None] * len(chains), [None] * len(chains)
         for idx, chain in enumerate(chains):
           n = ret['length'][idx]
-          for _, hit_seq, hit_mask, target_chain in chain_list:
+          for c, *_ in chain_list:
+            cluster_id = compose_pid(var_pid, c)
+            cluster_id = self.mapping.get(cluster_id, cluster_id)
+            hit_seq, hit_mask, target_chain = var_dict['feat_list'][cluster_id]
             if chains[idx] == target_chain:
               variant[idx], variant_mask[idx] = hit_seq, hit_mask
               break
@@ -1099,14 +1108,18 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             if var_pid in self.attr_list:
               return self.attr_list[var_pid].get('weight', defval)
             return defval
-          w = np.asarray([_variant_w(var_pid) for var_pid in ret['variant_pid'][1:]])
+
+          w = np.asarray(
+              [_variant_w(var_pid) for var_pid in ret['variant_pid'][1:]])
           w /= (np.sum(w) + 1e-8)
           new_order = np.random.choice(len(data) - 1,
                                        size=self.max_var_depth - 1,
                                        replace=False,
                                        p=w)
           data = data[:1] + [data[i + 1] for i in new_order]
-          ret['variant_pid'] = ret['variant_pid'][:1] + [ret['variant_pid'][i + 1] for i in new_order]
+          ret['variant_pid'] = ret['variant_pid'][:1] + [
+              ret['variant_pid'][i + 1] for i in new_order
+          ]
       for idx, field in enumerate(('variant', 'variant_mask', 'variant_label')):
         ret[field] = torch.stack([item[idx] for item in data], dim=0)
 
