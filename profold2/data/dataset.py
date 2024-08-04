@@ -8,7 +8,9 @@ import json
 import logging
 from io import BytesIO
 import pathlib
+import pickle
 import string
+import tempfile
 import zipfile
 
 import numpy as np
@@ -1036,10 +1038,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # Var related
       if self.feat_flags & FEAT_VAR:
         if 'var' not in ret:
-          ret['var'] = {
-              'chain_list': defaultdict(list),
-              'feat_list': defaultdict(dict)
-          }
+          ret['var'] = defaultdict(dict)
 
         if 'length' not in ret:
           ret['length'] = []
@@ -1050,12 +1049,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             # remove domains pid/1-100
             var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
             var_pid = compose_pid(var_pid, c)
-            ret['var']['feat_list'][var_pid] = (feat['variant'][var_idx],
-                                                feat['variant_mask'][var_idx],
-                                                chains[idx])
-            for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
-              var_pid, c = decompose_pid(var_pid)
-              ret['var']['chain_list'][var_pid].append(c)
+            ret['var'][var_pid] = (feat['variant'][var_idx],
+                                   feat['variant_mask'][var_idx],
+                                   chains[idx])
 
     ret['pid'] = compose_pid(pid, ','.join(chains))
     if self.feat_flags & FEAT_VAR and 'var' in ret:
@@ -1063,32 +1059,70 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       del ret['var']
 
       def _is_aligned(k, chain_list):
-        if k in self.attr_list:
+        if k != protein_id and k in self.attr_list:
           for c, *_ in chain_list:
             x = self.get_chain_list(compose_pid(k, c))
             if exists(x) and len(x) == len(chain_list):
               return True
         return False
+      def _yield_cluster(var_pid):
+        for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
+          var_pid, c = decompose_pid(var_pid)
+          yield var_pid, c
 
       # filter complex with all chains aligned
-      var_dict['chain_list'] = {
-          k: v for k, v in var_dict['chain_list'].items() if _is_aligned(k, v)
-      }
+      var_chain_list = None
+      with timing(f'ProteinStructureDataset.build_chain_list {protein_id}', logger.debug):
+        if 'Dataset_cache_file' in os.environ:
+          dataset_cache_file = os.environ['Dataset_cache_file']
+          try:
+            with zipfile.ZipFile(dataset_cache_file, 'r') as cache:
+              with cache.open(f'var_chain_list/{protein_id}.pkl', 'r') as f:
+                var_chain_list = pickle.load(f)
+          except:
+            pass
+        if not exists(var_chain_list):
+          var_chain_list = defaultdict(list)
+          for var_pid in var_dict:
+            for pid, c in _yield_cluster(var_pid):
+              var_chain_list[pid].append(c)
+
+      with timing(f'ProteinStructureDataset.filter_chain_list {protein_id}', logger.debug):
+        var_chain_list = [(k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)]
+      logger.debug('# of variants: %s', len(var_chain_list))
+
+      if exists(self.max_var_depth) and self.max_var_depth < len(var_chain_list) + 1:
+        if self.max_var_depth > 1:
+          with timing(f'ProteinStructureDataset.sample_chain_list {protein_id}', logger.debug):
+            def _variant_w(var_pid, defval=1.0):
+              if var_pid in self.attr_list:
+                return self.attr_list[var_pid].get('weight', defval)
+              return defval
+
+            w = np.asarray(
+                [_variant_w(var_pid) for var_pid, _ in var_chain_list])
+            w /= (np.sum(w) + 1e-8)
+            new_order = np.random.choice(len(var_chain_list),
+                                         size=self.max_var_depth - 1,
+                                         replace=False,
+                                         p=w)
+            var_chain_list = [var_chain_list[i] for i in new_order]
 
       # realign the complex: iterate each target chain
       ret['variant_label'] = torch.as_tensor(
-          [1] + _make_label_features(var_dict['chain_list'].keys(), self.attr_list),
+          [1] + _make_label_features([k for k, _ in var_chain_list], self.attr_list),
           dtype=torch.float32)
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
-      for var_pid, chain_list in var_dict['chain_list'].items():
+      for var_pid, chain_list in var_chain_list:
         variant, variant_mask = [None] * len(chains), [None] * len(chains)
         for idx, chain in enumerate(chains):
           n = ret['length'][idx]
           for c, *_ in chain_list:
             cluster_id = compose_pid(var_pid, c)
-            cluster_id = self.mapping.get(cluster_id, cluster_id)
-            hit_seq, hit_mask, target_chain = var_dict['feat_list'][cluster_id]
+            if cluster_id not in var_dict:
+              cluster_id = self.mapping.get(cluster_id, cluster_id)
+            hit_seq, hit_mask, target_chain = var_dict[cluster_id]
             if chains[idx] == target_chain:
               variant[idx], variant_mask[idx] = hit_seq, hit_mask
               break
@@ -1101,27 +1135,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant_pid'].append(var_pid)
       ret['num_var'] = len(ret['variant'])
 
-      data = list(zip(ret['variant'], ret['variant_mask'], ret['variant_label']))
-      if exists(self.max_var_depth) and self.max_var_depth < len(ret['variant']):
-        if self.max_var_depth > 1:
-          def _variant_w(var_pid, defval=1.0):
-            if var_pid in self.attr_list:
-              return self.attr_list[var_pid].get('weight', defval)
-            return defval
-
-          w = np.asarray(
-              [_variant_w(var_pid) for var_pid in ret['variant_pid'][1:]])
-          w /= (np.sum(w) + 1e-8)
-          new_order = np.random.choice(len(data) - 1,
-                                       size=self.max_var_depth - 1,
-                                       replace=False,
-                                       p=w)
-          data = data[:1] + [data[i + 1] for i in new_order]
-          ret['variant_pid'] = ret['variant_pid'][:1] + [
-              ret['variant_pid'][i + 1] for i in new_order
-          ]
-      for idx, field in enumerate(('variant', 'variant_mask', 'variant_label')):
-        ret[field] = torch.stack([item[idx] for item in data], dim=0)
+      for idx, field in enumerate(('variant', 'variant_mask')):
+        ret[field] = torch.stack(ret[field], dim=0)
 
     if exists(self.data_crop_fn):
       clip = self.data_crop_fn(ret)
