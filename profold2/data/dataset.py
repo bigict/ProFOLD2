@@ -8,9 +8,7 @@ import json
 import logging
 from io import BytesIO
 import pathlib
-import pickle
 import string
-import tempfile
 import zipfile
 
 import numpy as np
@@ -1071,21 +1069,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           yield var_pid, c
 
       # filter complex with all chains aligned
-      var_chain_list = None
       with timing(f'ProteinStructureDataset.build_chain_list {protein_id}', logger.debug):
-        if 'Dataset_cache_file' in os.environ:
-          dataset_cache_file = os.environ['Dataset_cache_file']
-          try:
-            with zipfile.ZipFile(dataset_cache_file, 'r') as cache:
-              with cache.open(f'var_chain_list/{protein_id}.pkl', 'r') as f:
-                var_chain_list = pickle.load(f)
-          except:
-            pass
-        if not exists(var_chain_list):
-          var_chain_list = defaultdict(list)
-          for var_pid in var_dict:
-            for pid, c in _yield_cluster(var_pid):
-              var_chain_list[pid].append(c)
+        var_chain_list = defaultdict(list)
+        for var_pid in var_dict:
+          for pid, c in _yield_cluster(var_pid):
+            var_chain_list[pid].append(c)
 
       with timing(f'ProteinStructureDataset.filter_chain_list {protein_id}', logger.debug):
         var_chain_list = [(k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)]
@@ -1112,6 +1100,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['variant_label'] = torch.as_tensor(
           [1] + _make_label_features([k for k, _ in var_chain_list], self.attr_list),
           dtype=torch.float32)
+
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
       for var_pid, chain_list in var_chain_list:
@@ -1133,10 +1122,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant'].append(torch.cat(variant, dim=-1))
         ret['variant_mask'].append(torch.cat(variant_mask, dim=-1))
         ret['variant_pid'].append(var_pid)
-      ret['num_var'] = len(ret['variant'])
-
       for idx, field in enumerate(('variant', 'variant_mask')):
         ret[field] = torch.stack(ret[field], dim=0)
+
+      ret['num_var'] = len(ret['variant'])
+
 
     if exists(self.data_crop_fn):
       clip = self.data_crop_fn(ret)
