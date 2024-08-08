@@ -633,10 +633,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
-    self.data_dir = pathlib.Path(data_dir)
+    self.data_dir = data_dir
     data_idx = default(data_idx, 'name.idx')
-    if zipfile.is_zipfile(self.data_dir):
-      self.data_dir = zipfile.ZipFile(self.data_dir)  # pylint: disable=consider-using-with
     self.data_crop_fn = data_crop_fn
     self.max_msa_depth = max_msa_depth
     self.max_var_depth = max_var_depth
@@ -650,50 +648,51 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_as_seq_min_ident = msa_as_seq_min_ident
     self.feat_flags = feat_flags
     logger.info('load idx data from: %s', data_idx)
-    with self._fileobj(data_idx) as f:
-      self.pids = list(
-          map(
-              lambda x: x.split(),
-              filter(lambda x: len(x) > 0 and not x.startswith('#'),
-                     map(lambda x: self._ftext(x).strip(), f))))
+    with self._filesystem() as fs:
+      with self._fileobj(fs, data_idx) as f:
+        self.pids = list(
+            map(
+                lambda x: x.split(),
+                filter(lambda x: len(x) > 0 and not x.startswith('#'),
+                       map(lambda x: self._ftext(x).strip(), f))))
 
-    self.mapping, self.cluster = {}, defaultdict(list)
-    if self._fstat('mapping.idx'):
-      with self._fileobj('mapping.idx') as f:
-        for line in filter(lambda x: len(x) > 0,
-                           map(lambda x: self._ftext(x).strip(), f)):
-          v, k = line.split()
-          self.mapping[k] = v
-          self.cluster[v].append(k)
+      self.mapping, self.cluster = {}, defaultdict(list)
+      if self._fstat(fs, 'mapping.idx'):
+        with self._fileobj(fs, 'mapping.idx') as f:
+          for line in filter(lambda x: len(x) > 0,
+                             map(lambda x: self._ftext(x).strip(), f)):
+            v, k = line.split()
+            self.mapping[k] = v
+            self.cluster[v].append(k)
 
-    self.resolu = {}
-    if self._fstat('resolu.idx'):
-      with self._fileobj('resolu.idx') as f:
-        for line in filter(lambda x: len(x) > 0,
-                           map(lambda x: self._ftext(x).strip(), f)):
-          k, v = line.split()
-          self.resolu[k] = float(v)
+      self.resolu = {}
+      if self._fstat(fs, 'resolu.idx'):
+        with self._fileobj(fs, 'resolu.idx') as f:
+          for line in filter(lambda x: len(x) > 0,
+                             map(lambda x: self._ftext(x).strip(), f)):
+            k, v = line.split()
+            self.resolu[k] = float(v)
 
-    self.chain_list = {}
-    if self._fstat('chain.idx'):
-      with self._fileobj('chain.idx') as f:
-        for line in filter(lambda x: len(x) > 0,
-                           map(lambda x: self._ftext(x).strip(), f)):
-          chains = line.split()
-          if chains[0] in self.chain_list:
-            self.chain_list[chains[0]].append(chains[1:])
-          else:
-            self.chain_list[chains[0]] = [chains[1:]]
+      self.chain_list = {}
+      if self._fstat(fs, 'chain.idx'):
+        with self._fileobj(fs, 'chain.idx') as f:
+          for line in filter(lambda x: len(x) > 0,
+                             map(lambda x: self._ftext(x).strip(), f)):
+            chains = line.split()
+            if chains[0] in self.chain_list:
+              self.chain_list[chains[0]].append(chains[1:])
+            else:
+              self.chain_list[chains[0]] = [chains[1:]]
 
-    self.attr_list = {}
-    attr_idx = default(attr_idx, 'attr.idx')
-    if self._fstat(attr_idx):
-      logger.info('load attr data from: %s', attr_idx)
-      with self._fileobj(attr_idx) as f:
-        for line in filter(lambda x: len(x) > 0,
-                           map(lambda x: self._ftext(x).strip(), f)):
-          k, v = line.split(maxsplit=1)
-          self.attr_list[k] = json.loads(v)
+      self.attr_list = {}
+      attr_idx = default(attr_idx, 'attr.idx')
+      if self._fstat(fs, attr_idx):
+        logger.info('load attr data from: %s', attr_idx)
+        with self._fileobj(fs, attr_idx) as f:
+          for line in filter(lambda x: len(x) > 0,
+                             map(lambda x: self._ftext(x).strip(), f)):
+            k, v = line.split(maxsplit=1)
+            self.attr_list[k] = json.loads(v)
 
     self.fasta_dir = 'fasta'
     self.pdb_dir = 'npz'
@@ -702,15 +701,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def __getstate__(self):
     d = self.__dict__
-    if isinstance(self.data_dir, zipfile.ZipFile):
-      d['data_dir'] = self.data_dir.filename
+    # if isinstance(self.data_dir, zipfile.ZipFile):
+    #   d['data_dir'] = self.data_dir.filename
     logger.debug('%s is pickled ...', d['data_dir'])
     return d
 
   def __setstate__(self, d):
     logger.debug('%s is unpickled ...', d['data_dir'])
-    if zipfile.is_zipfile(d['data_dir']):
-      d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
+    # if zipfile.is_zipfile(d['data_dir']):
+    #   d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
     self.__dict__ = d
 
   def __getitem__(self, idx):
@@ -868,28 +867,36 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       setattr(self, name, value)
 
   @contextlib.contextmanager
-  def _fileobj(self, filename):
+  def _filesystem(self):
+    if zipfile.is_zipfile(self.data_dir):
+      with zipfile.ZipFile(self.data_dir) as fs:
+        yield fs
+    else:
+      yield pathlib.Path(self.data_dir)
+
+  @contextlib.contextmanager
+  def _fileobj(self, fs, filename):
     if os.path.isabs(filename):
       with open(filename, mode='rb') as f:
         yield f
-    elif isinstance(self.data_dir, zipfile.ZipFile):
-      with self.data_dir.open(filename, 'r') as f:
+    elif isinstance(fs, zipfile.ZipFile):
+      with fs.open(filename, 'r') as f:
         yield f
     else:
-      with open(self.data_dir / filename, mode='rb') as f:
+      with open(fs / filename, mode='rb') as f:
         yield f
 
-  def _fstat(self, filename):
+  def _fstat(self, fs, filename):
     if os.path.isabs(filename):
       return os.path.exists(filename)
-    if isinstance(self.data_dir, zipfile.ZipFile):
+    if isinstance(fs, zipfile.ZipFile):
       try:
-        self.data_dir.getinfo(filename)
+        fs.getinfo(filename)
         return True
       except KeyError as e:
         del e
         return False
-    return (self.data_dir / filename).exists()
+    return (fs / filename).exists()
 
   def _ftext(self, line, encoding='utf-8'):
     if isinstance(line, bytes):
@@ -904,30 +911,31 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid = compose_pid(pid, chain)
 
     pkey = self.mapping[pid] if pid in self.mapping else pid
-    seq_feats = self.get_seq_features(pkey, seq_color=seq_color)
+    with self._filesystem() as fs:
+      seq_feats = self.get_seq_features(fs, pkey, seq_color=seq_color)
 
-    ret = dict(pid=pid,
-               msa_idx=0,
-               clip=None,
-               resolu=self.get_resolution(pid),
-               **seq_feats)
-    if self.feat_flags & FEAT_PDB:
-      ret.update(self.get_structure_label_npz(pid))
-    if exists(domains):
-      if self.feat_flags & FEAT_MSA:
-        ret.update(self.get_msa_features_new(pkey))
-      if self.feat_flags & FEAT_VAR:
-        ret.update(self.get_var_features_new(pkey))
-      ret = self.data_from_domain(ret, domains)
-    if exists(crop_fn):
-      clip = crop_fn(ret)
-      if exists(clip):
-        ret = _protein_crop_fn(ret, clip)
-        ret['clip'] = clip
-    if not exists(domains) and (self.feat_flags & FEAT_MSA):
-      ret.update(self.get_msa_features_new(pkey, ret.get('clip')))
-    if not exists(domains) and (self.feat_flags & FEAT_VAR):
-      ret.update(self.get_var_features_new(pkey, ret.get('clip')))
+      ret = dict(pid=pid,
+                 msa_idx=0,
+                 clip=None,
+                 resolu=self.get_resolution(pid),
+                 **seq_feats)
+      if self.feat_flags & FEAT_PDB:
+        ret.update(self.get_structure_label_npz(fs, pid))
+      if exists(domains):
+        if self.feat_flags & FEAT_MSA:
+          ret.update(self.get_msa_features_new(fs, pkey))
+        if self.feat_flags & FEAT_VAR:
+          ret.update(self.get_var_features_new(fs, pkey))
+        ret = self.data_from_domain(ret, domains)
+      if exists(crop_fn):
+        clip = crop_fn(ret)
+        if exists(clip):
+          ret = _protein_crop_fn(ret, clip)
+          ret['clip'] = clip
+      if not exists(domains) and (self.feat_flags & FEAT_MSA):
+        ret.update(self.get_msa_features_new(fs, pkey, ret.get('clip')))
+      if not exists(domains) and (self.feat_flags & FEAT_VAR):
+        ret.update(self.get_var_features_new(fs, pkey, ret.get('clip')))
 
     if exists(domains):
       # CATH update pid
@@ -1151,7 +1159,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
     return self.resolu.get(pid[:4], -1.)
 
-  def get_msa_features_new(self, protein_id, clip=None):
+  def get_msa_features_new(self, fs, protein_id, clip=None):
 
     def _aligned_ratio(msa, n):
       r = 1. - msa.count('-') / n
@@ -1174,7 +1182,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
-    with self._fileobj(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
+    with self._fileobj(fs, f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
       sequences = list(map(lambda x: self._ftext(x).strip(), f))
 
     if exists(clip):
@@ -1210,9 +1218,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       assert n > 1
 
       clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
-      if self.msa_as_seq_clustering and self._fstat(clu_file_path):
+      if self.msa_as_seq_clustering and self._fstat(fs, clu_file_path):
         try:
-          with self._fileobj(clu_file_path) as f:
+          with self._fileobj(fs, clu_file_path) as f:
             clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
           if len(clu_list) != len(sequences):
             raise ValueError('len(clu_list) != len(sequences)')
@@ -1246,12 +1254,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                            max_msa_depth=self.max_msa_depth))
     return ret
 
-  def get_var_features_new(self, protein_id, clip=None):
+  def get_var_features_new(self, fs, protein_id, clip=None):
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
     variant_path = f'var/{protein_id}/msas/{protein_id}.a3m'
-    if self._fstat(variant_path):
-      with self._fileobj(variant_path) as f:
+    if self._fstat(fs, variant_path):
+      with self._fileobj(fs, variant_path) as f:
         sequences, descriptions = parse_fasta(self._ftext(f.read()))
       assert len(sequences) == len(descriptions)
 
@@ -1290,12 +1298,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       return ret
     return {}
 
-  def get_structure_label_npz(self, protein_id):
+  def get_structure_label_npz(self, fs, protein_id):
     ret = {}
 
     pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
-    if self._fstat(pdb_file):
-      with self._fileobj(pdb_file) as f:
+    if self._fstat(fs, pdb_file):
+      with self._fileobj(fs, pdb_file) as f:
         structure = np.load(BytesIO(f.read()))
         ret = dict(coord=torch.from_numpy(structure['coord']),
                    coord_mask=torch.from_numpy(structure['coord_mask']))
@@ -1305,8 +1313,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret.update(
               coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
       pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
-      if self._fstat(pae_file):
-        with self._fileobj(pae_file) as f:
+      if self._fstat(fs, pae_file):
+        with self._fileobj(fs, pae_file) as f:
           try:
             pae_obj = json.loads(f.read())
             assert len(pae_obj) == 1
@@ -1318,10 +1326,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             logger.error('get_structure_label_npz.pae: %s|%s', protein_id, e)
     return ret
 
-  def get_seq_features(self, protein_id, seq_color=1):
+  def get_seq_features(self, fs, protein_id, seq_color=1):
     """Runs alignment tools on the input sequence and creates features."""
     input_fasta_path = f'{self.fasta_dir}/{protein_id}.fasta'
-    with self._fileobj(input_fasta_path) as f:
+    with self._fileobj(fs, input_fasta_path) as f:
       input_fasta_str = self._ftext(f.read())
     input_seqs, input_descs = parse_fasta(input_fasta_str)
     if len(input_seqs) != 1:
