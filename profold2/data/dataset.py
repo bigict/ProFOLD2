@@ -457,6 +457,55 @@ def _protein_crop_fmt(clip):
     clip['d'] = str_seq_index(torch.as_tensor(clip['d']))
   return clip
 
+
+class FileSystem(contextlib.AbstractContextManager):
+  def __init__(self, data_dir):
+    if zipfile.is_zipfile(data_dir):
+      self.data_dir = zipfile.ZipFile(data_dir);
+    else:
+      self.data_dir = pathlib.Path(data_dir)
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *exc_details):
+    del exc_details
+    self.close()
+
+  @contextlib.contextmanager
+  def open(self, filename):
+    if os.path.isabs(filename):
+      with open(filename, mode='rb') as f:
+        yield f
+    elif isinstance(self.data_dir, zipfile.ZipFile):
+      with self.data_dir.open(filename, 'r') as f:
+        yield f
+    else:
+      with open(self.data_dir / filename, mode='rb') as f:
+        yield f
+
+  def close(self):
+    if isinstance(self.data_dir, zipfile.ZipFile):
+      self.data_dir.close()
+
+  def exists(self, filename):
+    if os.path.isabs(filename):
+      return os.path.exists(filename)
+    if isinstance(self.data_dir, zipfile.ZipFile):
+      try:
+        self.data_dir.getinfo(filename)
+        return True
+      except KeyError as e:
+        del e
+        return False
+    return (self.data_dir / filename).exists()
+
+  def textise(self, data, encoding='utf-8'):
+    if isinstance(data, bytes):
+      return data.decode(encoding)
+    return data
+
+
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
@@ -634,7 +683,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     super().__init__()
 
     self.data_dir = data_dir
-    data_idx = default(data_idx, 'name.idx')
     self.data_crop_fn = data_crop_fn
     self.max_msa_depth = max_msa_depth
     self.max_var_depth = max_var_depth
@@ -647,37 +695,38 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_as_seq_min_alr = msa_as_seq_min_alr
     self.msa_as_seq_min_ident = msa_as_seq_min_ident
     self.feat_flags = feat_flags
-    logger.info('load idx data from: %s', data_idx)
-    with self._filesystem() as fs:
-      with self._fileobj(fs, data_idx) as f:
+    with FileSystem(self.data_dir) as fs:
+      data_idx = default(data_idx, 'name.idx')
+      logger.info('load idx data from: %s', data_idx)
+      with fs.open(data_idx) as f:
         self.pids = list(
             map(
                 lambda x: x.split(),
                 filter(lambda x: len(x) > 0 and not x.startswith('#'),
-                       map(lambda x: self._ftext(x).strip(), f))))
+                       map(lambda x: fs.textise(x).strip(), f))))
 
       self.mapping, self.cluster = {}, defaultdict(list)
-      if self._fstat(fs, 'mapping.idx'):
-        with self._fileobj(fs, 'mapping.idx') as f:
+      if fs.exists('mapping.idx'):
+        with fs.open('mapping.idx') as f:
           for line in filter(lambda x: len(x) > 0,
-                             map(lambda x: self._ftext(x).strip(), f)):
+                             map(lambda x: fs.textise(x).strip(), f)):
             v, k = line.split()
             self.mapping[k] = v
             self.cluster[v].append(k)
 
       self.resolu = {}
-      if self._fstat(fs, 'resolu.idx'):
-        with self._fileobj(fs, 'resolu.idx') as f:
+      if fs.exists('resolu.idx'):
+        with fs.open('resolu.idx') as f:
           for line in filter(lambda x: len(x) > 0,
-                             map(lambda x: self._ftext(x).strip(), f)):
+                             map(lambda x: fs.textise(x).strip(), f)):
             k, v = line.split()
             self.resolu[k] = float(v)
 
       self.chain_list = {}
-      if self._fstat(fs, 'chain.idx'):
-        with self._fileobj(fs, 'chain.idx') as f:
+      if fs.exists('chain.idx'):
+        with fs.open('chain.idx') as f:
           for line in filter(lambda x: len(x) > 0,
-                             map(lambda x: self._ftext(x).strip(), f)):
+                             map(lambda x: fs.textise(x).strip(), f)):
             chains = line.split()
             if chains[0] in self.chain_list:
               self.chain_list[chains[0]].append(chains[1:])
@@ -686,11 +735,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       self.attr_list = {}
       attr_idx = default(attr_idx, 'attr.idx')
-      if self._fstat(fs, attr_idx):
+      if fs.exists(attr_idx):
         logger.info('load attr data from: %s', attr_idx)
-        with self._fileobj(fs, attr_idx) as f:
+        with fs.open(attr_idx) as f:
           for line in filter(lambda x: len(x) > 0,
-                             map(lambda x: self._ftext(x).strip(), f)):
+                             map(lambda x: fs.textise(x).strip(), f)):
             k, v = line.split(maxsplit=1)
             self.attr_list[k] = json.loads(v)
 
@@ -866,43 +915,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     for name, value in kwargs_old.items():
       setattr(self, name, value)
 
-  @contextlib.contextmanager
-  def _filesystem(self):
-    if zipfile.is_zipfile(self.data_dir):
-      with zipfile.ZipFile(self.data_dir) as fs:
-        yield fs
-    else:
-      yield pathlib.Path(self.data_dir)
-
-  @contextlib.contextmanager
-  def _fileobj(self, fs, filename):
-    if os.path.isabs(filename):
-      with open(filename, mode='rb') as f:
-        yield f
-    elif isinstance(fs, zipfile.ZipFile):
-      with fs.open(filename, 'r') as f:
-        yield f
-    else:
-      with open(fs / filename, mode='rb') as f:
-        yield f
-
-  def _fstat(self, fs, filename):
-    if os.path.isabs(filename):
-      return os.path.exists(filename)
-    if isinstance(fs, zipfile.ZipFile):
-      try:
-        fs.getinfo(filename)
-        return True
-      except KeyError as e:
-        del e
-        return False
-    return (fs / filename).exists()
-
-  def _ftext(self, line, encoding='utf-8'):
-    if isinstance(line, bytes):
-      return line.decode(encoding)
-    return line
-
   def get_monomer(self, pid, seq_color=1, crop_fn=None):
     # CATH format pid
     pid, chain, domains = decompose_pid(pid, return_domain=True)
@@ -911,7 +923,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid = compose_pid(pid, chain)
 
     pkey = self.mapping[pid] if pid in self.mapping else pid
-    with self._filesystem() as fs:
+    with FileSystem(self.data_dir) as fs:
       seq_feats = self.get_seq_features(fs, pkey, seq_color=seq_color)
 
       ret = dict(pid=pid,
@@ -1182,8 +1194,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
-    with self._fileobj(fs, f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
-      sequences = list(map(lambda x: self._ftext(x).strip(), f))
+    with fs.open(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
+      sequences = list(map(lambda x: fs.textise(x).strip(), f))
 
     if exists(clip):
       def _yield_msa_clip(msa):
@@ -1218,10 +1230,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       assert n > 1
 
       clu_file_path = f'msa/{protein_id}/{source}/{protein_id}.clu'
-      if self.msa_as_seq_clustering and self._fstat(fs, clu_file_path):
+      if self.msa_as_seq_clustering and fs.exists(clu_file_path):
         try:
-          with self._fileobj(fs, clu_file_path) as f:
-            clu_list = list(map(lambda x: int(self._ftext(x).strip()), f))
+          with fs.open(clu_file_path) as f:
+            clu_list = list(map(lambda x: int(fs.textise(x).strip()), f))
           if len(clu_list) != len(sequences):
             raise ValueError('len(clu_list) != len(sequences)')
 
@@ -1258,9 +1270,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
     variant_path = f'var/{protein_id}/msas/{protein_id}.a3m'
-    if self._fstat(fs, variant_path):
-      with self._fileobj(fs, variant_path) as f:
-        sequences, descriptions = parse_fasta(self._ftext(f.read()))
+    if fs.exists(variant_path):
+      with fs.open(variant_path) as f:
+        sequences, descriptions = parse_fasta(fs.textise(f.read()))
       assert len(sequences) == len(descriptions)
 
       if exists(clip):
@@ -1302,8 +1314,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     ret = {}
 
     pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
-    if self._fstat(fs, pdb_file):
-      with self._fileobj(fs, pdb_file) as f:
+    if fs.exists(pdb_file):
+      with fs.open(pdb_file) as f:
         structure = np.load(BytesIO(f.read()))
         ret = dict(coord=torch.from_numpy(structure['coord']),
                    coord_mask=torch.from_numpy(structure['coord_mask']))
@@ -1313,8 +1325,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret.update(
               coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
       pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
-      if self._fstat(fs, pae_file):
-        with self._fileobj(fs, pae_file) as f:
+      if fs.exists(pae_file):
+        with fs.open(pae_file) as f:
           try:
             pae_obj = json.loads(f.read())
             assert len(pae_obj) == 1
@@ -1329,8 +1341,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def get_seq_features(self, fs, protein_id, seq_color=1):
     """Runs alignment tools on the input sequence and creates features."""
     input_fasta_path = f'{self.fasta_dir}/{protein_id}.fasta'
-    with self._fileobj(fs, input_fasta_path) as f:
-      input_fasta_str = self._ftext(f.read())
+    with fs.open(input_fasta_path) as f:
+      input_fasta_str = fs.textise(f.read())
     input_seqs, input_descs = parse_fasta(input_fasta_str)
     if len(input_seqs) != 1:
       raise ValueError(
