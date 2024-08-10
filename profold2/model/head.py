@@ -257,7 +257,7 @@ class CoevolutionHead(nn.Module):
           rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
           self.mask)
       logits = rearrange(ei, 'b i c -> b () i c') + hi
-      ret.update(logits=logits)
+      ret.update(logits=logits, mask=self.mask)
     return ret
 
   def loss(self, value, batch):
@@ -1040,6 +1040,8 @@ class MetricDictHead(nn.Module):
           metrics['coevolution'] = MetricDict()
 
           assert 'logits' in headers['coevolution']
+          if 'mask' in headers['coevolution']:
+            label_mask = headers['coevolution']['mask']
           prob = F.softmax(headers['coevolution']['logits'], dim=-1)
 
           pred = torch.sum(prob, dim=-3)
