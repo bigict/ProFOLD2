@@ -161,12 +161,12 @@ class WorkerXPU(object):
 
   def init_process_group(self):
     if self.is_available():
-      timeout = None
+      timeout = 1800
       if 'NCCL_TIMEOUT' in os.environ:
-        timeout = timedelta(seconds=int(os.environ['NCCL_TIMEOUT']))
+        timeout = int(os.environ['NCCL_TIMEOUT'])
       logging.info(
               'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
-              'init_method=%s, timeout=%s',
+              'init_method=%s, timeout=%s(s)',
               self.device,
               WorkerXPU.device_count(),
               self.rank,
@@ -176,7 +176,7 @@ class WorkerXPU(object):
       torch.distributed.init_process_group(
               backend='nccl',
               init_method=self.args.init_method,
-              timeout=timeout,
+              timeout=timedelta(seconds=timeout),
               rank=self.rank,
               world_size=WorkerXPU.world_size(self.args.nnodes))
       torch.cuda.set_device(self.local_rank)
