@@ -16,7 +16,7 @@ from profold2.data.utils import pdb_save
 from profold2.model import profiler, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
-from profold2.command.worker import main, WorkerModel, WorkerXPU
+from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.save_pdb:
@@ -63,11 +63,12 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
       with torch.no_grad():
-        r = ReturnValues(**model(batch=batch,  # pylint: disable=not-callable
-            sequence_max_input_len=args.model_sequence_max_input_len,
-            sequence_max_step_len=args.model_sequence_max_step_len,
-            num_recycle=args.model_recycles,
-            shard_size=args.model_shard_size))
+        with autocast_ctx(args.amp_enabled):
+          r = ReturnValues(**model(batch=batch,  # pylint: disable=not-callable
+              sequence_max_input_len=args.model_sequence_max_input_len,
+              sequence_max_step_len=args.model_sequence_max_step_len,
+              num_recycle=args.model_recycles,
+              shard_size=args.model_shard_size))
 
     metric_dict = {}
     if 'confidence' in r.headers:
@@ -198,6 +199,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='shard size in evoformer model.')
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files.')
+  parser.add_argument('--amp_enabled', action='store_true',
+      help='enable automatic mixed precision.')
   parser.add_argument('--enable_profiler', action='store_true',
       help='enable profiler.')
 
