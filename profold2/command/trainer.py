@@ -7,7 +7,6 @@
 import os
 import contextlib
 import copy
-import functools
 import json
 import logging
 import random
@@ -16,7 +15,7 @@ import re
 import numpy as np
 import torch
 from torch import nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler
 from torch.optim import Adam
 
 from profold2.common import residue_constants
@@ -28,8 +27,8 @@ from profold2.data.utils import (
     weights_from_file)
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
-from profold2.utils import exists, version_cmp
-from profold2.command.worker import main, WorkerModel, WorkerXPU
+from profold2.utils import exists
+from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
 def backward_hook_wrap(name, module):
   def backward_hook_print(self, grad_input, grad_output):
@@ -56,22 +55,6 @@ def backward_hook_wrap(name, module):
 def no_sync_ctx(cond, module):
   if cond and isinstance(module, nn.parallel.DistributedDataParallel):
     with module.no_sync():
-      yield
-  else:
-    yield
-
-@contextlib.contextmanager
-def autocast_ctx(cond):
-  if cond:
-    dtype = torch.float16
-    if hasattr(torch.cuda, 'is_bf16_supported'):
-      if torch.cuda.is_bf16_supported():
-        dtype = torch.bfloat16
-    ctx = functools.partial(autocast, dtype=dtype)
-    # FIXED ME: cache_enabled=True will crash :(
-    if version_cmp(torch.__version__, '1.10.0') >= 0:
-      ctx = functools.partial(ctx, cache_enabled=False)
-    with ctx():
       yield
   else:
     yield
@@ -382,7 +365,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   # save model
   if worker.is_master():
     torch.save(
-        dict(dim=args.model_dim,
+        dict(dim=args.model_dim,  # pylint: disable=use-dict-literal)
              evoformer_depth=args.model_evoformer_depth,
              evoformer_head_num=args.model_evoformer_head_num,
              evoformer_head_dim=args.model_evoformer_head_dim,

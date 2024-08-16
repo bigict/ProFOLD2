@@ -23,7 +23,7 @@ from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_in
 from profold2.model import profiler, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, WorkerModel, WorkerXPU
+from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
 def _a3m_add_pseudo_linker(sequences, descriptions, pseudo_linker_len=100):
   s, d = [], []
@@ -193,11 +193,12 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
               print_fn=logging.info,
               callback_fn=functools.partial(timing_callback,
                   timings, f'predict_{model_name}')):
-            r = ReturnValues(**model(batch=feats,
-                sequence_max_input_len=args.model_sequence_max_input_len,
-                sequence_max_step_len=args.model_sequence_max_step_len,
-                num_recycle=args.model_recycles,
-                shard_size=args.model_shard_size))
+            with autocast_ctx(args.amp_enabled):
+              r = ReturnValues(**model(batch=feats,
+                  sequence_max_input_len=args.model_sequence_max_input_len,
+                  sequence_max_step_len=args.model_sequence_max_step_len,
+                  num_recycle=args.model_recycles,
+                  shard_size=args.model_shard_size))
 
         ranking_scores[model_name] = 0
         if 'confidence' in r.headers:
@@ -326,6 +327,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='do NOT save prediction header.')
   parser.add_argument('--no_gpu_relax', action='store_true',
       help='run relax on cpu.')
+  parser.add_argument('--amp_enabled', action='store_true',
+      help='enable automatic mixed precision.')
   parser.add_argument('--enable_profiler', action='store_true',
       help='enable profiler.')
 

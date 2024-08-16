@@ -1,17 +1,36 @@
 """Wrap distibuted env
 """
 import os
+import contextlib
+import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
 import resource
 
 import torch
+from torch.cuda.amp import autocast
 import torch.multiprocessing as mp
 from torch import nn
 
 from profold2.model import Alphafold2
-from profold2.utils import default, exists, torch_allow_tf32
+from profold2.utils import default, exists, torch_allow_tf32, version_cmp
 
+
+@contextlib.contextmanager
+def autocast_ctx(cond):
+  if cond:
+    dtype = torch.float16
+    if hasattr(torch.cuda, 'is_bf16_supported'):
+      if torch.cuda.is_bf16_supported():
+        dtype = torch.bfloat16
+    ctx = functools.partial(autocast, dtype=dtype)
+    # FIXED ME: cache_enabled=True will crash :(
+    if version_cmp(torch.__version__, '1.10.0') >= 0:
+      ctx = functools.partial(ctx, cache_enabled=False)
+    with ctx():
+      yield
+  else:
+    yield
 
 class _WorkerLogRecordFactory(object):
   """Preprocess tensor args before creating a LogRecord
