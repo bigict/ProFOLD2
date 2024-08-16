@@ -407,44 +407,39 @@ class OuterProductMean(nn.Module):
 
   def forward(self, x, mask=None, shard_size=None):
     x = self.norm(x)
-    left = self.left_proj(x)
-    right = self.right_proj(x)
 
-    def run_outer_sum(left, right, mask):
-      outer = rearrange(left, 'b m i c -> b m i () c ()') * rearrange(
-          right, 'b m j d -> b m () j () d')
+    def run_proj(op, x, mask):
+      x = op(x)
       if exists(mask):
-        # masked mean, if there are padding in the rows of the MSA
-        mask = rearrange(mask, 'b m i -> b m i () () ()') * rearrange(
-            mask, 'b m j -> b m () j () ()') > 0
-        outer = outer.masked_fill(~mask, 0.)
-      outer = outer.sum(dim=1, keepdim=True)
+        x = x * mask[..., None]
+      return x
+
+    def run_outer_sum(left, right):
+      outer = torch.einsum('... m i c,... m j d -> ... i j c d', left, right)
       outer = self.proj_out(rearrange(outer, '... c d -> ... (c d)'))
       return outer
 
-    def run_mask_sum(mask):
+    def run_mask_sum(left, right):
       # masked mean, if there are padding in the rows of the MSA
-      mask = rearrange(mask, 'b m i -> b m i () ()') * rearrange(
-          mask, 'b m j -> b m () j ()') > 0
-      return mask.sum(dim=1, keepdim=True)
+      return torch.einsum('... m i,... m j -> ... i j', left, right)
 
-    def run_iter_sum(chunk_iter):
-      return sum(chunk_iter)
+    left = run_proj(self.left_proj, x, mask)
+    right = run_proj(self.right_proj, x, mask)
 
     outer = functional.sharded_apply(
-        run_outer_sum, [left, right, mask],
+        run_outer_sum, [left], right,
         shard_size=None if self.training else shard_size,
-        shard_dim=1,
-        cat_dim=run_iter_sum)
+        shard_dim=-2,
+        cat_dim=-3)
     if exists(mask):
       mask = functional.sharded_apply(
-          run_mask_sum, [mask],
+          run_mask_sum, [mask], mask,
           shard_size=None if self.training else shard_size,
-          shard_dim=1,
-          cat_dim=run_iter_sum)
-      outer = outer.sum(dim=1) / (mask.sum(dim=1) + self.eps)
+          shard_dim=-1,
+          cat_dim=-2)
+      outer = outer / (mask[..., None] + self.eps)
     else:
-      outer = outer.mean(dim=1)
+      outer = outer / (x.shape[-3] + self.eps)
 
     return outer
 
