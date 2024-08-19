@@ -19,7 +19,7 @@ def decompose_pid(pid, return_domain=False):
   else:
     domains = None
 
-  k = pid.find('_')
+  k = pid.rfind('_')
   if k != -1:
     pid, chain = pid[:k], pid[k+1:]
   else:
@@ -222,6 +222,8 @@ def filter_from_file(filename):
 def pdb_from_prediction(batch, headers, idx=None):
 
   def to_numpy(t):
+    if t.dtype in (torch.float16, torch.bfloat16):
+      t = t.float()
     return t.detach().cpu().numpy()
 
   def to_pdb_str(b):
