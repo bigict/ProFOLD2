@@ -13,6 +13,7 @@ from einops.layers.torch import Rearrange
 from profold2.model import functional, kernel, profiler
 from profold2.utils import default, exists, torch_allow_tf32, version_cmp
 
+_tensor_inplace_op = int(os.environ.get('profold2_tensor_inplace_op', 0))
 
 # helpers
 def init_zero_(layer):
@@ -40,6 +41,34 @@ def embedd_dropout_get(p):
     assert len(p) == 2  # (p_single, p_pairwise)
     return p
   return (p, p)
+
+def tensor_add(x, y):
+  if _tensor_inplace_op:
+    x += y
+  else:
+    x = x + y
+  return x
+
+def tensor_sub(x, y):
+  if _tensor_inplace_op:
+    x -= y
+  else:
+    x = x - y
+  return x
+
+def tensor_mul(x, y):
+  if _tensor_inplace_op:
+    x *= y
+  else:
+    x = x * y
+  return x
+
+def tensor_div(x, y):
+  if _tensor_inplace_op:
+    x /= y
+  else:
+    x = x / y
+  return x
 
 def max_neg_value(t):
   return -torch.finfo(t.dtype).max
@@ -205,7 +234,7 @@ class Attention(nn.Module):
     #       q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
     else:
       # scale
-      q = q * self.scale
+      q = tensor_mul(q, self.scale)
 
       dots = torch.einsum('... h i d,... h j d -> ... h i j', q, k)
 
@@ -213,7 +242,7 @@ class Attention(nn.Module):
       # if supplied (for pairwise to msa attention communication)
 
       if exists(attn_bias):
-        dots = dots + attn_bias
+        dots = tensor_add(dots, attn_bias)
 
       # masking
       if exists(attn_mask):
@@ -234,7 +263,7 @@ class Attention(nn.Module):
     # gating
     if exists(self.gating):
       gates = self.gating(m)
-      out = out * gates.sigmoid()
+      out = tensor_mul(out, gates.sigmoid())
 
     # combine to out
     out = self.to_out(out)
@@ -370,20 +399,20 @@ class TriangleMultiplicativeModule(nn.Module):
     right = self.right_proj(x)
 
     if exists(mask):
-      left = left * mask
-      right = right * mask
+      left = tensor_mul(left, mask)
+      right = tensor_mul(right, mask)
 
     left_gate = self.left_gate(x).sigmoid()
     right_gate = self.right_gate(x).sigmoid()
     out_gate = self.out_gate(x).sigmoid()
 
-    left = left * left_gate
-    right = right * right_gate
+    left = tensor_mul(left, left_gate)
+    right = tensor_mul(right, right_gate)
 
     out = torch.einsum(self.mix_einsum_eq, left, right)
 
     out = self.to_out_norm(out)
-    out = out * out_gate
+    out = tensor_mul(out, out_gate)
     out = self.to_out(out)
     return out
 
@@ -411,7 +440,7 @@ class OuterProductMean(nn.Module):
     def run_proj(op, x, mask):
       x = op(x)
       if exists(mask):
-        x = x * mask[..., None]
+        x = tensor_mul(x, mask[..., None])
       return x
 
     def run_outer_sum(left, right):
@@ -437,9 +466,9 @@ class OuterProductMean(nn.Module):
           shard_size=None if self.training else shard_size,
           shard_dim=-1,
           cat_dim=-2)
-      outer = outer / (mask[..., None] + self.eps)
+      outer = tensor_div(outer, mask[..., None] + self.eps)
     else:
-      outer = outer / (x.shape[-3] + self.eps)
+      outer = tensor_div(outer, x.shape[-3] + self.eps)
 
     return outer
 
@@ -494,42 +523,43 @@ class PairwiseAttentionBlock(nn.Module):
     if exists(msa_repr):
       assert exists(self.outer_mean)
       with profiler.record_function('OuterProductMean'):
-        x = x + self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size)
+        x = tensor_add(
+            x, self.outer_mean(msa_repr, mask=msa_mask, shard_size=shard_size))
 
     if self.multiplication_first:
       with profiler.record_function('TriangleMultiplicative'):
-        x = x + self.dropout_rowwise_fn(
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_multiply_outgoing(x, mask=mask),
-            training=self.training)
-        x = x + self.dropout_rowwise_fn(
+            training=self.training))
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_multiply_ingoing(x, mask=mask),
-            training=self.training)
+            training=self.training))
       with profiler.record_function('TriangleAttention'):
-        x = x + self.dropout_rowwise_fn(
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_attention_outgoing(x, edges=x, mask=mask, edge_mask=mask,
                                              shard_size=shard_size),
-            training=self.training)
-        x = x + self.dropout_column_fn(
+            training=self.training))
+        x = tensor_add(x, self.dropout_column_fn(
             self.triangle_attention_ingoing(x, edges=x, mask=mask, edge_mask=mask,
                                             shard_size=shard_size),
-            training=self.training)
+            training=self.training))
     else:
       with profiler.record_function('TriangleAttention'):
-        x = x + self.dropout_rowwise_fn(
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_attention_outgoing(x, edges=x, mask=mask, edge_mask=mask,
                                              shard_size=shard_size),
-            training=self.training)
-        x = x + self.dropout_column_fn(
+            training=self.training))
+        x = tensor_add(x, self.dropout_column_fn(
             self.triangle_attention_ingoing(x, edges=x, mask=mask, edge_mask=mask,
                                             shard_size=shard_size),
-            training=self.training)
+            training=self.training))
       with profiler.record_function('TriangleMultiplicative'):
-        x = x + self.dropout_rowwise_fn(
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_multiply_outgoing(x, mask=mask),
-            training=self.training)
-        x = x + self.dropout_rowwise_fn(
+            training=self.training))
+        x = tensor_add(x, self.dropout_rowwise_fn(
             self.triangle_multiply_ingoing(x, mask=mask),
-            training=self.training)
+            training=self.training))
     return x
 
 
@@ -570,12 +600,12 @@ class MsaAttentionBlock(nn.Module):
   def forward(self, x, mask=None, pairwise_repr=None, pairwise_mask=None,
               shard_size=None):
     with profiler.record_function('MSARowAttention'):
-      x = x + self.dropout_fn(
+      x = tensor_add(x, self.dropout_fn(
           self.row_attn(x, mask=mask, edges=pairwise_repr, edge_mask=pairwise_mask,
                         shard_size=shard_size),
-          training=self.training)
+          training=self.training))
     with profiler.record_function('MSAColumnAttention'):
-      x = x + self.col_attn(x, mask=mask, shard_size=shard_size)
+      x = tensor_add(x, self.col_attn(x, mask=mask, shard_size=shard_size))
     return x
 
 # classes
