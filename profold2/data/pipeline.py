@@ -15,6 +15,7 @@
 """Functions for building the input features for the AlphaFold model."""
 
 import os
+import gzip
 import pathlib
 from typing import Mapping, Optional, Sequence
 import logging
@@ -96,8 +97,8 @@ class DataPipeline:
                pdb70_database_path: str,
                template_featurizer: templates.TemplateHitFeaturizer,
                use_small_bfd: bool,
-               mgnify_max_hits: int = 501,
-               uniref_max_hits: int = 10000):
+               mgnify_max_hits: int = int(os.environ.get('PIPELINE_MGNIFY_MAX_HITS', 501)),
+               uniref_max_hits: int = int(os.environ.get('PIPELINE_UNIREF_MAX_HITS', 10000))):
     """Constructs a feature dict for a given FASTA file."""
     self._use_small_bfd = use_small_bfd
     # self.jackhmmer_uniref90_runner = jackhmmer.Jackhmmer(
@@ -149,7 +150,12 @@ class DataPipeline:
       with open(uniref90_out_path, 'r') as f:
         jackhmmer_uniref90_result = {'sto':f.read()}
     else:
-      jackhmmer_uniref90_result = {}
+      uniref90_out_path = os.path.join(msa_output_dir, 'uniref90_hits.sto.gz')
+      if os.path.exists(uniref90_out_path):
+        with gzip.open(uniref90_out_path, 'rt') as f:
+          jackhmmer_uniref90_result = {'sto':f.read()}
+      else:
+        jackhmmer_uniref90_result = {}
 
     mgnify_out_path = os.path.join(msa_output_dir, 'mgnify_hits.sto')
     # with open(mgnify_out_path, 'w') as f:
@@ -158,7 +164,12 @@ class DataPipeline:
       with open(mgnify_out_path, 'r') as f:
         jackhmmer_mgnify_result = {'sto':f.read()}
     else:
-      jackhmmer_mgnify_result = {}
+      mgnify_out_path = os.path.join(msa_output_dir, 'mgnify_hits.sto.gz')
+      if os.path.exists(mgnify_out_path):
+        with gzip.open(mgnify_out_path, 'rt') as f:
+          jackhmmer_mgnify_result = {'sto':f.read()}
+      else:
+        jackhmmer_mgnify_result = {}
 
     # uniref90_msa, uniref90_deletion_matrix, _ = parsers.parse_stockholm(
     #     jackhmmer_uniref90_result['sto'])
@@ -279,9 +290,10 @@ def main(args):
       os.makedirs(msa_output_dir, exist_ok=True)
 
     seq_msa = pipeline.process(input_fasta_path, msa_output_dir)
-    with open(os.path.join(msa_output_dir, f'{fasta_name}.a3m'), 'w') as f:
-      for seq, desc in seq_msa:
-        f.write(f'>{desc}\n{seq}\n')
+    if seq_msa:
+      with open(os.path.join(msa_output_dir, f'{fasta_name}.a3m'), 'w') as f:
+        for seq, desc in seq_msa:
+          f.write(f'>{desc}\n{seq}\n')
 
 if __name__ == '__main__':
   import argparse
