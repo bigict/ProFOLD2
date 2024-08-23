@@ -136,9 +136,14 @@ class FeedForward(nn.Module):
                              nn.Dropout(dropout), nn.Linear(dim * mult, dim))
     init_zero_(self.net[-1])
 
-  def forward(self, x):
+  def forward(self, x, shard_dim=-2, shard_size=None):
     x = self.norm(x)
-    return self.net(x)
+    # return self.net(x)
+    return functional.sharded_apply(
+        self.net, [x],
+        shard_size=None if self.training else shard_size,
+        shard_dim=shard_dim,
+        cat_dim=shard_dim)
 
 
 class Attention(nn.Module):
@@ -391,7 +396,7 @@ class TriangleMultiplicativeModule(nn.Module):
   def forward(self, x, mask=None):
     assert x.shape[1] == x.shape[2], 'feature map must be symmetrical'
     if exists(mask):
-      mask = rearrange(mask, 'b i j -> b i j ()')
+      mask = rearrange(mask, '... i j -> ... i j ()')
 
     x = self.norm(x)
 
@@ -402,17 +407,13 @@ class TriangleMultiplicativeModule(nn.Module):
       left = tensor_mul(left, mask)
       right = tensor_mul(right, mask)
 
-    left_gate = self.left_gate(x).sigmoid()
-    right_gate = self.right_gate(x).sigmoid()
-    out_gate = self.out_gate(x).sigmoid()
-
-    left = tensor_mul(left, left_gate)
-    right = tensor_mul(right, right_gate)
+    left = tensor_mul(left, self.left_gate(x).sigmoid())
+    right = tensor_mul(right, self.right_gate(x).sigmoid())
 
     out = torch.einsum(self.mix_einsum_eq, left, right)
 
     out = self.to_out_norm(out)
-    out = tensor_mul(out, out_gate)
+    out = tensor_mul(out, self.out_gate(x).sigmoid())
     out = self.to_out(out)
     return out
 

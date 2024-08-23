@@ -162,8 +162,9 @@ class EvoformerBlock(nn.Module):
     # msa attention and transition
     if hasattr(self, 'msa_attn'):
       with profiler.record_function('msa_attn'):
-        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x, pairwise_mask=mask)
-        m = tensor_add(m, self.msa_ff(m))
+        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x, pairwise_mask=mask,
+                          shard_size=shard_size)
+        m = tensor_add(m, self.msa_ff(m, shard_size=shard_size))
 
     # frame attention and transition
     if hasattr(self, 'frame_attn'):
@@ -175,7 +176,7 @@ class EvoformerBlock(nn.Module):
                               mask=msa_mask[:, 0],
                               pairwise_repr=x,
                               frames=t)
-          s = tensor_add(s, self.frame_ff(s))
+          s = tensor_add(s, self.frame_ff(s, shard_size=shard_size))
         m = torch.cat((s[:, None, ...], m[:, 1:, ...]), dim=1)
 
     # frame update
@@ -194,7 +195,7 @@ class EvoformerBlock(nn.Module):
                          msa_repr=m,
                          msa_mask=msa_mask,
                          shard_size=shard_size)
-      x = tensor_add(x, self.pair_ff(x))
+      x = tensor_add(x, self.pair_ff(x, shard_size=shard_size))
 
     return x, m, t, mask, msa_mask
 
