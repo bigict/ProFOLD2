@@ -13,7 +13,7 @@ from einops import rearrange
 
 # models & data
 from profold2.data import dataset
-from profold2.data.utils import pdb_save
+from profold2.data.utils import pdb_save, tensor_to_numpy
 from profold2.model import profiler, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
@@ -85,21 +85,27 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
                    fitness.tolist())
       dump_pkl = {'variant_pred': fitness}
       if 'motifs' in r.headers['fitness']:
-        dump_pkl['motifs'] = r.headers['fitness']['motifs'].cpu().numpy()
+        dump_pkl['motifs'] = tensor_to_numpy(r.headers['fitness']['motifs'])
         # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
         #              r.headers['fitness']['motifs'].tolist())
       if 'seq_color' in batch:
-        dump_pkl['color'] = batch['seq_color'].cpu().numpy()
+        dump_pkl['color'] = tensor_to_numpy(batch['seq_color'])
         # logging.info('no: %d pid: %s, fitness: color=%s', idx, fasta_name,
         #              batch['seq_color'].tolist())
       if 'variant_label' in batch:
-        dump_pkl['label'] = batch['variant_label'].cpu().numpy()
+        dump_pkl['label'] = tensor_to_numpy(batch['variant_label'])
         logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
                      batch['variant_label'].tolist())
       if 'variant_pid' in batch:
         dump_pkl['pid'] = batch['variant_pid']
         logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
                      batch['variant_pid'])
+      assert 'coevolution' in r.headers
+      eij = tensor_to_numpy(r.headers['coevolution']['wij'])
+      ei = tensor_to_numpy(r.headers['coevolution']['bi'])
+      wab = tensor_to_numpy(r.headers['coevolution']['wab'])
+      dump_pkl['coevolution'] = {'wij': eij, 'bi': ei, 'wab': wab}
+
       with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
         pickle.dump(dump_pkl, f)
     if 'metric' in r.headers:

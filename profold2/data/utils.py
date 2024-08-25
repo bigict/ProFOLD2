@@ -219,12 +219,13 @@ def filter_from_file(filename):
         yield line
 
 
-def pdb_from_prediction(batch, headers, idx=None):
+def tensor_to_numpy(t):
+  if t.dtype in (torch.float16, torch.bfloat16):
+    t = t.float()
+  return t.detach().cpu().numpy()
 
-  def to_numpy(t):
-    if t.dtype in (torch.float16, torch.bfloat16):
-      t = t.float()
-    return t.detach().cpu().numpy()
+
+def pdb_from_prediction(batch, headers, idx=None):
 
   def to_pdb_str(b):
     str_seq = batch['str_seq'][b]
@@ -235,7 +236,7 @@ def pdb_from_prediction(batch, headers, idx=None):
             aa, residue_constants.unk_restype_index) for aa in str_seq
     ])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
-      seq_index = to_numpy(batch['seq_index'][b])
+      seq_index = tensor_to_numpy(batch['seq_index'][b])
     else:
       seq_index = np.arange(seq_len)
     features = {
@@ -243,18 +244,18 @@ def pdb_from_prediction(batch, headers, idx=None):
         'residue_index': seq_index,
     }
     if 'seq_color' in batch:
-      features['seq_color'] = to_numpy(batch['seq_color'][b] - 1)
+      features['seq_color'] = tensor_to_numpy(batch['seq_color'][b] - 1)
 
-    coords = to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
+    coords = tensor_to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if 'coord_exists' in batch:
-      coord_mask = to_numpy(batch['coord_exists'][b,...])
+      coord_mask = tensor_to_numpy(batch['coord_exists'][b,...])
     else:
       coord_mask = np.asarray(
           [restype_atom14_mask[restype] for restype in aatype])
     b_factors = None
     if 'confidence' in headers and 'plddt' in headers['confidence']:
-      plddt = to_numpy(headers['confidence']['plddt'][b,...])  # (b l)
+      plddt = tensor_to_numpy(headers['confidence']['plddt'][b,...])  # (b l)
       b_factors = coord_mask * plddt[..., None]
 
     result = dict(structure_module=dict(
