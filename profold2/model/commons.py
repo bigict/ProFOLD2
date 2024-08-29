@@ -117,6 +117,18 @@ class Always(nn.Module):
     return self.val
 
 
+class APC(nn.Module):
+  """Average Product Correction
+     https://doi.org/10.1093/bioinformatics/btm604
+    """
+  def __init__(self, dim=None):
+    super().__init__()
+    self.dim = dim
+
+  def forward(self, x):
+    return functional.apc(x, dim=self.dim)
+
+
 # feed forward
 class GEGLU(nn.Module):
   """Gated GELU"""

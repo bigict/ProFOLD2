@@ -192,12 +192,14 @@ class CoevolutionHead(nn.Module):
                alpha=0.0,
                beta=0.0,
                gammar=0.0,
+               num_states=None,
+               apc=False,
                num_pivot=1024,
                focal_loss=0,
                loss_min=None,
                loss_max=None):
     super().__init__()
-    del gating, alpha, beta, gammar  # Deprecated
+    del alpha, beta, gammar  # Deprecated
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -205,17 +207,27 @@ class CoevolutionHead(nn.Module):
                                 nn.GELU(),
                                 nn.LayerNorm(dim_single),
                                 nn.Linear(dim_single, num_class))
-    self.pairwise = nn.Parameter(torch.randn(num_class, num_class))
-    self.gating = nn.Sequential(nn.LayerNorm(dim_pairwise),
-                                nn.Linear(dim_pairwise, 1),
-                                nn.Flatten(start_dim=-2, end_dim=-1),
-                                nn.Sigmoid())
-    if exists(self.gating):
-      nn.init.constant_(self.gating[1].weight, 0.)
-      nn.init.constant_(self.gating[1].bias, 1.)
+    if gating:
+      if exists(num_states):
+        assert num_states >= 1
+        self.states = nn.Parameter(torch.randn(num_states, num_class, num_class))
+      else:
+        num_states = 1
+        self.states = nn.Parameter(torch.randn(num_class, num_class))
+      self.pairwise = nn.Sequential(nn.LayerNorm(dim_pairwise),
+                                    nn.Linear(dim_pairwise, num_states))
+
+      nn.init.constant_(self.pairwise[1].weight, 0.)
+      nn.init.constant_(self.pairwise[1].bias, 1.)
+    else:
+      self.states = None
+      self.pairwise = nn.Sequential(nn.LayerNorm(dim_pairwise),
+                                    nn.Linear(dim_pairwise, num_class**2),
+                                    nn.ReLU())
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
 
+    self.apc = apc
     self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
@@ -238,21 +250,38 @@ class CoevolutionHead(nn.Module):
     si, zij = representations['single'], representations['pair']
     zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
 
-    ei, eij = self.single(si), self.gating(zij)
+    ei, eij = self.single(si), self.pairwise(zij)
 
-    eij = eij * (1 - torch.eye(zij.shape[-2], device=zij.device))  # eii = 0
+    # FIX: batch_size > 1
+    mij = (rearrange(batch['mask'], 'b i -> b i () ()') *
+           rearrange(batch['mask'], 'b j -> b () j ()'))
+    if exists(self.states):  # Average Product Correction
+      if self.apc:
+        eij = functional.apc(eij * mij, dim=(-3, -2))
+      eij = F.sigmoid(eij)
+    eij = eij * mij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
+                                'i j -> i j ()')  # eii = 0
 
-    ret = dict(wij=eij, bi=ei, wab=self.pairwise)
+    if exists(self.states):
+      states = self.states
+      if len(states.shape) == 2:  # back compatible
+        states = rearrange(states, 'c d -> () c d')
+      states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
+      eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
+    else:
+      eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
+    ret = dict(wij=eij, bi=ei)
+
+    # pseudo msa if not exists
     if 'msa' in batch:
-      hi = torch.einsum('b m j d,b i j,c d,d -> b m i c',
-                        F.one_hot(batch['msa'].long(), num_class).float(),
-                        eij, self.pairwise, self.mask)
+      msa = F.one_hot(batch['msa'].long(), num_class).float()
     else:
       assert 'seq' in batch
-      hi = torch.einsum('b j d,b i j,c d,d -> b i c',
-                        F.one_hot(batch['seq'].long(), num_class).float(),
-                        eij, self.pairwise, self.mask)
-      hi = rearrange(hi, 'b i c -> b () i c')
+      msa = rearrange(F.one_hot(batch['seq'].long(), num_class).float(),
+                      'b i d -> b () i d')
+    # potss model
+    hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                       msa, eij, self.mask)
     logits = rearrange(ei, 'b i c -> b () i c') + hi
     ret.update(logits=logits, mask=self.mask)
     return ret
@@ -1071,6 +1100,8 @@ class FitnessHead(nn.Module):
                mask='-',
                alpha=None,
                num_var_as_ref=0,
+               label_threshold=0.,
+               label_epsilon=0.,
                pos_weight=1.,
                focal_loss=0.,
                shard_size=2048):
@@ -1084,6 +1115,8 @@ class FitnessHead(nn.Module):
 
     assert num_var_as_ref >= 0
     self.num_var_as_ref = num_var_as_ref
+    self.label_threshold = label_threshold
+    self.label_epsilon = label_epsilon
     self.pos_weight = pos_weight
     self.alpha = alpha
     self.focal_loss = focal_loss
@@ -1096,14 +1129,13 @@ class FitnessHead(nn.Module):
 
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
-    eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
-    wab = headers['coevolution']['wab']
     num_class = self.mask.shape[0]
+    eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
 
     def _hamiton_run(variant):
       variant = F.one_hot(variant.long(), num_class)
-      hi = torch.einsum('b m j d,b i j,c d,d -> b m i c',
-                        variant.float(), eij, wab, self.mask)
+      hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                        variant.float(), eij, self.mask)
       motifs = rearrange(ei, 'b i c -> b () i c') + hi
       logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
       logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
@@ -1164,8 +1196,8 @@ class FitnessHead(nn.Module):
 
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
-        label_mask = torch.sum(variant_mask, dim=-1) > 0
-        label_num = torch.min(torch.sum(label_mask, dim=-1)).item()
+        label_mask = torch.sum(variant_mask, dim=-1) > self.label_threshold
+        label_num = torch.min(torch.sum(label_mask, dim=-1))
 
         num_var_as_ref = min(self.num_var_as_ref, label_num)
         if num_var_as_ref > 0:
@@ -1204,6 +1236,8 @@ class FitnessHead(nn.Module):
         mask_ref, 'b n i -> b () n i')
     variant_label = rearrange(variant_label, 'b m -> b m ()') - rearrange(
         label_ref, 'b n -> b () n')
+    variant_label = torch.sign(variant_label) * (
+        torch.abs(variant_label) > self.label_epsilon)
     variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
     variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
