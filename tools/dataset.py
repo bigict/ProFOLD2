@@ -54,7 +54,7 @@ def to_pdb(data, args):  # pylint: disable=redefined-outer-name
                            atom_positions=np.array(feat['coord']),
                            atom_mask=np.array(feat['coord_mask']),
                            residue_index=np.array(feat['seq_index']) + 1,
-                           chain_index=np.zeros_like(feat['seq']),
+                           chain_index=np.array(feat['seq_color']) - 1,
                            b_factors=np.zeros_like(feat['coord_mask']))
     pid = feat['pid']
     with open(os.path.join(args.output, f'{pid}.pdb'), 'w') as f:
@@ -279,6 +279,7 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
       data_dir=args.data_dir,
       data_idx=args.data_idx,
       pseudo_linker_prob=args.pseudo_linker_prob,
+      pseudo_linker_shuffle=False,
       data_rm_mask_prob=args.data_rm_mask_prob,
       msa_as_seq_prob=args.msa_as_seq_prob,
       feat_flags=feat_flags)

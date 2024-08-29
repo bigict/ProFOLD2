@@ -387,35 +387,49 @@ class TriangleMultiplicativeModule(nn.Module):
 
     if mix == 'outgoing':
       self.mix_einsum_eq = '... i k d, ... j k d -> ... i j d'
+      self.shard_dim = -3
     elif mix == 'ingoing':
       self.mix_einsum_eq = '... k j d, ... k i d -> ... i j d'
+      self.shard_dim = -2
 
     self.to_out_norm = nn.LayerNorm(hidden_dim)
     self.to_out = nn.Linear(hidden_dim, dim)
 
-  def forward(self, x, mask=None):
-    assert x.shape[1] == x.shape[2], 'feature map must be symmetrical'
+  def forward(self, x, mask=None, shard_size=None):
+    assert x.shape[-2] == x.shape[-3], 'feature map must be symmetrical'
     if exists(mask):
       mask = rearrange(mask, '... i j -> ... i j ()')
 
     x = self.norm(x)
 
-    left = self.left_proj(x)
-    right = self.right_proj(x)
+    def proj_with_gating(proj_op, gating_op, x, m):
+      t = proj_op(x)
+      if exists(m):
+        t = tensor_mul(t, m)
+      return tensor_mul(t, gating_op(x).sigmoid())
 
+    def out_with_gating(x, mask, right):
+      left = proj_with_gating(self.left_proj, self.left_gate, x, mask)
+
+      out = torch.einsum(self.mix_einsum_eq, left, right)
+
+      out = self.to_out_norm(out)
+      out = tensor_mul(out, self.out_gate(x).sigmoid())
+      out = self.to_out(out)
+      return out
+
+    right = proj_with_gating(self.right_proj, self.right_gate, x, mask)
     if exists(mask):
-      left = tensor_mul(left, mask)
-      right = tensor_mul(right, mask)
-
-    left = tensor_mul(left, self.left_gate(x).sigmoid())
-    right = tensor_mul(right, self.right_gate(x).sigmoid())
-
-    out = torch.einsum(self.mix_einsum_eq, left, right)
-
-    out = self.to_out_norm(out)
-    out = tensor_mul(out, self.out_gate(x).sigmoid())
-    out = self.to_out(out)
-    return out
+      return functional.sharded_apply(
+          out_with_gating, [x, mask], right,
+          shard_size=None if self.training else shard_size,
+          shard_dim=self.shard_dim,
+          cat_dim=self.shard_dim)
+    return functional.sharded_apply(
+        out_with_gating, [x], mask, right,
+        shard_size=None if self.training else shard_size,
+        shard_dim=self.shard_dim,
+        cat_dim=self.shard_dim)
 
 
 # evoformer blocks
@@ -530,10 +544,12 @@ class PairwiseAttentionBlock(nn.Module):
     if self.multiplication_first:
       with profiler.record_function('TriangleMultiplicative'):
         x = tensor_add(x, self.dropout_rowwise_fn(
-            self.triangle_multiply_outgoing(x, mask=mask),
+            self.triangle_multiply_outgoing(x, mask=mask,
+                                            shard_size=shard_size),
             training=self.training))
         x = tensor_add(x, self.dropout_rowwise_fn(
-            self.triangle_multiply_ingoing(x, mask=mask),
+            self.triangle_multiply_ingoing(x, mask=mask,
+                                           shard_size=shard_size),
             training=self.training))
       with profiler.record_function('TriangleAttention'):
         x = tensor_add(x, self.dropout_rowwise_fn(
@@ -556,10 +572,12 @@ class PairwiseAttentionBlock(nn.Module):
             training=self.training))
       with profiler.record_function('TriangleMultiplicative'):
         x = tensor_add(x, self.dropout_rowwise_fn(
-            self.triangle_multiply_outgoing(x, mask=mask),
+            self.triangle_multiply_outgoing(x, mask=mask,
+                                            shard_size=shard_size),
             training=self.training))
         x = tensor_add(x, self.dropout_rowwise_fn(
-            self.triangle_multiply_ingoing(x, mask=mask),
+            self.triangle_multiply_ingoing(x, mask=mask,
+                                           shard_size=shard_size),
             training=self.training))
     return x
 
@@ -724,31 +742,30 @@ class InvariantPointAttention(nn.Module):
                            rotations) + translations
 
     # derive attn logits for scalar and pairwise
-    attn_logits_scalar = torch.einsum('b i d, b j d -> b i j', q_scalar,
-                                      k_scalar) * self.scalar_attn_logits_scale
-
-    if exists(pairwise_repr):
-      attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr)
-    if self.require_pairwise_repr:
-      attn_logits_pairwise *= self.pairwise_attn_logits_scale
-
-    # derive attn logits for point attention
-    point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(
-        k_point, 'b j d c -> b () j d c')
-    point_dist = (point_qk_diff**2).sum(dim=-2)
-
-    point_weights = F.softplus(self.point_weights)
-    point_weights = repeat(point_weights, 'h -> (b h) () () ()', b=b)
-
-    attn_logits_points = -0.5 * (
-        point_dist * point_weights * self.point_attn_logits_scale).sum(dim=-1)
+    attn_logits = tensor_mul(torch.einsum('b i d, b j d -> b i j', q_scalar, k_scalar),
+                             self.scalar_attn_logits_scale)
 
     # combine attn logits
-    attn_logits = attn_logits_scalar + attn_logits_points
-
-    # if self.require_pairwise_repr:
     if exists(pairwise_repr):
-      attn_logits = attn_logits + attn_logits_pairwise
+      attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr)
+      if self.require_pairwise_repr:
+        attn_logits_pairwise = tensor_mul(attn_logits_pairwise,
+                                          self.pairwise_attn_logits_scale)
+      attn_logits = tensor_add(attn_logits, attn_logits_pairwise)
+
+    # derive attn logits for point attention
+    point_dist = functional.squared_cdist(
+        rearrange(q_point, 'b i d c -> b d i c'),
+        rearrange(k_point, 'b j d c -> b d j c'))
+    point_dist = torch.sum(point_dist, dim=-3)
+
+    point_weights = F.softplus(self.point_weights)
+    point_weights = repeat(point_weights, 'h -> (b h) () ()', b=b)
+
+    point_dist = tensor_mul(point_dist,
+                            -0.5 * point_weights * self.point_attn_logits_scale)
+
+    attn_logits = tensor_add(attn_logits, point_dist)
 
     # mask
     if exists(mask):
@@ -786,8 +803,7 @@ class InvariantPointAttention(nn.Module):
     results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h=h)
     # gating
     if exists(self.gating):
-      gates = self.gating(x)
-      results_scalar = results_scalar * gates.sigmoid()
+      results_scalar = tensor_mul(results_scalar, self.gating(x).sigmoid())
 
     results_points = rearrange(
         results_points, '(b h) n d c -> b n (h d c)', h=h)
@@ -820,11 +836,11 @@ class FrameAttentionBlock(nn.Module):
     quaternions, translations = frames
     # No rotation gradients between iterations to stabilize training.
     rotations = functional.quaternion_to_matrix(quaternions).detach()
-    x = x + self.dropout_fn(self.attn(self.norm(x.float()),
+    x = tensor_add(x, self.dropout_fn(self.attn(self.norm(x.float()),
                                       mask=mask.bool(),
                                       pairwise_repr=pairwise_repr.float(),
                                       rotations=rotations.float(),
-                                      translations=translations.float()))
+                                      translations=translations.float())))
     return x
 
 class FrameUpdater(nn.Module):
@@ -891,13 +907,13 @@ class PairwiseEmbedding(nn.Module):
     (_, n), device = x.shape[:2], x.device
 
     x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim=-1)
-    x = rearrange(x_left, 'b i d -> b i () d') + rearrange(
-        x_right, 'b j d-> b () j d')  # create pair-wise residue embeds
-    x_mask = rearrange(x_mask, 'b i -> b i ()') * rearrange(
-        x_mask, 'b j -> b () j') if exists(x_mask) else None
+    x = rearrange(x_left, '... i d -> ... i () d') + rearrange(
+        x_right, '... j d-> ... () j d')  # create pair-wise residue embeds
+    x_mask = rearrange(x_mask, '... i -> ... i ()') * rearrange(
+        x_mask, '... j -> ... () j') if exists(x_mask) else None
     if exists(self.relative_pos_emb):
       seq_index = default(seq_index, lambda: torch.arange(n, device=device))
-      x = x + self.relative_pos_emb(seq_index)
+      x = tensor_add(x, self.relative_pos_emb(seq_index))
     return x, x_mask
 
 

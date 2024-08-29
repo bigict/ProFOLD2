@@ -14,7 +14,7 @@ from einops import rearrange
 # models & data
 from profold2.data import dataset
 from profold2.data.utils import pdb_save
-from profold2.model import profiler, FeatureBuilder, ReturnValues
+from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
@@ -156,16 +156,19 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       record_shapes=True,
       profile_memory=True,
       with_stack=True) as prof:
-    # eval loop
-    for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
-      try:
-        tmscore += data_eval(idx, batch)
-        n += 1
-      except RuntimeError as e:
-        logging.error('%d %s', idx, str(e))
+    with snapshot.memory_snapshot(
+        enabled=args.enable_memory_snapshot,
+        device=rank.device):
+      # eval loop
+      for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
+        try:
+          tmscore += data_eval(idx, batch)
+          n += 1
+        except RuntimeError as e:
+          logging.error('%d %s', idx, str(e))
 
-      if hasattr(prof, 'step'):
-        prof.step()
+        if hasattr(prof, 'step'):
+          prof.step()
   if hasattr(prof, 'key_averages'):
     logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
 
@@ -236,6 +239,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='enable automatic mixed precision.')
   parser.add_argument('--enable_profiler', action='store_true',
       help='enable profiler.')
+  parser.add_argument('--enable_memory_snapshot', action='store_true',
+      help='enable memory snapshot.')
 
 if __name__ == '__main__':
   import argparse

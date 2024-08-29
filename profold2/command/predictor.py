@@ -20,7 +20,7 @@ from profold2.data import dataset
 from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_index
-from profold2.model import profiler, FeatureBuilder, ReturnValues
+from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
@@ -274,14 +274,17 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
       record_shapes=True,
       profile_memory=True,
       with_stack=True) as prof:
-    for idx, batch in enumerate(iter(test_loader)):
-      try:
-        predict_structure(idx, batch)
-      except RuntimeError as e:
-        logging.error('%d %s', idx, str(e))
+    with snapshot.memory_snapshot(
+        enabled=args.enable_memory_snapshot,
+        device=rank.device):
+      for idx, batch in enumerate(iter(test_loader)):
+        try:
+          predict_structure(idx, batch)
+        except RuntimeError as e:
+          logging.error('%d %s', idx, str(e))
 
-      if hasattr(prof, 'step'):
-        prof.step()
+        if hasattr(prof, 'step'):
+          prof.step()
 
   if hasattr(prof, 'key_averages'):
     logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
@@ -332,6 +335,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='enable automatic mixed precision.')
   parser.add_argument('--enable_profiler', action='store_true',
       help='enable profiler.')
+  parser.add_argument('--enable_memory_snapshot', action='store_true',
+      help='enable memory snapshot.')
 
 if __name__ == '__main__':
   import argparse
