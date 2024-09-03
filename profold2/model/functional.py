@@ -79,10 +79,9 @@ def sharded_apply(fn,
   if not exists(shard_size):
     return run_fn(*sharded_args)
 
-  if isfunction(cat_dim):
-    return cat_dim(run_chunk(*sharded_args))
-  assert isinstance(cat_dim, int)
-  return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
+  if isinstance(cat_dim, int):
+    return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
+  return cat_dim(run_chunk(*sharded_args))
 
 """
 The transformation matrices returned from the functions in this file assume

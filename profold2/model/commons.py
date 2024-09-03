@@ -689,12 +689,12 @@ class InvariantPointAttention(nn.Module):
       self.pairwise_attn_logits_scale = num_attn_logits**-0.5
       self.to_pairwise_attn_bias = nn.Sequential(
           nn.Linear(pairwise_repr_dim, heads),
-          Rearrange('b ... h -> (b h) ...'))
+          Rearrange('b ... h -> b h ...'))
     else:
       self.to_pairwise_attn_bias = nn.Sequential(
           nn.LayerNorm(pairwise_repr_dim),
           nn.Linear(pairwise_repr_dim, heads, bias=False),
-          Rearrange('b ... h -> (b h) ...'))
+          Rearrange('b ... h -> b h ...'))
 
     # combine out - scalar dim +
     #               pairwise dim +
@@ -724,25 +724,24 @@ class InvariantPointAttention(nn.Module):
 
     # split out heads
     q_scalar, k_scalar, v_scalar = map(
-        lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h),
+        lambda t: rearrange(t, 'b i (h d) -> b h i d', h=h),
         (q_scalar, k_scalar, v_scalar))
     q_point, k_point, v_point = map(
-        lambda t: rearrange(t, 'b n (h d c) -> (b h) n d c', h=h, c=3),
+        lambda t: rearrange(t, 'b i (h d c) -> b h i d c', h=h, c=3),
         (q_point, k_point, v_point))
 
-    rotations = repeat(rotations, 'b n d r -> (b h) n d r', h=h)
-    translations = repeat(translations, 'b n c -> (b h) n () c', h=h)
+    translations = rearrange(translations, 'b i c -> b () i () c')
 
     # rotate qkv points into global frame
-    q_point = torch.einsum('b n d c, b n r c -> b n d r', q_point,
+    q_point = torch.einsum('b h i d c,b i r c -> b h i d r', q_point,
                            rotations) + translations
-    k_point = torch.einsum('b n d c, b n r c -> b n d r', k_point,
+    k_point = torch.einsum('b h i d c,b i r c -> b h i d r', k_point,
                            rotations) + translations
-    v_point = torch.einsum('b n d c, b n r c -> b n d r', v_point,
+    v_point = torch.einsum('b h i d c,b i r c -> b h i d r', v_point,
                            rotations) + translations
 
     # derive attn logits for scalar and pairwise
-    attn_logits = tensor_mul(torch.einsum('b i d, b j d -> b i j', q_scalar, k_scalar),
+    attn_logits = tensor_mul(torch.einsum('b h i d, b h j d -> b h i j', q_scalar, k_scalar),
                              self.scalar_attn_logits_scale)
 
     # combine attn logits
@@ -754,13 +753,19 @@ class InvariantPointAttention(nn.Module):
       attn_logits = tensor_add(attn_logits, attn_logits_pairwise)
 
     # derive attn logits for point attention
-    point_dist = functional.squared_cdist(
-        rearrange(q_point, 'b i d c -> b d i c'),
-        rearrange(k_point, 'b j d c -> b d j c'))
-    point_dist = torch.sum(point_dist, dim=-3)
+    def calc_point_dist(q_point, k_point):
+      point_dist = functional.squared_cdist(
+          rearrange(q_point, 'b h i d c -> b h d i c'),
+          rearrange(k_point, 'b h j d c -> b h d j c'))
+      return torch.sum(point_dist, dim=-3)
+    point_dist = functional.sharded_apply(
+        calc_point_dist, [q_point, k_point],
+        shard_size=None if self.training else 1,
+        shard_dim=-2,
+        cat_dim=functools.partial(functools.reduce, tensor_add))
 
     point_weights = F.softplus(self.point_weights)
-    point_weights = repeat(point_weights, 'h -> (b h) () ()', b=b)
+    point_weights = rearrange(point_weights, 'h -> h () ()')
 
     point_dist = tensor_mul(point_dist,
                             -0.5 * point_weights * self.point_attn_logits_scale)
@@ -770,7 +775,7 @@ class InvariantPointAttention(nn.Module):
     # mask
     if exists(mask):
       mask = rearrange(mask, 'b i -> b i ()') * rearrange(mask, 'b j -> b () j')
-      mask = repeat(mask, 'b i j -> (b h) i j', h=h)
+      mask = rearrange(mask, 'b i j -> b () i j')
       mask_value = max_neg_value(attn_logits)
       attn_logits = attn_logits.masked_fill(~mask, mask_value)
 
@@ -781,40 +786,38 @@ class InvariantPointAttention(nn.Module):
     with torch_allow_tf32(allow=False):
 
       # aggregate values
-      results_scalar = torch.einsum('b i j, b j d -> b i d', attn, v_scalar)
-
-      attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h=h)
+      results_scalar = torch.einsum('b h i j,b h j d -> b h i d', attn, v_scalar)
 
       if self.require_pairwise_repr:
-        results_pairwise = torch.einsum('b h i j, b i j d -> b h i d',
-                                        attn_with_heads, pairwise_repr)
+        results_pairwise = torch.einsum('b h i j,b i j d -> b h i d',
+                                        attn, pairwise_repr)
 
       # aggregate point values
-      results_points = torch.einsum('b i j, b j d c -> b i d c', attn, v_point)
+      results_points = torch.einsum('b h i j,b h j d c -> b h i d c', attn, v_point)
 
       # rotate aggregated point values back into local frame
-      results_points = torch.einsum('b n d c, b n r c -> b n d r',
+      results_points = torch.einsum('b h i d c,b i r c -> b h i d r',
                                     results_points - translations,
                                     rotations.transpose(-1, -2))
       results_points_norm = torch.sqrt(
           torch.square(results_points).sum(dim=-1) + eps)
 
     # merge back heads
-    results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h=h)
+    results_scalar = rearrange(results_scalar, 'b h i d -> b i (h d)')
     # gating
     if exists(self.gating):
       results_scalar = tensor_mul(results_scalar, self.gating(x).sigmoid())
 
     results_points = rearrange(
-        results_points, '(b h) n d c -> b n (h d c)', h=h)
+        results_points, 'b h i d c -> b i (h d c)')
     results_points_norm = rearrange(
-        results_points_norm, '(b h) n d -> b n (h d)', h=h)
+        results_points_norm, 'b h i d -> b i (h d)')
 
     results = (results_scalar, results_points, results_points_norm)
 
     if self.require_pairwise_repr:
       results_pairwise = rearrange(
-          results_pairwise, 'b h n d -> b n (h d)', h=h)
+          results_pairwise, 'b h i d -> b i (h d)', h=h)
       results = (*results, results_pairwise)
 
     # concat results and project out
@@ -866,7 +869,7 @@ class FrameUpdater(nn.Module):
     # No rotation gradients between iterations to stabilize training.
     rotations = functional.quaternion_to_matrix(quaternions).detach()
     quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
-    translations = torch.einsum('b n c, b n r c -> b n r',
+    translations = torch.einsum('b i c, b i r c -> b i r',
                                 translation_update,
                                 rotations) + translations
     return quaternions, translations
