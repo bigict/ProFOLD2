@@ -10,6 +10,16 @@ from einops import rearrange, repeat
 from profold2.common import residue_constants
 from profold2.utils import default, exists
 
+def apc(x, dim=None, epsilon=1e-8):
+  "Perform average product correct, used for contact prediction."
+  i, j = default(dim, (-1, -2))
+  a1 = torch.sum(x, dim=i, keepdim=True)
+  a2 = torch.sum(x, dim=j, keepdim=True)
+  a12 = torch.sum(x, dim=(i, j), keepdim=True)
+
+  avg = a1 * a2 / (a12 + epsilon)
+  return x - avg
+
 def l2_norm(v, dim=-1, epsilon=1e-12):
   return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True),  # pylint: disable=not-callable
                          min=epsilon)
@@ -79,10 +89,9 @@ def sharded_apply(fn,
   if not exists(shard_size):
     return run_fn(*sharded_args)
 
-  if isfunction(cat_dim):
-    return cat_dim(run_chunk(*sharded_args))
-  assert isinstance(cat_dim, int)
-  return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
+  if isinstance(cat_dim, int):
+    return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
+  return cat_dim(run_chunk(*sharded_args))
 
 """
 The transformation matrices returned from the functions in this file assume

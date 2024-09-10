@@ -6,6 +6,7 @@
 """
 import os
 import logging
+import pickle
 
 import torch
 from einops import rearrange
@@ -13,7 +14,7 @@ from einops import rearrange
 # models & data
 from profold2.data import dataset
 from profold2.data.utils import pdb_save
-from profold2.model import profiler, FeatureBuilder, ReturnValues
+from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
@@ -36,7 +37,10 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   test_loader = dataset.load(
       data_dir=args.eval_data,
       data_idx=args.eval_idx,
+      attr_idx=args.eval_attr,
+      pseudo_linker_prob=args.pseudo_linker_prob,
       max_msa_depth=args.max_msa_size,
+      max_var_depth=args.max_var_size,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -75,6 +79,29 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       metric_dict['confidence'] = r.headers['confidence']['loss'].item()
       logging.debug('%d pid: %s Confidence: %s',
             idx, fasta_name, r.headers['confidence']['loss'].item())
+    if 'fitness' in r.headers:
+      fitness = torch.sigmoid(r.headers['fitness']['variant_logit'])
+      logging.info('no: %d pid: %s, fitness: pred=%s', idx, fasta_name,
+                   fitness.tolist())
+      dump_pkl = {'variant_pred': fitness}
+      if 'motifs' in r.headers['fitness']:
+        dump_pkl['motifs'] = r.headers['fitness']['motifs'].cpu().numpy()
+        # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
+        #              r.headers['fitness']['motifs'].tolist())
+      if 'seq_color' in batch:
+        dump_pkl['color'] = batch['seq_color'].cpu().numpy()
+        # logging.info('no: %d pid: %s, fitness: color=%s', idx, fasta_name,
+        #              batch['seq_color'].tolist())
+      if 'variant_label' in batch:
+        dump_pkl['label'] = batch['variant_label'].cpu().numpy()
+        logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
+                     batch['variant_label'].tolist())
+      if 'variant_pid' in batch:
+        dump_pkl['pid'] = batch['variant_pid']
+        logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
+                     batch['variant_pid'])
+      with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
+        pickle.dump(dump_pkl, f)
     if 'metric' in r.headers:
       metrics = r.headers['metric']['loss']
       if 'contact' in metrics:
@@ -129,16 +156,19 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       record_shapes=True,
       profile_memory=True,
       with_stack=True) as prof:
-    # eval loop
-    for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
-      try:
-        tmscore += data_eval(idx, batch)
-        n += 1
-      except RuntimeError as e:
-        logging.error('%d %s', idx, str(e))
+    with snapshot.memory_snapshot(
+        enabled=args.enable_memory_snapshot,
+        device=rank.device):
+      # eval loop
+      for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
+        try:
+          tmscore += data_eval(idx, batch)
+          n += 1
+        except RuntimeError as e:
+          logging.error('%d %s', idx, str(e))
 
-      if hasattr(prof, 'step'):
-        prof.step()
+        if hasattr(prof, 'step'):
+          prof.step()
   if hasattr(prof, 'key_averages'):
     logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
 
@@ -155,8 +185,10 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
   parser.add_argument('--eval_data', type=str, default=None,
       help='eval dataset.')
-  parser.add_argument('--eval_idx', type=str, default='name.idx',
+  parser.add_argument('--eval_idx', type=str, default=None,
       help='eval dataset idx.')
+  parser.add_argument('--eval_attr', type=str, default=None,
+      help='eval dataset attr idx.')
   parser.add_argument('--eval_without_pdb', action='store_true',
       help='DO NOT load pdb data.')
   parser.add_argument('--min_protein_len', type=int, default=0,
@@ -164,7 +196,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--max_protein_len', type=int, default=1024,
       help='filter out proteins whose length>LEN.')
   parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE.')
+      help='filter out MSAs whose size>SIZE.')
+  parser.add_argument('--max_var_size', type=int, default=None,
+      help='filter out VARs whose size>SIZE.')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=None,
@@ -175,6 +209,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--crop_probability', type=float, default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
           'length>MIN_CROP_LEN.')
+  parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
+      help='enable loading complex data.')
   parser.add_argument('--msa_as_seq_prob', type=float, default=0.0,
       help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
   parser.add_argument('--msa_as_seq_topn', type=int, default=None,
@@ -203,6 +239,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='enable automatic mixed precision.')
   parser.add_argument('--enable_profiler', action='store_true',
       help='enable profiler.')
+  parser.add_argument('--enable_memory_snapshot', action='store_true',
+      help='enable memory snapshot.')
 
 if __name__ == '__main__':
   import argparse

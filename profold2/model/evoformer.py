@@ -11,7 +11,8 @@ from profold2.model.commons import (Attention,
                                     FrameAttentionBlock,
                                     FrameUpdater,
                                     MsaAttentionBlock,
-                                    PairwiseAttentionBlock)
+                                    PairwiseAttentionBlock,
+                                    tensor_add)
 from profold2.model import profiler
 from profold2.utils import exists
 
@@ -95,7 +96,7 @@ class TemplateEmbedding(nn.Module):
                                   '(b i j) () d -> b i j d',
                                   i=n,
                                   j=n)
-      x += template_pooled
+      x = tensor_add(x, template_pooled)
 
     # add template angle features to MSAs by passing through MLP and then concat
     if exists(templates_angles):
@@ -161,8 +162,9 @@ class EvoformerBlock(nn.Module):
     # msa attention and transition
     if hasattr(self, 'msa_attn'):
       with profiler.record_function('msa_attn'):
-        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x, pairwise_mask=mask)
-        m = self.msa_ff(m) + m
+        m = self.msa_attn(m, mask=msa_mask, pairwise_repr=x, pairwise_mask=mask,
+                          shard_size=shard_size)
+        m = tensor_add(m, self.msa_ff(m, shard_size=shard_size))
 
     # frame attention and transition
     if hasattr(self, 'frame_attn'):
@@ -174,7 +176,7 @@ class EvoformerBlock(nn.Module):
                               mask=msa_mask[:, 0],
                               pairwise_repr=x,
                               frames=t)
-          s = self.frame_ff(s) + s
+          s = tensor_add(s, self.frame_ff(s, shard_size=shard_size))
         m = torch.cat((s[:, None, ...], m[:, 1:, ...]), dim=1)
 
     # frame update
@@ -193,7 +195,7 @@ class EvoformerBlock(nn.Module):
                          msa_repr=m,
                          msa_mask=msa_mask,
                          shard_size=shard_size)
-      x = self.pair_ff(x) + x
+      x = tensor_add(x, self.pair_ff(x, shard_size=shard_size))
 
     return x, m, t, mask, msa_mask
 

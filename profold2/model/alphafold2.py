@@ -10,7 +10,7 @@ from torch import nn
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model.commons import Always, PairwiseEmbedding
+from profold2.model.commons import Always, PairwiseEmbedding, tensor_add
 from profold2.model.functional import pseudo_beta_fn, distogram_from_positions
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
@@ -186,17 +186,17 @@ class Alphafold2(nn.Module):
     x = self.token_emb(seq)
 
     if exists(seq_embed):
-      x += seq_embed
+      x = tensor_add(x, seq_embed)
 
     # embed multiple sequence alignment (msa)
     if exists(msa):
       m = self.token_emb(msa)
 
       if exists(msa_embed):
-        m = m + msa_embed
+        m = tensor_add(m, msa_embed)
 
       # add single representation to msa representation
-      m = m + rearrange(x, 'b n d -> b () n d')
+      m = tensor_add(m, rearrange(x, 'b n d -> b () n d'))
 
       # get msa_mask to all ones if none was passed
       msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
@@ -221,10 +221,10 @@ class Alphafold2(nn.Module):
         pseudo_beta = pseudo_beta_fn(seq, recyclables.coords)
         breaks = self.recycling_pos_breaks.to(pseudo_beta.device)
         dgram = distogram_from_positions(pseudo_beta, breaks)
-        x = x + self.recycling_pos_linear(dgram)  # pylint: disable=not-callable
-      m[:,
-        0] = m[:, 0] + self.recycling_msa_norm(recyclables.msa_first_row_repr)
-      x = x + self.recycling_pairwise_norm(recyclables.pairwise_repr)
+        x = tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
+      m[:, 0] = tensor_add(
+          m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr))
+      x = tensor_add(x, self.recycling_pairwise_norm(recyclables.pairwise_repr))
 
     # add recyclables, if present
     if exists(recyclables) and exists(recyclables.frames):
@@ -263,10 +263,11 @@ class Alphafold2(nn.Module):
         loss = module.loss(ret.headers[name], batch)
         if exists(loss):
           ret.headers[name].update(loss)
+          lossw = loss['loss'] * options.get('weight', 1.0)
           if exists(ret.loss):
-            ret.loss += loss['loss'] * options.get('weight', 1.0)
+            ret.loss = tensor_add(ret.loss, lossw)
           else:
-            ret.loss = loss['loss'] * options.get('weight', 1.0)
+            ret.loss = lossw
 
     if return_recyclables:
       msa_first_row_repr, pairwise_repr = m[:, 0], representations['pair']

@@ -2,6 +2,7 @@
 """
 import os
 import contextlib
+from datetime import timedelta
 import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
@@ -160,17 +161,22 @@ class WorkerXPU(object):
 
   def init_process_group(self):
     if self.is_available():
+      timeout = 1800
+      if 'NCCL_TIMEOUT' in os.environ:
+        timeout = int(os.environ['NCCL_TIMEOUT'])
       logging.info(
-              'distributed.init_process_group: rank=%s@%s, world_size=%s@%s '
-              'init_method=%s',
+              'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
+              'init_method=%s, timeout=%s(s)',
               self.device,
               WorkerXPU.device_count(),
               self.rank,
               WorkerXPU.world_size(self.args.nnodes),
-              self.args.init_method)
+              self.args.init_method,
+              timeout)
       torch.distributed.init_process_group(
               backend='nccl',
               init_method=self.args.init_method,
+              timeout=timedelta(seconds=timeout),
               rank=self.rank,
               world_size=WorkerXPU.world_size(self.args.nnodes))
       torch.cuda.set_device(self.local_rank)

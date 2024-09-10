@@ -9,7 +9,9 @@ from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
-from profold2.model.commons import embedd_dim_get, InvariantPointAttention
+from profold2.model.commons import (embedd_dim_get,
+                                    tensor_add,
+                                    InvariantPointAttention)
 from profold2.model.functional import (l2_norm, quaternion_multiply,
                                        quaternion_to_matrix, rigids_from_angles,
                                        rigids_scale, rigids_to_positions)
@@ -62,10 +64,10 @@ class IPABlock(nn.Module):
     self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
   def forward(self, x, **kwargs):
-    x = self.attn(x, **kwargs) + x
+    x = tensor_add(x, self.attn(x, **kwargs))
     x = self.attn_norm(self.dropout_fn(x, training=self.training))
 
-    x = self.ff(x) + x
+    x = tensor_add(x, self.ff(x))
     x = self.ff_norm(self.dropout_fn(x, training=self.training))
     return x
 
@@ -79,7 +81,7 @@ class AngleNetBlock(nn.Module):
                              nn.Linear(channel, dim))
 
   def forward(self, x):
-    return x + self.net(x)
+    return tensor_add(x, self.net(x))
 
 
 class AngleNet(nn.Module):

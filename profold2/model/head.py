@@ -1,3 +1,4 @@
+import os
 import sys
 import logging
 
@@ -14,6 +15,19 @@ from profold2.utils import *
 
 logger = logging.getLogger(__name__)
 
+
+def clipped_sigmoid_cross_entropy(logits,
+                                  labels,
+                                  alpha=1.0,
+                                  gammar=0,
+                                  epsilon=1e-7):
+  prob = torch.sigmoid(logits)
+  prob = torch.clamp(prob, min=epsilon, max=1. - epsilon)
+  if gammar > 0:  # focal loss enabled.
+    return  -alpha * labels * ((1. - prob)**gammar) * torch.log(
+        prob) - (1. - labels) * (prob ** gammar) * torch.log(1. - prob)
+  return -alpha * labels * torch.log(
+      prob) - (1. - labels) * torch.log(1. - prob)
 
 def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
   """Computes softmax cross entropy given logits and one-hot class labels."""
@@ -173,15 +187,19 @@ class CoevolutionHead(nn.Module):
 
   def __init__(self,
                dim,
+               gating=True,
                mask='-',
                alpha=0.0,
                beta=0.0,
                gammar=0.0,
+               num_states=None,
+               apc=False,
                num_pivot=1024,
                focal_loss=0,
                loss_min=None,
                loss_max=None):
     super().__init__()
+    del alpha, beta, gammar  # Deprecated
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -189,14 +207,27 @@ class CoevolutionHead(nn.Module):
                                 nn.GELU(),
                                 nn.LayerNorm(dim_single),
                                 nn.Linear(dim_single, num_class))
-    self.pairwize = nn.Sequential(nn.LayerNorm(dim_pairwise),
-                                  nn.Linear(dim_pairwise, num_class**2),
-                                  nn.ReLU())
-    self.mask = mask
+    if gating:
+      if exists(num_states):
+        assert num_states >= 1
+        self.states = nn.Parameter(torch.randn(num_states, num_class, num_class))
+      else:
+        num_states = 1
+        self.states = nn.Parameter(torch.randn(num_class, num_class))
+      self.pairwise = nn.Sequential(nn.LayerNorm(dim_pairwise),
+                                    nn.Linear(dim_pairwise, num_states))
 
-    self.alpha = alpha
-    self.beta = beta
-    self.gammar = gammar
+      nn.init.constant_(self.pairwise[1].weight, 0.)
+      nn.init.constant_(self.pairwise[1].bias, 1.)
+    else:
+      self.states = None
+      self.pairwise = nn.Sequential(nn.LayerNorm(dim_pairwise),
+                                    nn.Linear(dim_pairwise, num_class**2),
+                                    nn.ReLU())
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
+    self.register_buffer('mask', m, persistent=False)
+
+    self.apc = apc
     self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
@@ -214,33 +245,50 @@ class CoevolutionHead(nn.Module):
          Dictionary containing:
            * logits: logits for co-evolution, shape [N_res, N_res, N_bins^2].
         """
-    if self.training or 'msa' in batch:
-      assert 'msa' in batch
-      num_class = len(residue_constants.restypes_with_x_and_gap)
+    num_class = self.mask.shape[0]
 
-      si, zij = representations['single'], representations['pair']
-      m = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                               self.mask,
-                               device=si.device)
+    si, zij = representations['single'], representations['pair']
+    zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
 
-      ei = self.single(si)
-      eij = self.pairwize(
-          (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5)  # symmetrize
+    ei, eij = self.single(si), self.pairwise(zij)
 
-      eij = eij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
-                            'i j -> i j ()')  # eii = 0
-      hi = torch.einsum(
-          'b m j d,b i j c d,d -> b m i c',
-          F.one_hot(batch['msa'].long(), num_class).float(),
-          rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class),
-          m)
-      logits = rearrange(ei, 'b i c -> b () i c') + hi
-      return dict(logits=logits, wij=eij, bi=ei)
-    return None
+    # FIX: batch_size > 1
+    mij = (rearrange(batch['mask'], 'b i -> b i () ()') *
+           rearrange(batch['mask'], 'b j -> b () j ()'))
+    if exists(self.states):  # Average Product Correction
+      if self.apc:
+        eij = functional.apc(eij * mij, dim=(-3, -2))
+      eij = F.sigmoid(eij)
+    eij = eij * mij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
+                                'i j -> i j ()')  # eii = 0
+
+    if exists(self.states):
+      states = self.states
+      if len(states.shape) == 2:  # back compatible
+        states = rearrange(states, 'c d -> () c d')
+      states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
+      eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
+    else:
+      eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
+    ret = dict(wij=eij, bi=ei)
+
+    # pseudo msa if not exists
+    if 'msa' in batch:
+      msa = F.one_hot(batch['msa'].long(), num_class).float()
+    else:
+      assert 'seq' in batch
+      msa = rearrange(F.one_hot(batch['seq'].long(), num_class).float(),
+                      'b i d -> b () i d')
+    # potss model
+    hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                       msa, eij, self.mask)
+    logits = rearrange(ei, 'b i c -> b () i c') + hi
+    ret.update(logits=logits, mask=self.mask)
+    return ret
 
   def loss(self, value, batch):
     """Log loss of a msa rebuilding."""
-    num_class = len(residue_constants.restypes_with_x_and_gap)
+    num_class = self.mask.shape[0]
 
     logits = value['logits']
     labels = F.one_hot(batch['msa'].long(), num_class)
@@ -249,61 +297,18 @@ class CoevolutionHead(nn.Module):
 
     assert len(logits.shape) == 4
     assert 'msa' in batch
-    label_mask = functional.make_mask(residue_constants.restypes_with_x_and_gap,
-                                      self.mask,
-                                      device=logits.device)
-
     errors = softmax_cross_entropy(labels=labels,
                                    logits=logits,
-                                   mask=label_mask,
+                                   mask=self.mask,
                                    gammar=self.focal_loss)
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
-                        labels.float(), label_mask)
+                        labels.float(), self.mask)
     if 'msa_row_mask' in batch:
       mask = torch.einsum('b m i,b m -> b m i', mask, batch['msa_row_mask'])
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
     logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error)
-
-    def _make_dynamic_regularization(w):
-      if isinstance(w, float) and w > 0:
-        b, device = value['wij'].shape[0], value['wij'].device
-        return torch.full((b,), w, device=device)
-      elif isinstance(w, list):
-        assert 'num_msa' in batch
-        min_w, max_w = w
-        num_msa = torch.clamp(batch['num_msa'], max=self.num_pivot)
-        return max_w + (min_w - max_w) * num_msa / self.num_pivot
-      return None
-
-    square_mask = (rearrange(batch['mask'], '... i -> ... i ()') *
-                   rearrange(batch['mask'], '... j -> ... () j'))
-    # L1 regularization
-    alpha = _make_dynamic_regularization(self.alpha)
-    if exists(alpha):
-      r1 = torch.sum(torch.abs(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L1(%s): %s', alpha, torch.mean(r1))
-      avg_error += torch.mean(alpha[..., None, None] * r1)
-
-    # L2 regularization
-    beta = _make_dynamic_regularization(self.beta)
-    if exists(beta):
-      r2 = torch.sum(torch.square(value['wij']), dim=-1) * square_mask
-      logger.debug('CoevolutionHead.loss.L2(%s): %s', beta, torch.mean(r2))
-      avg_error += torch.mean(beta[..., None, None] * r2)
-
-    # LH regularization
-    if self.gammar > 0:
-      epsilon = 1e-10
-      M = torch.sqrt(torch.sum(value['wij']**2, dim=-1) + epsilon)
-      p = torch.sum(M, dim=-1)
-      rlh = torch.sum(
-          torch.square(
-              torch.einsum('... i, ... i j, ... j', p, M, p) /
-              (torch.einsum('... i,... i', p, p) + epsilon)))
-      logger.debug('CoevolutionHead.loss.LH: %s', rlh)
-      avg_error += 0.5 * self.gammar * rlh
 
     if exists(self.loss_min) or exists(self.loss_max):
       avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
@@ -1022,6 +1027,8 @@ class MetricDictHead(nn.Module):
           metrics['coevolution'] = MetricDict()
 
           assert 'logits' in headers['coevolution']
+          if 'mask' in headers['coevolution']:
+            label_mask = headers['coevolution']['mask']
           prob = F.softmax(headers['coevolution']['logits'], dim=-1)
 
           pred = torch.sum(prob, dim=-3)
@@ -1083,6 +1090,167 @@ class MetricDictHead(nn.Module):
           logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
 
     return dict(loss=metrics) if metrics else None
+
+class FitnessHead(nn.Module):
+  """Head to predict fitness.
+    """
+
+  def __init__(self,
+               dim,
+               mask='-',
+               alpha=None,
+               num_var_as_ref=0,
+               label_threshold=0.,
+               label_epsilon=0.,
+               pos_weight=1.,
+               focal_loss=0.,
+               shard_size=2048):
+    super().__init__()
+    del dim
+
+    self.sigma = nn.Linear(1, 1, bias=False)
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
+    self.register_buffer('mask', m, persistent=False)
+
+    assert num_var_as_ref >= 0
+    self.num_var_as_ref = num_var_as_ref
+    self.label_threshold = label_threshold
+    self.label_epsilon = label_epsilon
+    self.pos_weight = pos_weight
+    self.alpha = alpha
+    self.focal_loss = focal_loss
+    self.shard_size = shard_size
+    if 'profold2_fitness_shard_size' in os.environ:
+      self.shard_size = int(os.environ['profold2_fitness_shard_size'])
+    self.return_motifs = True
+    if 'profold2_fitness_return_motifs' in os.environ:
+      self.return_motifs = bool(os.environ['profold2_fitness_return_motifs'])
+
+  def forward(self, headers, representations, batch):
+    assert 'coevolution' in headers
+    num_class = self.mask.shape[0]
+    eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
+
+    def _hamiton_run(variant):
+      variant = F.one_hot(variant.long(), num_class)
+      hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                        variant.float(), eij, self.mask)
+      motifs = rearrange(ei, 'b i c -> b () i c') + hi
+      logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
+      logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+      if self.return_motifs:
+        return motifs, logits
+      return None, logits
+
+    def _hamiton_cat(logits):
+      motifs, logits = zip(*logits)
+      motifs = torch.cat(motifs, dim=1) if self.return_motifs else None
+      logits = torch.cat(logits, dim=1)
+      return motifs, logits
+
+    if 'variant' in batch:
+      variant = batch['variant']
+      variant_mask = batch['variant_mask']
+    else:
+      assert 'seq' in batch
+      variant = rearrange(batch['seq'], 'b i -> b () i')
+      variant_mask = rearrange(batch['mask'], 'b i -> b () i')
+
+    motifs, logits = functional.sharded_apply(
+        _hamiton_run, [variant],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=1,
+        cat_dim=_hamiton_cat)
+    variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
+                              dim=-1)
+
+    r = dict(logits=logits, variant_logit=variant_logit)
+    if exists(motifs):
+      r.update(motifs=motifs)
+    return r
+
+  def loss(self, value, batch):
+    logits, logits_ref = value['logits'], None
+    num_class = self.mask.shape[0]
+    avg_error_motif = 0
+
+    if 'variant' in batch:
+      variant_mask = batch['variant_mask']
+      variant_label = batch['variant_label']
+
+      if exists(self.alpha) and self.alpha > 0:
+        # predict motifs
+        motifs = value['motifs']
+        labels = F.one_hot(batch['variant'].long(), num_class)
+
+        with autocast(enabled=False):
+          errors = softmax_cross_entropy(labels=labels,
+                                         logits=motifs,
+                                         mask=self.mask,
+                                         gammar=self.focal_loss)
+        motif_mask = (variant_label[..., None] > 0) * variant_mask
+        avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
+        logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
+        avg_error_motif = self.alpha * avg_error_motif
+
+      if self.num_var_as_ref > 0:
+        # minimum of variants in batch
+        label_mask = torch.sum(variant_mask, dim=-1) > self.label_threshold
+        label_num = torch.min(torch.sum(label_mask, dim=-1))
+
+        num_var_as_ref = min(self.num_var_as_ref, label_num)
+        if num_var_as_ref > 0:
+          variant_label = batch['variant_label'][:, :label_num] * label_mask
+
+          b, _, n = logits.shape
+          # sample reference based on variant_label
+          ref_idx = torch.multinomial(variant_label + 1e-3,
+                                      num_var_as_ref,
+                                      replacement=False)
+          ref_idx = torch.cat((torch.zeros(
+              (b, 1), dtype=ref_idx.dtype, device=logits.device), ref_idx),
+                              dim=-1)
+          logger.debug("FitnessHead.ref_idx: %s", ref_idx)
+
+          logits_ref = torch.gather(
+              logits, 1, repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
+          mask_ref = torch.gather(
+              variant_mask, 1,
+              repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
+          label_ref = torch.gather(variant_label, 1, ref_idx)
+    else:
+      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i')
+      b = variant_mask.shape[0]
+      variant_label = torch.ones((b, 1), device=variant_mask.device)
+
+    if not exists(logits_ref):
+      logits_ref = logits[:, :1, ...]
+      mask_ref = variant_mask[:, :1, ...]
+      label_ref = variant_label[:, :1, ...]
+
+    # pairwise logistic loss
+    variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
+        logits_ref, 'b n i -> b () n i')
+    variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
+        mask_ref, 'b n i -> b () n i')
+    variant_label = rearrange(variant_label, 'b m -> b m ()') - rearrange(
+        label_ref, 'b n -> b () n')
+    variant_label = torch.sign(variant_label) * (
+        torch.abs(variant_label) > self.label_epsilon)
+    variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
+    variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    logger.debug('FitnessHead.logit: %s', str(variant_logit))
+    logger.debug('FitnessHead.label: %s', str(variant_label))
+    with autocast(enabled=False):
+      errors = clipped_sigmoid_cross_entropy(variant_logit.float(),
+                                             variant_label.float(),
+                                             alpha=self.pos_weight,
+                                             gammar=self.focal_loss)
+    variant_mask = torch.sum(variant_mask, dim=-1) > 0
+    avg_error_fitness = functional.masked_mean(value=errors, mask=variant_mask)
+    logger.debug('FitnessHead.loss: %s', avg_error_fitness)
+    return dict(loss=avg_error_motif + avg_error_fitness)
 
 
 class SequenceProfileHead(nn.Module):
@@ -1220,6 +1388,7 @@ class HeaderBuilder:
                   confidence=ConfidenceHead,
                   contact=ContactHead,
                   distogram=DistogramHead,
+                  fitness=FitnessHead,
                   folding=FoldingHead,
                   lddt=LDDTHead,
                   metric=MetricDictHead,
