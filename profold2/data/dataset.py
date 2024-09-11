@@ -4,13 +4,17 @@ import os
 from collections import defaultdict
 import contextlib
 import functools
+import io
 import json
 import logging
 from io import BytesIO
 import pathlib
+import pickle
 import string
 import zipfile
+import weakref
 
+from Bio import PDB
 import numpy as np
 import torch
 from torch.utils.data import WeightedRandomSampler
@@ -166,6 +170,98 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
               seq_color=seq_color,
               str_seq=str_seq,
               mask=mask)
+
+
+def _make_pdb_features(pdb_id, pdb_string, seq_color=1, max_seq_len=None):
+  parser = PDB.PDBParser(QUIET=True)
+  handle = io.StringIO(pdb_string)
+  full_structure = parser.get_structure('', handle)
+  model_structure = next(full_structure.get_models())
+  chains = list(model_structure.get_chains())
+  assert len(chains) == 1
+
+  _unassigned = {'.', '?'}  # pylint: disable=invalid-name
+
+  seq, domains = [], []
+  coord_list, coord_mask_list, bfactor_list = [], [], []
+
+  int_resseq_start, int_resseq_end = None, None
+
+  for aa in chains[0].get_residues():
+    hetero, int_resseq, icode = aa.id
+
+    if icode in _unassigned:
+      icode = ' '
+    if icode and icode != ' ':
+      continue
+
+    residue_id = aa.get_resname()
+    if residue_id == 'MSE':
+      residue_id = 'MET'
+
+    if not exists(int_resseq_start):
+      int_resseq_start = int_resseq
+    if exists(int_resseq_end) and int_resseq - int_resseq_end > 1:
+      domains.append((int_resseq_start, int_resseq_end))
+      int_resseq_start = int_resseq
+    if not exists(int_resseq_end) or int_resseq != int_resseq_end:
+      # sequence
+      resname = residue_constants.restype_3to1.get(
+          residue_id, residue_constants.restypes_with_x[-1])
+      seq.append(resname)
+
+      # cordinates
+      labels = np.zeros((14, 3), dtype=np.float32)
+      label_mask = np.zeros((14,), dtype=np.bool_)
+      bfactors = np.zeros((14,), dtype=np.float32)
+
+      if residue_id in residue_constants.restype_name_to_atom14_names:
+        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
+      else:
+        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
+      for atom in aa.get_atoms():
+        try:
+          atom14idx = res_atom14_list.index(atom.id)
+          coord = np.asarray(atom.get_coord())
+          if np.any(np.isnan(coord)):
+            continue
+          labels[atom14idx] = coord
+          bfactor = atom.get_bfactor() / 100.
+          bfactors[atom14idx] = bfactor
+          label_mask[atom14idx] = True
+        except ValueError as e:
+          logger.debug(e)
+      coord_list.append(labels)
+      coord_mask_list.append(label_mask)
+      bfactor_list.append(bfactors)
+    int_resseq_end = int_resseq
+
+  domains.append((int_resseq_start, int_resseq_end))
+
+  # sequence
+  sequence = ''.join(seq)
+
+  # description
+  l = sum(map(lambda x: x[1] - x[0] + 1, domains))
+  domain_str = ','.join(f'{i}-{j}' for i, j in domains)
+  description = f'{pdb_id} domains:{domain_str} length={l}'
+
+  ret = _make_seq_features(sequence,
+                           description,
+                           seq_color=seq_color,
+                           max_seq_len=max_seq_len)
+
+  # make npz
+  coord, coord_mask, bfactor = map(functools.partial(np.stack, axis=0),
+                                   (coord_list, coord_mask_list, bfactor_list))
+
+  ret.update(sequence=seq,
+             description=description,
+             coord=coord,
+             coord_mask=coord_mask,
+             coord_plddt=bfactor)
+  return ret
+
 
 
 def _make_feats_shrinked(item,
@@ -472,6 +568,13 @@ class FileSystem(contextlib.AbstractContextManager):
     del exc_details
     self.close()
 
+  def abspath(self, filename):
+    if os.path.isabs(filename):
+      return filename
+    elif isinstance(self.data_dir, zipfile.ZipFile):
+      raise ValueError('Not implementation!')
+    return self.data_dir / filename
+
   @contextlib.contextmanager
   def open(self, filename):
     if os.path.isabs(filename):
@@ -505,6 +608,45 @@ class FileSystem(contextlib.AbstractContextManager):
       return data.decode(encoding)
     return data
 
+
+class FoldcompDB(object):
+  def __init__(self, fs, db_uri, db_idx, key_fmt=None, db_open=True):
+    super().__init__()
+
+    self.db_uri = fs.abspath(db_uri)
+    self.db_idx = db_idx
+    self.key_fmt = key_fmt
+
+    self.db_hdr = None
+    # if db_open:
+    #   self.open()
+
+  def open(self):
+    if exists(self.db_hdr):
+      self.close()
+    assert not exists(self.db_hdr)
+    with timing(f'FoldcompDB.open {self.db_uri}', logger.debug):
+      import foldcomp  # pylint: disable=import-outside-toplevel
+      self.db_hdr = foldcomp.open(self.db_uri)
+    return self.db_hdr
+
+  def close(self):
+    if exists(self.db_hdr):
+      logger.debug('FoldcompDB.close %s', self.db_uri)
+      self.db_hdr.close()
+      self.db_hdr = None
+
+  def __getitem__(self, protein_id):
+    if not exists(self.db_hdr):
+      self.open()
+    assert exists(self.db_hdr)
+
+    if exists(self.key_fmt):
+      protein_id = self.key_fmt.format(protein_id)
+
+    idx = self.db_idx[protein_id]
+    _, pdb = self.db_hdr[idx]
+    return pdb
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
@@ -743,6 +885,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             k, v = line.split(maxsplit=1)
             self.attr_list[k] = json.loads(v)
 
+      data_idx = default(data_idx, 'name.idx')
+      if fs.exists('pdb.uri'):
+        with fs.open('pdb.uri') as f:
+          pdb_uri = fs.textise(f.read()).strip()
+        assert fs.exists(pdb_uri)
+
+        assert fs.exists('pdb.pkl')
+        logger.info('load pdb.idx from pdb.pkl')
+        with fs.open('pdb.pkl') as f:
+          pdb_idx = pickle.load(f)
+        self.pdb_db = FoldcompDB(fs, pdb_uri, pdb_idx)
+        weakref.finalize(self.pdb_db, self.pdb_db.close)
+
     self.fasta_dir = 'fasta'
     self.pdb_dir = 'npz'
 
@@ -753,12 +908,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     # if isinstance(self.data_dir, zipfile.ZipFile):
     #   d['data_dir'] = self.data_dir.filename
     logger.debug('%s is pickled ...', d['data_dir'])
+    if 'pdb_db' in d:
+      d['pdb_db'].close()
     return d
 
   def __setstate__(self, d):
     logger.debug('%s is unpickled ...', d['data_dir'])
     # if zipfile.is_zipfile(d['data_dir']):
     #   d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
+    if 'pdb_db' in d:
+      d['pdb_db'].open()
     self.__dict__ = d
 
   def __getitem__(self, idx):
@@ -924,15 +1083,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     pkey = self.mapping[pid] if pid in self.mapping else pid
     with FileSystem(self.data_dir) as fs:
-      seq_feats = self.get_seq_features(fs, pkey, seq_color=seq_color)
-
       ret = dict(pid=pid,
                  msa_idx=0,
                  clip=None,
-                 resolu=self.get_resolution(pid),
-                 **seq_feats)
-      if self.feat_flags & FEAT_PDB:
-        ret.update(self.get_structure_label_npz(fs, pid))
+                 resolu=self.get_resolution(pid))
+      ret.update(self.get_structure_label_npz(fs, pkey, pid))
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey))
@@ -1310,20 +1465,46 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       return ret
     return {}
 
-  def get_structure_label_npz(self, fs, protein_id):
+  def get_structure_label_npz(self, fs, protein_key, protein_id, seq_color=1):
     ret = {}
 
-    pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
-    if fs.exists(pdb_file):
-      with fs.open(pdb_file) as f:
-        structure = np.load(BytesIO(f.read()))
-        ret = dict(coord=torch.from_numpy(structure['coord']),
-                   coord_mask=torch.from_numpy(structure['coord_mask']))
-        if 'bfactor' in structure:
-          ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
-        else:
-          ret.update(
-              coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float))
+    fasta_file = f'{self.fasta_dir}/{protein_key}.fasta'
+    if fs.exists(fasta_file):
+      with fs.open(fasta_file) as f:
+        input_fasta_str = fs.textise(f.read())
+      input_seqs, input_descs = parse_fasta(input_fasta_str)
+      if len(input_seqs) != 1:
+        raise ValueError(
+            f'More than one input sequence found in {input_fasta_path}.')
+      input_sequence = input_seqs[0]
+      input_description = input_descs[0]
+
+      ret.update(_make_seq_features(input_sequence,
+                                    input_description,
+                                    seq_color=seq_color,
+                                    max_seq_len=None))
+
+      pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
+      if (self.feat_flags & FEAT_PDB) and fs.exists(pdb_file):
+        with fs.open(pdb_file) as f:
+          structure = np.load(BytesIO(f.read()))
+          ret.update(coord=torch.from_numpy(structure['coord']),
+                     coord_mask=torch.from_numpy(structure['coord_mask']))
+          if 'bfactor' in structure:
+            ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
+          else:
+            ret.update(
+                coord_plddt=torch.ones_like(ret['coord_mask'],
+                                            dtype=torch.float))
+    else:  # from pdb_db file
+      assert hasattr(self, 'pdb_db'), protein_id
+      pdb_string = self.pdb_db[protein_id]
+      ret.update(_make_pdb_features(protein_id,
+                                    pdb_string,
+                                    seq_color=seq_color,
+                                    max_seq_len=None))
+
+    if 'coord' in ret:
       pae_file = f'{self.pdb_dir}/{protein_id}-predicted_aligned_error.json'
       if fs.exists(pae_file):
         with fs.open(pae_file) as f:
@@ -1337,23 +1518,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           except json.decoder.JSONDecodeError as e:
             logger.error('get_structure_label_npz.pae: %s|%s', protein_id, e)
     return ret
-
-  def get_seq_features(self, fs, protein_id, seq_color=1):
-    """Runs alignment tools on the input sequence and creates features."""
-    input_fasta_path = f'{self.fasta_dir}/{protein_id}.fasta'
-    with fs.open(input_fasta_path) as f:
-      input_fasta_str = fs.textise(f.read())
-    input_seqs, input_descs = parse_fasta(input_fasta_str)
-    if len(input_seqs) != 1:
-      raise ValueError(
-          f'More than one input sequence found in {input_fasta_path}.')
-    input_sequence = input_seqs[0]
-    input_description = input_descs[0]
-
-    return _make_seq_features(input_sequence,
-                              input_description,
-                              seq_color=seq_color,
-                              max_seq_len=None)
 
   @staticmethod
   def collate_fn(batch, feat_flags=None):
