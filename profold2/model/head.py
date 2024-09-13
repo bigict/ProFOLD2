@@ -335,9 +335,10 @@ class DistogramHead(nn.Module):
     _, dim = embedd_dim_get(dim)
 
     self.num_buckets = buckets_num
-    self.buckets = torch.linspace(buckets_first_break,
-                                  buckets_last_break,
-                                  steps=buckets_num - 1)
+    buckets = torch.linspace(buckets_first_break,
+                             buckets_last_break,
+                             steps=buckets_num - 1)
+    self.register_buffer('buckets', buckets, persistent=False)
     self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, buckets_num))
     self.focal_loss = focal_loss
 
@@ -355,8 +356,7 @@ class DistogramHead(nn.Module):
         """
     x = representations['pair']
     trunk_embeds = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
-    breaks = self.buckets.to(trunk_embeds.device)
-    return dict(logits=self.net(trunk_embeds), breaks=breaks)
+    return dict(logits=self.net(trunk_embeds), breaks=self.buckets)
 
   def loss(self, value, batch):
     """Log loss of a distogram."""
@@ -758,9 +758,10 @@ class PAEHead(nn.Module):
     super().__init__()
     _, dim = embedd_dim_get(dim)
 
-    self.buckets = torch.linspace(buckets_first_break,
-                                  buckets_last_break,
-                                  steps=buckets_num - 1)
+    buckets = torch.linspace(buckets_first_break,
+                             buckets_last_break,
+                             steps=buckets_num - 1)
+    self.register_buffer('buckets', buckets, persistent=False)
     self.net = nn.Sequential(nn.Linear(dim, buckets_num))
 
     self.num_buckets = buckets_num
@@ -771,9 +772,8 @@ class PAEHead(nn.Module):
     assert 'folding' in headers and 'frames' in headers['folding']
 
     x = representations['pair']
-    breaks = self.buckets.to(x.device)
     return dict(logits=self.net(x),
-                breaks=breaks,
+                breaks=self.buckets,
                 frames=headers['folding']['frames'])
 
   def loss(self, value, batch):

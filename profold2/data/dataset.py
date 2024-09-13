@@ -117,6 +117,14 @@ def _make_var_features(sequences,
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
     return aligned_sequences, deletion_matrix
 
+  if exists(attr_dict):  # filter those in attr_dict
+    def _is_aligned(seq, desc):
+      var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
+      var_pid = compose_pid(var_pid, c)
+      return var_pid in attr_dict
+    sequences, descriptions = zip(*filter(_is_aligned,
+                                          zip(sequences, descriptions)))
+
   var_depth = len(sequences)
   if exists(max_var_depth) and len(sequences) > max_var_depth:
     data = list(zip(sequences, descriptions))
