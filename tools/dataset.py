@@ -116,16 +116,20 @@ def plddt(data, args):  # pylint: disable=redefined-outer-name
   feat = FeatureBuilder([('make_coord_plddt', {})])
   work_fn = functools.partial(_plddt_mean, args, feat, data)
 
+  range_start, range_stop = args.range_start, args.range_stop
+  if not exists(range_stop):
+    range_stop = len(data)
+  range_stop = min(range_stop, len(data))
   with open(args.output, 'w') as f:
     if args.num_workers == 1:
-      for i in range(len(data)):
+      for i in range(range_start, range_stop):
         pid, score = work_fn(i)
         if exists(score):
           f.write(f'plddt\t{pid}\t{score.item()}\n')
     else:
       with mp.Pool(args.num_workers) as p:
         for pid, score, seq_len in p.imap_unordered(
-            work_fn, range(len(data)), chunksize=args.chunksize):
+            work_fn, range(range_start, range_stop), chunksize=args.chunksize):
           if exists(score):
             f.write(f'plddt\t{pid}\t{score.item()}\t{seq_len}\n')
 
@@ -147,6 +151,16 @@ def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
       '--msa_required', action='store_true', help='MSA required')
   parser.add_argument(
       '--coord_required', action='store_true', help='coord required')
+  parser.add_argument(
+      '--range_start',
+      type=int,
+      default=0,
+      help='num of workers, default=#cpus')
+  parser.add_argument(
+      '--range_stop',
+      type=int,
+      default=None,
+      help='num of workers, default=#cpus')
   return parser
 
 

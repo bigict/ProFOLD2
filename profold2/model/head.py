@@ -228,6 +228,9 @@ class CoevolutionHead(nn.Module):
     self.register_buffer('mask', m, persistent=False)
 
     self.apc = apc
+    self.return_gij = False
+    if 'profold2_coevolution_return_gij' in os.environ:
+      self.return_gij = bool(os.environ['profold2_coevolution_return_gij'])
     self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
@@ -262,15 +265,18 @@ class CoevolutionHead(nn.Module):
     eij = eij * mij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
                                 'i j -> i j ()')  # eii = 0
 
+    ret = dict(bi=ei)
     if exists(self.states):
       states = self.states
       if len(states.shape) == 2:  # back compatible
         states = rearrange(states, 'c d -> () c d')
       states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
+      if self.return_gij:
+        ret.update(gij=eij)
       eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
     else:
       eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
-    ret = dict(wij=eij, bi=ei)
+    ret.update(wij=eij)
 
     # pseudo msa if not exists
     if 'msa' in batch:
