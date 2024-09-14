@@ -94,6 +94,12 @@ def _make_label_features(descriptions, attr_dict, defval=1.0):
   return [_make_label(desc) for desc in descriptions]
 
 
+def _make_var_pid(desc):
+  var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
+  var_pid = compose_pid(var_pid, c)
+  return var_pid
+
+
 def _make_var_features(sequences,
                        descriptions,
                        attr_dict=None,
@@ -117,13 +123,16 @@ def _make_var_features(sequences,
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
     return aligned_sequences, deletion_matrix
 
-  if exists(attr_dict):  # filter those in attr_dict
-    def _is_aligned(seq, desc):
-      var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
-      var_pid = compose_pid(var_pid, c)
+  if exists(attr_dict):  # filter with attr_dict, NOTE: keep the 1st one alway.
+    def _is_aligned(desc):
+      var_pid = _make_var_pid(desc)
       return var_pid in attr_dict
-    sequences, descriptions = zip(*filter(_is_aligned,
-                                          zip(sequences, descriptions)))
+    data = list(
+        filter(lambda x: _is_aligned(x[1]), zip(sequences[1:], descriptions[1:])))
+    sequences, descriptions = sequences[:1], descriptions[:1]
+    if data:
+      sequences += [sequence for sequence, _ in data]
+      descriptions += [desc for _, desc in data]
 
   var_depth = len(sequences)
   if exists(max_var_depth) and len(sequences) > max_var_depth:
@@ -146,7 +155,9 @@ def _make_var_features(sequences,
 
   variant = torch.as_tensor(int_msa, dtype=torch.int)
   variant_mask = variant != residue_constants.restypes_with_x_and_gap.index('-')
+  variant_pid = [_make_var_pid(desc) for desc in descriptions]
   return dict(variant=variant,
+              variant_pid=variant_pid,
               variant_mask=variant_mask,
               str_var=msa,
               desc_var=descriptions,
@@ -180,8 +191,16 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
               mask=mask)
 
 
-def _make_pdb_features(pdb_id, pdb_string, seq_color=1, max_seq_len=None):
-  parser = PDB.PDBParser(QUIET=True)
+def _make_pdb_features(pdb_id,
+                       pdb_string,
+                       pdb_type='pdb',
+                       seq_color=1,
+                       max_seq_len=None):
+  assert pdb_type in ('pdb', 'cif')
+  if pdb_type == 'pdb':
+    parser = PDB.PDBParser(QUIET=True)
+  else:
+    parser = PDB.MMCIFParser(QUIET=True)
   handle = io.StringIO(pdb_string)
   full_structure = parser.get_structure('', handle)
   model_structure = next(full_structure.get_models())
@@ -198,6 +217,8 @@ def _make_pdb_features(pdb_id, pdb_string, seq_color=1, max_seq_len=None):
   for aa in chains[0].get_residues():
     hetero, int_resseq, icode = aa.id
 
+    if hetero and hetero != ' ':
+      continue
     if icode in _unassigned:
       icode = ' '
     if icode and icode != ' ':
@@ -653,8 +674,9 @@ class FoldcompDB(object):
       protein_id = self.key_fmt.format(protein_id)
 
     idx = self.db_idx[protein_id]
-    _, pdb = self.db_hdr[idx]
-    return pdb
+    _, pdb_string = self.db_hdr[idx]
+    pdb_type = 'pdb'
+    return pdb_type, pdb_string
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
@@ -1095,7 +1117,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                  msa_idx=0,
                  clip=None,
                  resolu=self.get_resolution(pid))
-      ret.update(self.get_structure_label_npz(fs, pkey, pid))
+      ret.update(self.get_structure_label_npz(fs, pkey, pid,
+                                              seq_color=seq_color))
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey))
@@ -1228,8 +1251,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if 'variant' in feat:
           for var_idx, desc in enumerate(feat['desc_var']):
             # remove domains pid/1-100
-            var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
-            var_pid = compose_pid(var_pid, c)
+            var_pid = _make_var_pid(desc)
             ret['var'][var_pid] = (feat['variant'][var_idx],
                                    feat['variant_mask'][var_idx],
                                    chains[idx])
@@ -1505,10 +1527,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 coord_plddt=torch.ones_like(ret['coord_mask'],
                                             dtype=torch.float))
     else:  # from pdb_db file
-      assert hasattr(self, 'pdb_db'), protein_id
-      pdb_string = self.pdb_db[protein_id]
+      for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
+        if exists(pdb_type):
+          pdb_file = f'{self.pdb_dir}/{protein_id}.{pdb_type}'
+          if fs.exists(pdb_file):
+            with fs.open(pdb_file) as f:
+              pdb_string = fs.textise(f.read())
+            break
+      if not exists(pdb_type):
+        assert hasattr(self, 'pdb_db'), protein_id
+        pdb_type, pdb_string = self.pdb_db[protein_id]
       ret.update(_make_pdb_features(protein_id,
                                     pdb_string,
+                                    pdb_type=pdb_type,
                                     seq_color=seq_color,
                                     max_seq_len=None))
 
