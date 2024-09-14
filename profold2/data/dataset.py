@@ -180,8 +180,16 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
               mask=mask)
 
 
-def _make_pdb_features(pdb_id, pdb_string, seq_color=1, max_seq_len=None):
-  parser = PDB.PDBParser(QUIET=True)
+def _make_pdb_features(pdb_id,
+                       pdb_string,
+                       pdb_type='pdb',
+                       seq_color=1,
+                       max_seq_len=None):
+  assert pdb_type in ('pdb', 'cif')
+  if pdb_type == 'pdb':
+    parser = PDB.PDBParser(QUIET=True)
+  else:
+    parser = PDB.MMCIFParser(QUIET=True)
   handle = io.StringIO(pdb_string)
   full_structure = parser.get_structure('', handle)
   model_structure = next(full_structure.get_models())
@@ -198,6 +206,8 @@ def _make_pdb_features(pdb_id, pdb_string, seq_color=1, max_seq_len=None):
   for aa in chains[0].get_residues():
     hetero, int_resseq, icode = aa.id
 
+    if hetero and hetero != ' ':
+      continue
     if icode in _unassigned:
       icode = ' '
     if icode and icode != ' ':
@@ -653,8 +663,9 @@ class FoldcompDB(object):
       protein_id = self.key_fmt.format(protein_id)
 
     idx = self.db_idx[protein_id]
-    _, pdb = self.db_hdr[idx]
-    return pdb
+    _, pdb_string = self.db_hdr[idx]
+    pdb_type = 'pdb'
+    return pdb_type, pdb_string
 
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
@@ -1095,7 +1106,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                  msa_idx=0,
                  clip=None,
                  resolu=self.get_resolution(pid))
-      ret.update(self.get_structure_label_npz(fs, pkey, pid))
+      ret.update(self.get_structure_label_npz(fs, pkey, pid,
+                                              seq_color=seq_color))
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey))
@@ -1505,10 +1517,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 coord_plddt=torch.ones_like(ret['coord_mask'],
                                             dtype=torch.float))
     else:  # from pdb_db file
-      assert hasattr(self, 'pdb_db'), protein_id
-      pdb_string = self.pdb_db[protein_id]
+      for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
+        if exists(pdb_type):
+          pdb_file = f'{self.pdb_dir}/{protein_id}.{pdb_type}'
+          if fs.exists(pdb_file):
+            with fs.open(pdb_file) as f:
+              pdb_string = fs.textise(f.read())
+            break
+      if not exists(pdb_type):
+        assert hasattr(self, 'pdb_db'), protein_id
+        pdb_type, pdb_string = self.pdb_db[protein_id]
       ret.update(_make_pdb_features(protein_id,
                                     pdb_string,
+                                    pdb_type=pdb_type,
                                     seq_color=seq_color,
                                     max_seq_len=None))
 
