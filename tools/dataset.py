@@ -16,7 +16,7 @@ from einops import rearrange
 from profold2.common import protein
 from profold2.data import dataset
 from profold2.data.dataset import ProteinStructureDataset
-from profold2.data.utils import compose_pid, decompose_pid
+from profold2.data.utils import compose_pid, decompose_pid, str_seq_index
 from profold2.model.features import FeatureBuilder
 from profold2.model.functional import sharded_apply, squared_cdist
 from profold2.utils import exists, timing
@@ -31,7 +31,8 @@ def to_fasta(data, args):  # pylint: disable=redefined-outer-name
     assert 'pid' in prot and 'str_seq' in prot
     if args.print_fasta:
       pid = prot['pid']
-      print(f'>{pid}')
+      domains = str_seq_index(prot['seq_index'])
+      print(f'>{pid} domains:{domains}')
       print(prot['str_seq'])
     if args.print_first_only:
       print(prot)
