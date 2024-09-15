@@ -94,6 +94,12 @@ def _make_label_features(descriptions, attr_dict, defval=1.0):
   return [_make_label(desc) for desc in descriptions]
 
 
+def _make_var_pid(desc):
+  var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
+  var_pid = compose_pid(var_pid, c)
+  return var_pid
+
+
 def _make_var_features(sequences,
                        descriptions,
                        attr_dict=None,
@@ -117,13 +123,16 @@ def _make_var_features(sequences,
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
     return aligned_sequences, deletion_matrix
 
-  if exists(attr_dict):  # filter those in attr_dict
-    def _is_aligned(seq, desc):
-      var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
-      var_pid = compose_pid(var_pid, c)
+  if exists(attr_dict):  # filter with attr_dict, NOTE: keep the 1st one alway.
+    def _is_aligned(desc):
+      var_pid = _make_var_pid(desc)
       return var_pid in attr_dict
-    sequences, descriptions = zip(*filter(_is_aligned,
-                                          zip(sequences, descriptions)))
+    data = list(
+        filter(lambda x: _is_aligned(x[1]), zip(sequences[1:], descriptions[1:])))
+    sequences, descriptions = sequences[:1], descriptions[:1]
+    if data:
+      sequences += [sequence for sequence, _ in data]
+      descriptions += [desc for _, desc in data]
 
   var_depth = len(sequences)
   if exists(max_var_depth) and len(sequences) > max_var_depth:
@@ -146,7 +155,9 @@ def _make_var_features(sequences,
 
   variant = torch.as_tensor(int_msa, dtype=torch.int)
   variant_mask = variant != residue_constants.restypes_with_x_and_gap.index('-')
+  variant_pid = [_make_var_pid(desc) for desc in descriptions]
   return dict(variant=variant,
+              variant_pid=variant_pid,
               variant_mask=variant_mask,
               str_var=msa,
               desc_var=descriptions,
@@ -1240,8 +1251,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if 'variant' in feat:
           for var_idx, desc in enumerate(feat['desc_var']):
             # remove domains pid/1-100
-            var_pid, c, _ = decompose_pid(desc.split()[0], return_domain=True)
-            var_pid = compose_pid(var_pid, c)
+            var_pid = _make_var_pid(desc)
             ret['var'][var_pid] = (feat['variant'][var_idx],
                                    feat['variant_mask'][var_idx],
                                    chains[idx])
