@@ -286,9 +286,9 @@ def _make_pdb_features(pdb_id,
 
   ret.update(sequence=seq,
              description=description,
-             coord=coord,
-             coord_mask=coord_mask,
-             coord_plddt=bfactor)
+             coord=torch.from_numpy(coord),
+             coord_mask=torch.from_numpy(coord_mask),
+             coord_plddt=torch.from_numpy(bfactor))
   return ret
 
 
