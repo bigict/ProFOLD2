@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import re
+from urllib.parse import urlparse, parse_qsl
 
 import numpy as np
 import torch
@@ -203,7 +204,37 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   ####
 
   # optimizer
-  optim = Adam(model.parameters(), lr=args.learning_rate)
+  if exists(args.model_params_optim_option):
+    def optim_option_parse(optim_option):
+      o = urlparse(optim_option)
+      assert o.scheme == 'optim'
+      q = {'params': []}
+      for k, v in parse_qsl(o.query):
+        q[k] = float(v)
+      logging.debug('pattern: %s, options: %s', o.fragment, q)
+      return re.compile(o.fragment), q
+
+    def model_params_groups(optim_options):
+      optim_options = [
+          optim_option_parse(optim_option)
+          for optim_option in optim_options.split(',')
+      ]
+      optim_options.append(
+          (re.compile('.*'), {'params': [], 'lr': args.learning_rate}))
+      patterns, params = zip(*optim_options)
+
+      for name, param in model.named_parameters():
+        for i, p in enumerate(patterns):
+          if p.match(name):
+            logging.debug('name: %s, pattern_idx: %d', name, i)
+            params[i]['params'].append(param)
+            break
+      return params
+
+    optim = Adam(model_params_groups(args.model_params_optim_option),
+                 lr=args.learning_rate)
+  else:
+    optim = Adam(model.parameters(), lr=args.learning_rate)
 
   # tensorboard
   writer = SummaryWriter(os.path.join(
@@ -531,6 +562,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='learn partial parameters only.')
   parser.add_argument('--model_params_requires_hook', type=str, default=None,
       help='hook partial parameters.')
+  parser.add_argument('--model_params_optim_option', type=str, default=None,
+      help='optimizer arguments accepted by partial parameters only.')
 
   parser.add_argument('--save_pdb', type=float, default=None,
       help='save pdb files when TMscore>=VALUE.')
