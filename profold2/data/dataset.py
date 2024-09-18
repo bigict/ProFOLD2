@@ -100,6 +100,24 @@ def _make_var_pid(desc):
   return var_pid
 
 
+def _make_var_choice(var_list, attr_list, max_var_depth, defval=1.0):
+  assert max_var_depth > 0
+
+  def _var_w(var_pid):
+    if exists(attr_list) and var_pid in attr_list:
+      return attr_list[var_pid].get('weight', defval)
+    return defval
+
+  w = np.asarray(
+      [_var_w(var_pid) for var_pid, *_ in var_list])
+  w /= (np.sum(w) + 1e-8)
+  new_order = np.random.choice(len(var_list),
+                               size=max_var_depth,
+                               replace=False,
+                               p=w)
+  return new_order
+
+
 def _make_var_features(sequences,
                        descriptions,
                        attr_dict=None,
@@ -127,23 +145,18 @@ def _make_var_features(sequences,
     def _is_aligned(desc):
       var_pid = _make_var_pid(desc)
       return var_pid in attr_dict
-    data = list(
-        filter(lambda x: _is_aligned(x[1]), zip(sequences[1:], descriptions[1:])))
-    sequences, descriptions = sequences[:1], descriptions[:1]
-    if data:
-      sequences += [sequence for sequence, _ in data]
-      descriptions += [desc for _, desc in data]
+    new_order = list(filter(lambda i: _is_aligned(descriptions[i + 1]),
+                            range(len(descriptions) - 1)))
+    sequences = sequences[:1] + [sequences[i + 1] for i in new_order]
+    descriptions = descriptions[:1] + [descriptions[i + 1] for i in new_order]
 
   var_depth = len(sequences)
   if exists(max_var_depth) and len(sequences) > max_var_depth:
-    data = list(zip(sequences, descriptions))
     if max_var_depth > 1:
-      new_order = np.random.choice(len(data) - 1,
-                                   size=max_var_depth - 1,
-                                   replace=False)
-      data = data[:1] + [data[i + 1] for i in new_order]
-    sequences = [sequence for sequence, _ in data]
-    descriptions = [desc for _, desc in data]
+      var_list = [_make_var_pid(desc) for desc in descriptions[1:]]
+      new_order = _make_var_choice(var_list, attr_dict, max_var_depth - 1)
+      sequences = sequences[:1] + [sequences[i + 1] for i in new_order]
+      descriptions = descriptions[:1] + [descriptions[i + 1] for i in new_order]
   msa, del_matirx = parse_a4m(sequences)
 
   int_msa = []
@@ -1287,18 +1300,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if exists(self.max_var_depth) and self.max_var_depth < len(var_chain_list) + 1:
         if self.max_var_depth > 1:
           with timing(f'ProteinStructureDataset.sample_chain_list {protein_id}', logger.debug):
-            def _variant_w(var_pid, defval=1.0):
-              if var_pid in self.attr_list:
-                return self.attr_list[var_pid].get('weight', defval)
-              return defval
-
-            w = np.asarray(
-                [_variant_w(var_pid) for var_pid, _ in var_chain_list])
-            w /= (np.sum(w) + 1e-8)
-            new_order = np.random.choice(len(var_chain_list),
-                                         size=self.max_var_depth - 1,
-                                         replace=False,
-                                         p=w)
+            new_order = _make_var_choice(var_chain_list,
+                                         self.attr_list,
+                                         self.max_var_depth - 1)
             var_chain_list = [var_chain_list[i] for i in new_order]
 
       # realign the complex: iterate each target chain
