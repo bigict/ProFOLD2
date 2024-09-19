@@ -1115,6 +1115,11 @@ class FitnessHead(nn.Module):
     del dim
 
     self.sigma = nn.Linear(1, 1, bias=False)
+    # https://pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear
+    # :math:'mathcal{U}(0, \sqrt{k})' where
+    # :math:'k=\frac{1}{\text{in\_features}}'
+    nn.init.uniform_(self.sigma.weight, a=0.0, b=1.0)
+
     num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
