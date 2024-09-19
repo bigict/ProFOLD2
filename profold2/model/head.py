@@ -1207,16 +1207,16 @@ class FitnessHead(nn.Module):
 
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
-        label_mask = torch.sum(variant_mask, dim=-1) > self.label_threshold
+        label_mask = torch.sum(variant_mask, dim=-1) > 0
         label_num = torch.min(torch.sum(label_mask, dim=-1))
 
         num_var_as_ref = min(self.num_var_as_ref, label_num)
         if num_var_as_ref > 0:
-          variant_label = batch['variant_label'][:, :label_num] * label_mask
+          variant_weight = (variant_label > self.label_threshold) * label_mask
 
           b, _, n = logits.shape
           # sample reference based on variant_label
-          ref_idx = torch.multinomial(variant_label + 1e-3,
+          ref_idx = torch.multinomial(variant_weight + 1e-3,
                                       num_var_as_ref,
                                       replacement=False)
           ref_idx = torch.cat((torch.zeros(
