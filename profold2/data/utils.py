@@ -19,6 +19,8 @@ def decompose_pid(pid, return_domain=False):
   else:
     domains = None
 
+  pid, *_ = pid.split('|')  # HACK: pid|attr1|attr2/2-256
+
   k = pid.rfind('_')
   if k != -1:
     pid, chain = pid[:k], pid[k+1:]
