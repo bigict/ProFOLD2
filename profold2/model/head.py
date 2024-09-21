@@ -1200,7 +1200,7 @@ class FitnessHead(nn.Module):
                                          logits=motifs,
                                          mask=self.mask,
                                          gammar=self.focal_loss)
-        motif_mask = (variant_label[..., None] > 0) * variant_mask
+        motif_mask = (variant_label[..., None] > self.label_threshold) * variant_mask
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
         avg_error_motif = self.alpha * avg_error_motif
