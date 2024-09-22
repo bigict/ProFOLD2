@@ -146,8 +146,11 @@ class Alphafold2(nn.Module):
               shard_size=None):
     seq, mask, seq_embed, seq_index = map(
         batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
-    msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
-    msa, msa_mask, msa_embed = None, None, None
+    msa_enabled = batch.get('msa_enabled', False)
+    if msa_enabled:
+      msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
+    else:
+      msa, msa_mask, msa_embed = None, None, None  # msa as features disabled
     embedds, = map(batch.get, ('embedds',))
     recyclables, = map(batch.get, ('recyclables',))
 
