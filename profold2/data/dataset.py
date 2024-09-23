@@ -330,7 +330,7 @@ def _make_feats_shrinked(item,
     if field in item:
       item[field] = torch.index_select(item[field], 0, new_order)
       item[field] = torch.index_select(item[field], 1, new_order)
-  for field in default(msa_feats, ('msa', 'del_msa')):
+  for field in default(msa_feats, ('msa', 'msa_mask', 'del_msa')):
     if field in item:
       item[field] = torch.index_select(item[field], 1, new_order)
   for field in default(var_feats, ('variant', 'del_var', 'variant_mask')):
@@ -577,7 +577,7 @@ def _protein_crop_fn(protein, clip):
   for field in ('str_msa',):
     if field in protein:
       protein[field] = [v[i:j] for v in protein[field]]
-  for field in ('msa', 'del_msa'):
+  for field in ('msa', 'msa_mask', 'del_msa'):
     if field in protein:
       protein[field] = protein[field][:, i:j, ...]
   for field in ('str_var',):
