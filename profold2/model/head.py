@@ -309,8 +309,8 @@ class CoevolutionHead(nn.Module):
                                    gammar=self.focal_loss)
     mask = torch.einsum('b i,b m i c,c -> b m i', batch['mask'].float(),
                         labels.float(), self.mask)
-    if 'msa_row_mask' in batch:
-      mask = torch.einsum('b m i,b m -> b m i', mask, batch['msa_row_mask'])
+    if 'msa_mask' in batch:
+      mask = mask * batch['msa_mask']  # (b m i)
 
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
@@ -1052,9 +1052,9 @@ class MetricDictHead(nn.Module):
             pred = torch.argmax(prob, dim=-1)
             mask = F.one_hot(batch['msa'].long(),
                              num_classes=num_class) * label_mask
-            if 'msa_row_mask' in batch:
-              mask = torch.einsum('b m i c, b m -> b m i c', mask,
-                                  batch['msa_row_mask'])
+            if 'msa_mask' in batch:
+              mask = torch.einsum('b m i c,b m i -> b m i c', mask,
+                                  batch['msa_mask'])
             avg_sim = functional.masked_mean(value=F.one_hot(
                 pred, num_classes=num_class),
                                              mask=mask)
