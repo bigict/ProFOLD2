@@ -18,7 +18,7 @@ from profold2.utils import exists
 
 
 class TemplateEmbedding(nn.Module):
-  """The Template representation in Alphafold2
+  """The Template representation in AlphaFold2
    """
   def __init__(self,
                dim,
@@ -201,7 +201,7 @@ class EvoformerBlock(nn.Module):
 
 
 class Evoformer(nn.Module):
-  """The Evoformer in Alphafold2
+  """The Evoformer in AlphaFold2
    """
   def __init__(self, *, depth, **kwargs):
     super().__init__()

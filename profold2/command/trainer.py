@@ -170,8 +170,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   with open(args.model_headers, 'r', encoding='utf-8') as f:
     headers = json.loads(f.read())
 
-  logging.info('Alphafold2.feats: %s', feats)
-  logging.info('Alphafold2.headers: %s', headers)
+  logging.info('AlphaFold2.feats: %s', feats)
+  logging.info('AlphaFold2.headers: %s', headers)
 
   features = FeatureBuilder(feats).to(device)
   model = worker.wrap(
@@ -180,7 +180,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       heads=args.model_evoformer_head_num,
       dim_head=args.model_evoformer_head_dim,
       num_tokens=args.model_num_tokens,
-      embedd_dim=args.model_embedd_dim,
       attn_dropout=args.model_dropout,
       accept_msa_attn=args.model_evoformer_accept_msa_attn,
       accept_frame_attn=args.model_evoformer_accept_frame_attn,
@@ -409,7 +408,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
              evoformer_accept_msa_attn=args.model_evoformer_accept_msa_attn,
              evoformer_accept_frame_attn=args.model_evoformer_accept_frame_attn,
              evoformer_accept_frame_update=args.model_evoformer_accept_frame_update,  # pylint: disable=line-too-long
-             mlm_dim=args.model_embedd_dim,
              num_tokens=args.model_num_tokens,
              headers=headers,
              feats=feats,
@@ -534,8 +532,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='enable backbone atom position recycling.')
   parser.add_argument('--model_dim', type=int, nargs=3, default=(384, 256, 128),
       help='dimension of model.')
-  parser.add_argument('--model_embedd_dim', type=int, default=esm.ESM_EMBED_DIM,
-      help='dimension of embedd style input.')
   parser.add_argument('--model_num_tokens', type=int,
       default=len(residue_constants.restypes_with_x),
       help='number of tokens in the model.')
