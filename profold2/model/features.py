@@ -130,9 +130,9 @@ def make_seq_profile(protein,
                   num_classes=len(residue_constants.restypes_with_x_and_gap))
     num_msa = p.shape[1]
     # Shape (b, l, c)
-    if 'msa_row_mask' in protein:
-      p = torch.einsum('b m i c,b m -> b i c', p.float(),
-                       protein['msa_row_mask'].float())
+    if 'msa_mask' in protein:
+      p = torch.einsum('b m i c,b m i -> b i c', p.float(),
+                       protein['msa_mask'].float())
     else:
       p = torch.sum(p.float(), dim=1)
   else:
