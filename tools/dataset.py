@@ -76,6 +76,7 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
     if 'msa' in prot:
       if n != prot['msa'].shape[1]:
         print(prot['pid'], n, prot['msa'].shape)
+      assert prot['msa'].shape == prot['msa_mask'].shape
     elif args.msa_required:
       print(prot['pid'], 'MSA required')
     if 'coord' in prot:
