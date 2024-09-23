@@ -1613,7 +1613,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           zip(*[[b[k] for k in fields] for b in batch]))
 
       padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
-      msa_msks = pad_for_batch(msas, max_batch_len, 'msa_mask')
+      msa_msks = pad_for_batch(msa_msks, max_batch_len, 'msa_mask')
       padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
       ret.update(msa=padded_msas,
                  msa_mask=msa_msks,
