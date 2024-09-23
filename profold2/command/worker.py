@@ -13,7 +13,7 @@ from torch.cuda.amp import autocast
 import torch.multiprocessing as mp
 from torch import nn
 
-from profold2.model import Alphafold2
+from profold2.model import AlphaFold2
 from profold2.utils import default, exists, torch_allow_tf32, version_cmp
 
 
@@ -199,7 +199,7 @@ class WorkerModel(object):
     return self.xpu.device
 
   def wrap(self, **kwargs):
-    model = Alphafold2(**kwargs)
+    model = AlphaFold2(**kwargs)
 
     if self.xpu.is_available():
       model.to(self.xpu.device)
@@ -220,7 +220,6 @@ class WorkerModel(object):
         depth=checkpoint['evoformer_depth'],
         heads=checkpoint['evoformer_head_num'],
         dim_head=checkpoint['evoformer_head_dim'],
-        embedd_dim=checkpoint['mlm_dim'],
         accept_msa_attn=checkpoint.get('evoformer_accept_msa_attn', True),
         accept_frame_attn=checkpoint.get('evoformer_accept_frame_attn', False),
         accept_frame_update=checkpoint.get('evoformer_accept_frame_update',
@@ -232,7 +231,7 @@ class WorkerModel(object):
       if key in checkpoint:
         kwargs[key] = checkpoint[key]
 
-    model = Alphafold2(**kwargs)
+    model = AlphaFold2(**kwargs)
     model.load_state_dict(checkpoint['model'])
     if self.xpu.is_available():
       model = model.to(device=self.xpu.device)

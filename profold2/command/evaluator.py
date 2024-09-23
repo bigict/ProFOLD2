@@ -69,8 +69,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       with torch.no_grad():
         with autocast_ctx(args.amp_enabled):
           r = ReturnValues(**model(batch=batch,  # pylint: disable=not-callable
-              sequence_max_input_len=args.model_sequence_max_input_len,
-              sequence_max_step_len=args.model_sequence_max_step_len,
               num_recycle=args.model_recycles,
               shard_size=args.model_shard_size))
 
@@ -225,10 +223,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--num_workers', type=int, default=1,
       help='number of workers.')
 
-  parser.add_argument('--model_sequence_max_input_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment.')
-  parser.add_argument('--model_sequence_max_step_len', type=int, default=None,
-      help='predict sequence embedding segment by seqment.')
   parser.add_argument('--model_recycles', type=int, default=0,
       help='number of recycles in profold2.')
   parser.add_argument('--model_shard_size', type=int, default=None,

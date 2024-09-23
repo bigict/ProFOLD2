@@ -1,4 +1,4 @@
-"""A lot of modules in Alphafold2
+"""A lot of modules in AlphaFold2
   """
 import os
 import functools

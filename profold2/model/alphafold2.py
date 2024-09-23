@@ -1,4 +1,4 @@
-"""An implementation of Alphafold2 model
+"""An implementation of AlphaFold2 model
  """
 from dataclasses import dataclass
 import functools
@@ -14,8 +14,6 @@ from profold2.model.commons import Always, PairwiseEmbedding, tensor_add
 from profold2.model.functional import pseudo_beta_fn, distogram_from_positions
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
-from profold2.model.sequence import (ESMEmbedding, ESM_EMBED_DIM,
-                                     ESM_MODEL_PATH)
 from profold2.utils import default, exists
 
 logger = logging.getLogger(__name__)
@@ -56,8 +54,8 @@ class ReturnValues(_ReturnValues):
                 loss=self.loss)
 
 
-class Alphafold2(nn.Module):
-  """An implementation of the Alphafold2 model
+class AlphaFold2(nn.Module):
+  """An implementation of the AlphaFold2 model
    """
 
   def __init__(self,
@@ -68,7 +66,6 @@ class Alphafold2(nn.Module):
                dim_head=64,
                max_rel_dist=32,
                num_tokens=len(residue_constants.restypes_with_x),
-               embedd_dim=ESM_EMBED_DIM,
                attn_dropout=0.,
                ff_dropout=0.,
                disable_token_embed=False,
@@ -93,11 +90,6 @@ class Alphafold2(nn.Module):
     self.disable_token_embed = disable_token_embed
     self.to_pairwise_repr = PairwiseEmbedding((dim_msa, dim_pairwise),
                                               max_rel_dist)
-
-    # custom embedding projection
-    if embedd_dim > 0:
-      self.embedd_project = nn.Linear(embedd_dim, dim_msa)
-      self.sequence = ESMEmbedding(*ESM_MODEL_PATH)
 
     # main trunk modules
     self.evoformer = Evoformer(depth=depth,
@@ -139,8 +131,6 @@ class Alphafold2(nn.Module):
   def forward(self,
               batch,
               *,
-              sequence_max_input_len=None,
-              sequence_max_step_len=None,
               return_recyclables=False,
               compute_loss=True,
               shard_size=None):
@@ -166,20 +156,10 @@ class Alphafold2(nn.Module):
 
     representations = {}
 
-    # embed multiple sequence alignment (msa)
-    if hasattr(self, 'sequence'):
-      embedds, contacts = self.sequence(
-          batch,
-          sequence_max_input_len=sequence_max_input_len,
-          sequence_max_step_len=sequence_max_step_len)
-      representations['mlm'] = dict(representations=embedds, contacts=contacts)
-
-      embedds = rearrange(embedds, 'b l c -> b () l c')
-
     # if MSA is not passed in, just use the sequence itself
     if not exists(embedds) and not exists(msa):
-      msa = rearrange(seq, 'b n -> b () n')
-      msa_mask = rearrange(mask, 'b n -> b () n')
+      msa = rearrange(seq, 'b i -> b () i')
+      msa_mask = rearrange(mask, 'b i -> b () i')
 
     # assert on sequence length
     assert not exists(msa) or msa.shape[-1] == seq.shape[
@@ -199,21 +179,19 @@ class Alphafold2(nn.Module):
         m = tensor_add(m, msa_embed)
 
       # add single representation to msa representation
-      m = tensor_add(m, rearrange(x, 'b n d -> b () n d'))
+      m = tensor_add(m, rearrange(x, 'b i d -> b () i d'))
 
       # get msa_mask to all ones if none was passed
       msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
 
     elif exists(embedds):
-      m = self.embedd_project(embedds)
+      m = embedds
 
       # get msa_mask to all ones if none was passed
       msa_mask = default(msa_mask,
                          lambda: torch.ones_like(embedds[..., -1]).bool())
     else:
-      m = rearrange(x, 'b n d -> b () n d')
-      msa_mask = rearrange(mask, 'b n -> b () n')
-      #raise Error('either MSA or embeds must be given')
+      raise ValueError('either MSA or embeds must be given')
 
     # derive pairwise representation
     x, x_mask = self.to_pairwise_repr(x, mask, seq_index)
@@ -289,14 +267,14 @@ class Alphafold2(nn.Module):
     return ret.asdict()
 
 
-class Alphafold2WithRecycling(nn.Module):
-  """Wrap the Alphafold2 with recycling
+class AlphaFold2WithRecycling(nn.Module):
+  """Wrap the AlphaFold2 with recycling
    """
 
   def __init__(self, **kwargs):
     super().__init__()
 
-    self.impl = Alphafold2(**kwargs)
+    self.impl = AlphaFold2(**kwargs)
     logger.debug(self)
 
   def embeddings(self):
