@@ -74,10 +74,11 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
         residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
             residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence
     ])
+  int_msa = torch.as_tensor(int_msa, dtype=torch.int)
 
-  return dict(msa=torch.as_tensor(int_msa, dtype=torch.int),
+  return dict(msa=int_msa,
+              msa_mask=torch.ones_like(int_msa, dtype=torch.bool),
               str_msa=msa,
-              msa_row_mask=torch.ones(len(int_msa), dtype=torch.bool),
               del_msa=torch.as_tensor(del_matirx, dtype=torch.int),
               num_msa=msa_depth)
 
@@ -828,16 +829,14 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
                mask=padded_masks,
                str_seq=str_seqs)
 
-    fields = ('msa', 'msa_row_mask', 'str_msa', 'del_msa', 'num_msa')
+    fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
     if all(all(field in b for field in fields) for b in batch):
-      msas, msa_row_msks, str_msas, del_msas, num_msa = list(
+      msas, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
       msas = pad_for_batch(msas, max_batch_len, 'msa')
-      msa_row_msks = pad_for_batch(msa_row_msks, max_batch_len, 'msa_row_mask')
       del_msas = pad_for_batch(del_msas, max_batch_len, 'del_msa')
       ret.update(msa=msas,
-                 msa_row_mask=msa_row_msks,
                  str_msa=str_msas,
                  del_msa=del_msas,
                  num_msa=torch.as_tensor(num_msa))
@@ -976,7 +975,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if not exists(chains) or len(chains) == 1:
         ret = self.get_monomer(pid, crop_fn=self.data_crop_fn)
       else:
-        ret = self.get_complex(pid, chains)
+        ret = self.get_multimer(pid, chains)
 
       # We need all the amino acids!
       # if 'coord_mask' in ret:
@@ -1163,7 +1162,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['clip'] = _protein_crop_fmt(ret['clip'])
     return ret
 
-  def get_complex(self, protein_id, chains):
+  def get_multimer(self, protein_id, chains):
     assert len(chains) > 1
 
     pid, selected_chain = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
@@ -1223,6 +1222,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               (ret['msa'],
                torch.full((n - m, seq_len), gap_idx, dtype=ret['msa'].dtype)),
               dim=0)
+          ret['msa_mask'] = torch.cat(
+              (ret['msa_mask'],
+               torch.zeros(n - m, seq_len, dtype=ret['msa_mask'].dtype)),
+              dim=0)
           ret['del_msa'] = torch.cat(
               (ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0)
         elif 0 <= n < m:
@@ -1232,6 +1235,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               (feat['msa'],
                torch.full((m - n, seq_len), gap_idx, dtype=feat['msa'].dtype)),
               dim=0)
+          feat['msa_mask'] = torch.cat(
+              (feat['msa_mask'],
+               torch.zeros(m - n, seq_len, dtype=feat['msa_mask'].dtype)),
+              dim=0)
           feat['del_msa'] = torch.cat(
               (feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0)
         # Rand permute msa relate feat
@@ -1240,14 +1247,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         else:
           for i in range(max(m, n)):
             ret['str_msa'][i] += feat['str_msa'][i]
-        for field in ('msa', 'del_msa'):
+        for field in ('msa', 'msa_mask', 'del_msa'):
           if field not in ret:
             ret[field] = feat[field]
           else:
             ret[field] = torch.cat((ret[field], feat[field]), dim=1)
-        for field in ('msa_row_mask',):
-          if field not in ret or m < n:
-            ret[field] = feat[field]
         # Update chain_id
         if feat['msa_idx'] > 0:
           msa_idx = feat['msa_idx']
@@ -1603,17 +1607,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret[field] = padded_values
 
     if feat_flags & FEAT_MSA:
-      fields = ('msa', 'msa_idx', 'msa_row_mask', 'str_msa', 'del_msa',
+      fields = ('msa', 'msa_mask', 'msa_idx', 'str_msa', 'del_msa',
                 'num_msa')
-      msas, msa_idx, msa_row_msks, str_msas, del_msas, num_msa = list(
+      msas, msa_msks, msa_idx, str_msas, del_msas, num_msa = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
       padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
-      msa_row_msks = pad_for_batch(msa_row_msks, max_batch_len, 'msa_row_mask')
+      msa_msks = pad_for_batch(msa_msks, max_batch_len, 'msa_mask')
       padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
       ret.update(msa=padded_msas,
+                 msa_mask=msa_msks,
                  msa_idx=torch.as_tensor(msa_idx, dtype=torch.int),
-                 msa_row_mask=msa_row_msks,
                  str_msa=str_msas,
                  del_msa=padded_dels,
                  num_msa=torch.as_tensor(num_msa, dtype=torch.int))
