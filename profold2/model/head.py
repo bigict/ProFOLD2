@@ -1101,6 +1101,7 @@ class FitnessHead(nn.Module):
   def __init__(self,
                dim,
                mask='-',
+               pooling='sum',
                alpha=None,
                num_var_as_ref=0,
                label_threshold=0.,
@@ -1120,6 +1121,9 @@ class FitnessHead(nn.Module):
     num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
+
+    assert pooling in ('sum', 'mean')
+    self.pooling = pooling
 
     assert num_var_as_ref >= 0
     self.num_var_as_ref = num_var_as_ref
@@ -1178,8 +1182,16 @@ class FitnessHead(nn.Module):
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
         cat_dim=_hamiton_cat)
-    variant_logit = torch.sum((logits - logits[:, :1, ...]) * variant_mask,
-                              dim=-1)
+
+    variant_mask = variant_mask * variant_mask[:, :1, ...]
+    variant_logit = logits - logits[:, :1, ...]
+    if self.pooling == 'sum':
+      variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    else:
+      assert self.pooling == 'mean'
+      variant_logit = functional.masked_mean(value=variant_logit,
+                                             mask=variant_mask,
+                                             dim=-1)
 
     r = dict(logits=logits, variant_logit=variant_logit)
     if exists(motifs):
