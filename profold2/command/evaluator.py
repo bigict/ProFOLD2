@@ -99,9 +99,9 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
                      batch['variant_pid'])
       assert 'coevolution' in r.headers
-      if 'gij' in r.headers['coevolution']:
-        gij = tensor_to_numpy(r.headers['coevolution']['gij'])
-      dump_pkl['coevolution'] = {'wij': gij}
+      if 'wij' in r.headers['coevolution']:
+        wij = tensor_to_numpy(r.headers['coevolution']['wij'])
+        dump_pkl['coevolution'] = {'wij': wij}
 
       with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
         pickle.dump(dump_pkl, f)

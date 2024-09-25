@@ -10,7 +10,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import functional, folding
-from profold2.model.commons import embedd_dim_get
+from profold2.model.commons import embedd_dim_get, init_zero_
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -1101,6 +1101,7 @@ class FitnessHead(nn.Module):
   def __init__(self,
                dim,
                mask='-',
+               calibrating=False,
                pooling='sum',
                alpha=None,
                num_var_as_ref=0,
@@ -1112,11 +1113,8 @@ class FitnessHead(nn.Module):
     super().__init__()
     del dim
 
-    self.sigma = nn.Linear(1, 1, bias=False)
-    # https://pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear
-    # :math:'mathcal{U}(0, \sqrt{k})' where
-    # :math:'k=\frac{1}{\text{in\_features}}'
-    nn.init.uniform_(self.sigma.weight, a=0.0, b=1.0)
+    self.sigma = nn.Linear(1, 1, bias=calibrating)
+    init_zero_(self.sigma)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
@@ -1139,6 +1137,16 @@ class FitnessHead(nn.Module):
     if 'profold2_fitness_return_motifs' in os.environ:
       self.return_motifs = bool(os.environ['profold2_fitness_return_motifs'])
 
+  def predict(self, variant_logit, variant_mask):
+    if self.pooling == 'sum':
+      variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    else:
+      assert self.pooling == 'mean'
+      variant_logit = functional.masked_mean(value=variant_logit,
+                                             mask=variant_mask,
+                                             dim=-1)
+    return torch.sum(self.sigma(variant_logit[..., None]), dim=-1)
+
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
     num_class = self.mask.shape[0]
@@ -1158,7 +1166,7 @@ class FitnessHead(nn.Module):
                           variant.float(), eij, self.mask)
       motifs = rearrange(ei, 'b i c -> b () i c') + hi
       logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
-      logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+      # logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
       if self.return_motifs:
         return motifs, logits
       return None, logits
@@ -1185,13 +1193,7 @@ class FitnessHead(nn.Module):
 
     variant_mask = variant_mask * variant_mask[:, :1, ...]
     variant_logit = logits - logits[:, :1, ...]
-    if self.pooling == 'sum':
-      variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
-    else:
-      assert self.pooling == 'mean'
-      variant_logit = functional.masked_mean(value=variant_logit,
-                                             mask=variant_mask,
-                                             dim=-1)
+    variant_logit = self.predict(variant_logit, variant_mask)
 
     r = dict(logits=logits, variant_logit=variant_logit)
     if exists(motifs):
@@ -1267,7 +1269,8 @@ class FitnessHead(nn.Module):
     variant_label = torch.sign(variant_label) * (
         torch.abs(variant_label) > self.label_epsilon)
     variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
-    variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    # variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+    variant_logit = self.predict(variant_logit, variant_mask)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
     with autocast(enabled=False):
