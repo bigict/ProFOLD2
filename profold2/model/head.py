@@ -228,9 +228,6 @@ class CoevolutionHead(nn.Module):
     self.register_buffer('mask', m, persistent=False)
 
     self.apc = apc
-    self.return_gij = False
-    if 'profold2_coevolution_return_gij' in os.environ:
-      self.return_gij = bool(os.environ['profold2_coevolution_return_gij'])
     self.num_pivot = num_pivot
     self.focal_loss = focal_loss
     self.loss_min = loss_min
@@ -265,19 +262,6 @@ class CoevolutionHead(nn.Module):
     eij = eij * mij * rearrange(1 - torch.eye(zij.shape[-2], device=zij.device),
                                 'i j -> i j ()')  # eii = 0
 
-    ret = dict(bi=ei)
-    if exists(self.states):
-      states = self.states
-      if len(states.shape) == 2:  # back compatible
-        states = rearrange(states, 'c d -> () c d')
-      states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
-      if self.return_gij:
-        ret.update(gij=eij)
-      eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
-    else:
-      eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
-    ret.update(wij=eij)
-
     # pseudo msa if not exists
     if 'msa' in batch:
       msa = F.one_hot(batch['msa'].long(), num_class).float()
@@ -285,9 +269,22 @@ class CoevolutionHead(nn.Module):
       assert 'seq' in batch
       msa = rearrange(F.one_hot(batch['seq'].long(), num_class).float(),
                       'b i d -> b () i d')
-    # potss model
-    hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
-                       msa, eij, self.mask)
+    ret = dict(bi=ei)
+    if exists(self.states):  # multi-state potts model
+      states = self.states
+      if len(states.shape) == 2:  # back compatible
+        states = rearrange(states, 'c d -> () c d')
+      states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
+      hi = torch.einsum('b m j d,b i j q,q c d,d -> b m i c',
+                         msa, eij, states, self.mask)
+      ret.update(wab=states)
+      # eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
+    else:  # native potts model
+      eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
+      hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                         msa, eij, self.mask)
+    ret.update(wij=eij)
+
     logits = rearrange(ei, 'b i c -> b () i c') + hi
     ret.update(logits=logits, mask=self.mask)
     return ret
@@ -1142,11 +1139,19 @@ class FitnessHead(nn.Module):
     assert 'coevolution' in headers
     num_class = self.mask.shape[0]
     eij, ei = headers['coevolution']['wij'], headers['coevolution']['bi']
+    if 'wab' in headers['coevolution']:
+      wab = headers['coevolution']['wab']
+    else:
+      wab = None
 
     def _hamiton_run(variant):
       variant = F.one_hot(variant.long(), num_class)
-      hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
-                        variant.float(), eij, self.mask)
+      if exists(wab):
+        hi = torch.einsum('b m j d,b i j q,q c d,d -> b m i c',
+                          variant.float(), eij, wab, self.mask)
+      else:
+        hi = torch.einsum('b m j d,b i j c d,d -> b m i c',
+                          variant.float(), eij, self.mask)
       motifs = rearrange(ei, 'b i c -> b () i c') + hi
       logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
       logits = torch.sum(self.sigma(logits[..., None]), dim=-1)

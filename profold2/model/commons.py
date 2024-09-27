@@ -420,10 +420,10 @@ class TriangleMultiplicativeModule(nn.Module):
 
     x = self.norm(x)
 
-    def proj_with_gating(proj_op, gating_op, x, m):
+    def proj_with_gating(proj_op, gating_op, x, mask):
       t = proj_op(x)
-      if exists(m):
-        t = tensor_mul(t, m)
+      if exists(mask):
+        t = tensor_mul(t, mask)
       return tensor_mul(t, gating_op(x).sigmoid())
 
     def out_with_gating(x, mask, right):

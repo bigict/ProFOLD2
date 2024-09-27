@@ -159,6 +159,11 @@ class WorkerXPU(object):
       return int(os.environ['WORLD_SIZE'])
     return WorkerXPU.device_count() * default(nnodes, 1)
 
+  def memory_summary(self):
+    if self.is_available() and hasattr(torch.cuda, 'memory_summary'):
+      return torch.cuda.memory_summary()
+    return 'only cuda supported.'
+
   def init_process_group(self):
     if self.is_available():
       timeout = 1800
