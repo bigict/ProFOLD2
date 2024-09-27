@@ -24,7 +24,8 @@ def params_count_do(params, pattern=None, verbose=False, verbose_w=False):
         if verbose_w:
           print(f'verbose_w\t{k}\t{p.tolist()}')
   elif isinstance(params, torch.Tensor):
-    n += reduce(lambda a, b: a * b, params.shape)
+    if params.shape:
+      n += reduce(lambda a, b: a * b, params.shape)
   else:
     print(type(params))
     n += 1

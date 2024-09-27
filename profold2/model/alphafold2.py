@@ -295,7 +295,6 @@ class AlphaFold2WithRecycling(nn.Module):
           coords=torch.zeros(b, n, residue_constants.atom_type_num, 3,
                              device=device))
 
-    ret = ReturnValues()
     if self.training:
       num_recycle = random.randint(0, num_recycle)
     cycling_function = functools.partial(self.impl,

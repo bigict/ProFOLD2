@@ -286,6 +286,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
   if hasattr(prof, 'key_averages'):
     logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
+  logging.debug('memory_summary: \n%s', rank.memory_summary())
 
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--map_location', type=str, default=None,
