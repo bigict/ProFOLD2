@@ -107,7 +107,7 @@ def parse_stockholm(
 
     # Remove the columns with gaps in the query from all sequences.
     aligned_sequence = ''.join(
-        [sequence[c] if c < len(keep_columns) else '-' for c in keep_columns])
+        [sequence[c] if c < len(sequence) else '-' for c in keep_columns])
 
     msa.append(aligned_sequence)
 
