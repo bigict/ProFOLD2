@@ -10,7 +10,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import functional, folding
-from profold2.model.commons import embedd_dim_get, init_zero_
+from profold2.model.commons import embedd_dim_get
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -1102,6 +1102,8 @@ class FitnessHead(nn.Module):
                dim,
                mask='-',
                calibrating=False,
+               prior_w=0.,
+               prior_b=0.,
                pooling='sum',
                alpha=None,
                num_var_as_ref=0,
@@ -1114,7 +1116,9 @@ class FitnessHead(nn.Module):
     del dim
 
     self.sigma = nn.Linear(1, 1, bias=calibrating)
-    init_zero_(self.sigma)
+    nn.init.constant_(self.sigma.weight, prior_w)
+    if calibrating:
+      nn.init.constant_(self.sigma.bias, prior_b)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
