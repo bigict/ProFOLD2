@@ -851,7 +851,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def __init__(self,
                data_dir,
                data_idx=None,
+               mapping_idx=None,
+               chain_idx=None,
                attr_idx=None,
+               var_dir=None,
                data_crop_fn=None,
                max_msa_depth=128,
                max_var_depth=1024,
@@ -890,8 +893,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                        map(lambda x: fs.textise(x).strip(), f))))
 
       self.mapping, self.cluster = {}, defaultdict(list)
-      if fs.exists('mapping.idx'):
-        with fs.open('mapping.idx') as f:
+      mapping_idx = default(mapping_idx, 'mapping.idx')
+      if fs.exists(mapping_idx):
+        with fs.open(mapping_idx) as f:
           for line in filter(lambda x: len(x) > 0,
                              map(lambda x: fs.textise(x).strip(), f)):
             v, k = line.split()
@@ -907,8 +911,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             self.resolu[k] = float(v)
 
       self.chain_list = {}
-      if fs.exists('chain.idx'):
-        with fs.open('chain.idx') as f:
+      chain_idx = default(chain_idx, 'chain.idx')
+      if fs.exists(chain_idx):
+        with fs.open(chain_idx) as f:
           for line in filter(lambda x: len(x) > 0,
                              map(lambda x: fs.textise(x).strip(), f)):
             chains = line.split()
@@ -927,7 +932,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             k, v = line.split(maxsplit=1)
             self.attr_list[k] = json.loads(v)
 
-      data_idx = default(data_idx, 'name.idx')
       if fs.exists('pdb.uri'):
         with fs.open('pdb.uri') as f:
           pdb_uri = fs.textise(f.read()).strip()
@@ -944,6 +948,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.pdb_dir = 'npz'
 
     self.msa_list = ['BFD30_E-3']
+    self.var_dir = default(var_dir, 'var')
 
   def __getstate__(self):
     d = self.__dict__
@@ -1462,7 +1467,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def get_var_features_new(self, fs, protein_id, clip=None):
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
-    variant_path = f'var/{protein_id}/msas/{protein_id}.a3m'
+    variant_path = f'{self.var_dir}/{protein_id}/msas/{protein_id}.a3m'
     if fs.exists(variant_path):
       with fs.open(variant_path) as f:
         sequences, descriptions = parse_fasta(fs.textise(f.read()))
@@ -1765,19 +1770,23 @@ def load(data_dir,
       'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
   max_var_depth = kwargs.pop(
       'max_var_depth') if 'max_var_depth' in kwargs else 1024
+  mapping_idx = kwargs.pop('mapping_idx') if 'mapping_idx' in kwargs else None
+  chain_idx = kwargs.pop('chain_idx') if 'chain_idx' in kwargs else None
   attr_idx = kwargs.pop('attr_idx') if 'attr_idx' in kwargs else None
+  var_dir = kwargs.pop('var_dir') if 'var_dir' in kwargs else None
 
   data_dir = data_dir.split(',')
-  if exists(data_idx):
-    data_idx = data_idx.split(',')
-  else:
-    data_idx = [None] * len(data_dir)
-  assert len(data_dir) == len(data_idx)
-  if exists(attr_idx):
-    attr_idx = attr_idx.split(',')
-  else:
-    attr_idx = [None] * len(data_dir)
-  assert len(data_dir) == len(attr_idx)
+  def _split_args(args):
+    if exists(args):
+      # let '' be None
+      args = list(map(lambda x: x if x else None, args.split(',')))
+    else:
+      args = [None] * len(data_dir)
+    assert len(data_dir) == len(args)
+    return args
+
+  data_idx, mapping_idx, chain_idx, attr_idx, var_dir = map(
+      _split_args, (data_idx, mapping_idx, chain_idx, attr_idx, var_dir))
 
   if 'data_crop_fn' not in kwargs:
     crop_fn_kwargs = {}
@@ -1798,7 +1807,10 @@ def load(data_dir,
   dataset = torch.utils.data.ConcatDataset([
       ProteinStructureDataset(data_dir[i],
                               data_idx=data_idx[i],
+                              mapping_idx=mapping_idx[i],
+                              chain_idx=chain_idx[i],
                               attr_idx=attr_idx[i],
+                              var_dir=var_dir[i],
                               data_crop_fn=data_crop_fn,
                               pseudo_linker_prob=pseudo_linker_prob,
                               pseudo_linker_shuffle=pseudo_linker_shuffle,
