@@ -276,12 +276,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         prefix = f'{prefix}.'
       for k, v in loss.items():
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
-    else:
+    elif exists(writer):
       if isinstance(loss, torch.Tensor):
         loss = torch.nanmean(loss).item()
       logging.info('%d loss@%s: %s', it, prefix, loss)
-      if exists(writer):
-        writer.add_scalar(prefix, loss, it)
+      writer.add_scalar(prefix, loss, it)
       if exists(wandb_run):
         wandb_run.log({prefix: loss}, step=it)
 
