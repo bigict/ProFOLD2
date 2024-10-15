@@ -24,12 +24,22 @@ from profold2.data import dataset, esm
 from profold2.data.utils import (
     cycling,
     embedding_get_labels,
-    pdb_save,
     weights_from_file)
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 from profold2.utils import exists
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
+
+def wandb_setup(args):
+  try:
+    import wandb
+  except ImportError:
+    raise ImportError(
+        'You are trying to use wandb which is not currently installed. '
+        'Please install it using pip install wandb')
+  run = wandb.init(project=args.wandb_project, entity=args.wandb_entity)
+  run.config.update(vars(args))
+  return run
 
 def backward_hook_wrap(name, module):
   def backward_hook_print(self, grad_input, grad_output):
@@ -64,9 +74,6 @@ def preprocess(args):  # pylint: disable=redefined-outer-name
   assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn  # pylint: disable=line-too-long
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'),
-                exist_ok=True)
-  if exists(args.save_pdb) and args.save_pdb <= 1.0:
-    os.makedirs(os.path.join(args.prefix, 'pdbs'),
                 exist_ok=True)
 
 def train(rank, args):  # pylint: disable=redefined-outer-name
@@ -235,6 +242,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   else:
     optim = Adam(model.parameters(), lr=args.learning_rate)
 
+  # wandb
+  wandb_run = wandb_setup(
+      args) if args.wandb_enabled and worker.is_master() else None 
+
   # tensorboard
   writer = SummaryWriter(os.path.join(
       args.prefix, 'runs', 'eval')) if worker.is_master() else None
@@ -259,11 +270,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         prefix = f'{prefix}.'
       for k, v in loss.items():
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
-    elif exists(writer):
-      if isinstance(loss, torch.Tensor):
-        loss = torch.nanmean(loss).item()
-      logging.info('%d loss@%s: %s', it, prefix, loss)
-      writer.add_scalar(prefix, loss, it)
+    else:
+      if exists(writer):
+        if isinstance(loss, torch.Tensor):
+          loss = torch.nanmean(loss).item()
+        logging.info('%d loss@%s: %s', it, prefix, loss)
+        writer.add_scalar(prefix, loss, it)
+      if exists(wandb_run):
+        wandb_run.log({prefix: loss, f'{prefix}.step': it})
 
   global_step = 0
   # CheckpointManager
@@ -321,10 +335,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       for h, v in r.headers.items():
         if 'loss' in v:
           running_loss += MetricDict({h: v['loss']})
-
-      if ('tmscore' in r.headers and exists(args.save_pdb) and
-          torch.nanmean(r.headers['tmscore']['loss']).item() >= args.save_pdb):
-        pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=it)
 
     for k, v in running_loss.items():
       v /= args.gradient_accumulate_every
@@ -561,8 +571,12 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--model_params_optim_option', type=str, default=None,
       help='optimizer arguments accepted by partial parameters only.')
 
-  parser.add_argument('--save_pdb', type=float, default=None,
-      help='save pdb files when TMscore>=VALUE.')
+  parser.add_argument('--wandb_enabled', action='store_true',
+      help='Enable wandb for experient tracking')
+  parser.add_argument('--wandb_project', type=str, default='profold2',
+      help='Wandb project name')
+  parser.add_argument('--wandb_entity', type=str, default=None,
+      help='Wandb entity name')
   parser.add_argument('--amp_enabled', action='store_true',
       help='enable automatic mixed precision.')
 
