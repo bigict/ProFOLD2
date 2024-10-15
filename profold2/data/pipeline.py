@@ -302,11 +302,11 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('-o', '--output_dir', type=str, default='.',
       help='Output directory')
-  # for tool_name in (
-  #     'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
-  #   parser.add_argument(f'--{tool_name}_binary_path', type=str,
-  #       default=shutil.which(tool_name),
-  #       help=f'path to the `{tool_name}` executable.')
+  for tool_name in (
+      'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
+    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+        default=shutil.which(tool_name),
+        help=f'path to the `{tool_name}` executable.')
   for database_name in (
       'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'):
     parser.add_argument(f'--{database_name}_database_path', type=str,
