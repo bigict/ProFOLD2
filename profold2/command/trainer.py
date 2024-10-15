@@ -37,7 +37,11 @@ def wandb_setup(args):
     raise ImportError(
         'You are trying to use wandb which is not currently installed. '
         'Please install it using pip install wandb')
-  run = wandb.init(project=args.wandb_project, entity=args.wandb_entity)
+  run = wandb.init(project=args.wandb_project,
+                   dir=args.wandb_dir,
+                   name=args.wandb_name,
+                   mode=args.wandb_mode,
+                   resume='auto')
   run.config.update(vars(args))
   return run
 
@@ -177,6 +181,12 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   with open(args.model_headers, 'r', encoding='utf-8') as f:
     headers = json.loads(f.read())
 
+  # wandb
+  wandb_run = wandb_setup(
+      args) if args.wandb_enabled and worker.is_master() else None 
+  if exists(wandb_run):
+    wandb_run.config.update({'feats': feats, 'headers': headers})
+
   logging.info('AlphaFold2.feats: %s', feats)
   logging.info('AlphaFold2.headers: %s', headers)
 
@@ -242,10 +252,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   else:
     optim = Adam(model.parameters(), lr=args.learning_rate)
 
-  # wandb
-  wandb_run = wandb_setup(
-      args) if args.wandb_enabled and worker.is_master() else None 
-
   # tensorboard
   writer = SummaryWriter(os.path.join(
       args.prefix, 'runs', 'eval')) if worker.is_master() else None
@@ -271,13 +277,13 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       for k, v in loss.items():
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
     else:
+      if isinstance(loss, torch.Tensor):
+        loss = torch.nanmean(loss).item()
+      logging.info('%d loss@%s: %s', it, prefix, loss)
       if exists(writer):
-        if isinstance(loss, torch.Tensor):
-          loss = torch.nanmean(loss).item()
-        logging.info('%d loss@%s: %s', it, prefix, loss)
         writer.add_scalar(prefix, loss, it)
       if exists(wandb_run):
-        wandb_run.log({prefix: loss, f'{prefix}.step': it})
+        wandb_run.log({prefix: loss}, step=it)
 
   global_step = 0
   # CheckpointManager
@@ -575,8 +581,13 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='Enable wandb for experient tracking')
   parser.add_argument('--wandb_project', type=str, default='profold2',
       help='Wandb project name')
-  parser.add_argument('--wandb_entity', type=str, default=None,
-      help='Wandb entity name')
+  parser.add_argument('--wandb_dir', type=str, default=None,
+      help='Wandb dir')
+  parser.add_argument('--wandb_name', type=str, default=None,
+      help='Wandb name name')
+  parser.add_argument('--wandb_mode', type=str, default='online',
+      choices=['online', 'offline', 'disabled'],
+      help='Wandb mode')
   parser.add_argument('--amp_enabled', action='store_true',
       help='enable automatic mixed precision.')
 
