@@ -40,8 +40,7 @@ def wandb_setup(args):
   run = wandb.init(project=args.wandb_project,
                    dir=args.wandb_dir,
                    name=args.wandb_name,
-                   mode=args.wandb_mode,
-                   resume='auto')
+                   mode=args.wandb_mode)
   run.config.update(vars(args))
   return run
 
