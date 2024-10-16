@@ -24,6 +24,7 @@ from profold2.data import dataset, esm
 from profold2.data.utils import (
     cycling,
     embedding_get_labels,
+    tensor_to_numpy,
     weights_from_file)
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
@@ -44,26 +45,17 @@ def wandb_setup(args):
   run.config.update(vars(args))
   return run
 
-def backward_hook_wrap(name, module):
-  def backward_hook_print(self, grad_input, grad_output):
-    def _tensor_min_max(t):
-      if exists(t):
-        return tuple(map(lambda x: torch.aminmax(x) if exists(x) else x, t))
-      return t
+def backward_hook_wrap(name, param, wandb_run=None):
+  def backward_hook_print(grad):
+    logging.debug('After backard of %s, grad: %s', name, grad)
+    if exists(wandb_run):
+      import wandb
+      if exists(grad):
+        wandb_run.log(
+            {f'{name}.grad': wandb.Histogram(tensor_to_numpy(grad))})
 
-    del self
-    message = f'After backard of {name}@{module.__class__.__qualname__}'
-    for param_name, param_value in module.named_parameters():
-      logging.debug('%s param_name: %s, param_value: %s', message,
-                    param_name, param_value)
-    logging.debug('%s grad_input: %s, grad_output: %s', message,
-                  _tensor_min_max(grad_input),
-                  _tensor_min_max(grad_output))
-
-  logging.debug('Register backward hook: %s@%s', name,
-                module.__class__.__qualname__)
-  module.register_full_backward_hook(backward_hook_print)
-  return module
+  logging.debug('Register backward hook: %s', name)
+  param.register_hook(backward_hook_print)
 
 @contextlib.contextmanager
 def no_sync_ctx(cond, module):
@@ -213,9 +205,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   if exists(args.model_params_requires_hook):
     # torch.set_printoptions(profile='full')
     params_requires_hook = re.compile(args.model_params_requires_hook)
-    for name, module in model.named_modules():
+    for name, param in model.named_parameters():
       if params_requires_hook.match(name):
-        backward_hook_wrap(name, module)
+        backward_hook_wrap(name, param, wandb_run=wandb_run)
   ####
 
   # optimizer
