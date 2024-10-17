@@ -38,11 +38,13 @@ def wandb_setup(args):
     raise ImportError(
         'You are trying to use wandb which is not currently installed. '
         'Please install it using pip install wandb')
+  if exists(args.wandb_dir):
+    os.makedirs(args.wandb_dir, exist_ok=True)
   run = wandb.init(project=args.wandb_project,
                    dir=args.wandb_dir,
                    name=args.wandb_name,
                    mode=args.wandb_mode)
-  run.config.update(vars(args))
+  run.config.update(args)
   return run
 
 def backward_hook_wrap(name, param, wandb_run=None):
