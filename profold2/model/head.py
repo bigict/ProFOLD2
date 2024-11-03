@@ -1101,9 +1101,9 @@ class FitnessHead(nn.Module):
   def __init__(self,
                dim,
                mask='-',
-               calibrating=False,
+               softplus=False,
                prior_w=0.,
-               prior_b=0.,
+               prior_b=None,
                pooling='sum',
                alpha=None,
                num_var_as_ref=0,
@@ -1115,10 +1115,14 @@ class FitnessHead(nn.Module):
     super().__init__()
     del dim
 
-    self.sigma = nn.Linear(1, 1, bias=calibrating)
-    nn.init.constant_(self.sigma.weight, prior_w)
-    if calibrating:
-      nn.init.constant_(self.sigma.bias, prior_b)
+    if softplus:  # ensure that \sigma >= 0
+      assert prior_w >= 0
+      self.sigma = nn.Parameter(torch.log(
+          torch.exp(torch.full((1,), max(prior_w, 1e-4))) - 1.))
+    else:
+      self.sigma = nn.Parameter(torch.full((1,), prior_w))
+    self.softplus = softplus
+    self.prior_b = prior_b
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
@@ -1149,7 +1153,14 @@ class FitnessHead(nn.Module):
       variant_logit = functional.masked_mean(value=variant_logit,
                                              mask=variant_mask,
                                              dim=-1)
-    return torch.sum(self.sigma(variant_logit[..., None]), dim=-1)
+    w = self.sigma
+    if self.softplus:
+      w = F.softplus(w)
+      if exists(self.prior_b):
+        w = w + self.prior_b
+    elif exists(self.prior_b):
+      w = torch.clamp(w, min=self.prior_b)
+    return w * variant_logit
 
   def forward(self, headers, representations, batch):
     assert 'coevolution' in headers
