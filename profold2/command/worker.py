@@ -219,7 +219,10 @@ class WorkerModel(object):
     return model
 
   def load(self, f, map_location='cpu'):
-    checkpoint = torch.load(f, map_location=map_location)
+    if version_cmp(torch.__version__, '2.0.0') >= 0:  # disable=warning
+      checkpoint = torch.load(f, map_location=map_location, weights_only=False)
+    else:
+      checkpoint = torch.load(f, map_location=map_location)
     kwargs = dict(
         dim=checkpoint['dim'],
         depth=checkpoint['evoformer_depth'],
