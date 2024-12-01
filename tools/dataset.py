@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from einops import rearrange
 
-from profold2.common import protein
+from profold2.common import protein, residue_constants
 from profold2.data import dataset
 from profold2.data.dataset import ProteinStructureDataset
 from profold2.data.utils import compose_pid, decompose_pid, str_seq_index
@@ -50,10 +50,15 @@ def to_fasta_add_argument(parser):  # pylint: disable=redefined-outer-name
 def to_pdb(data, args):  # pylint: disable=redefined-outer-name
   os.makedirs(args.output, exist_ok=True)
 
+  cb_idx = residue_constants.atom_order["CB"]
   for feat in iter(data):
+    coord_mask = feat['coord_mask']
+    if args.coord_pad:
+      coord_mask = torch.clone(coord_mask)
+      coord_mask[:, :cb_idx] = True
     prot = protein.Protein(aatype=np.array(feat['seq']),
                            atom_positions=np.array(feat['coord']),
-                           atom_mask=np.array(feat['coord_mask']),
+                           atom_mask=np.array(coord_mask),
                            residue_index=np.array(feat['seq_index']) + 1,
                            chain_index=np.array(feat['seq_color']) - 1,
                            b_factors=np.zeros_like(feat['coord_mask']))
@@ -67,6 +72,8 @@ def to_pdb(data, args):  # pylint: disable=redefined-outer-name
 def to_pdb_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument(
       '-o', '--output', type=str, default=None, help='output file')
+  parser.add_argument(
+      '--coord_pad', action='store_true', help='coord padded')
   return parser
 
 
@@ -92,6 +99,10 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
         print(prot['pid'], n, prot['coord_mask'].shape)
     elif args.coord_required:
       print(prot['pid'], 'coord_mask required')
+    if 'variant' in prot:
+      if n != prot['variant'].shape[1]:
+        print(prot['pid'], n, prot['variant'].shape)
+      assert prot['variant'].shape == prot['variant_mask'].shape
 
 
 def checksum_add_argument(parser):  # pylint: disable=redefined-outer-name
