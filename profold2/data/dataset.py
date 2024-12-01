@@ -1287,13 +1287,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         if k != protein_id and k in self.attr_list:
           for c, *_ in chain_list:
             x = self.get_chain_list(compose_pid(k, c))
-            if exists(x) and len(x) == len(chain_list):
+            # FIX: some chains may be removed from chain.idx
+            if exists(x) and len(set(x) & set(chain_list)) == len(x):
               return True
         return False
       def _yield_cluster(var_pid):
         for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
           var_pid, c = decompose_pid(var_pid)
-          yield var_pid, c
+          if self.has_chain(var_pid, c):
+            yield var_pid, c
 
       # filter complex with all chains aligned
       with timing(f'ProteinStructureDataset.build_chain_list {protein_id}', logger.debug):
@@ -1362,8 +1364,16 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       for g in chain_group:
         if chain in g:
           return list(g)  # shallow copy
-      logger.error('get_chain_list: %s not found.', protein_id)
+      logger.warning('get_chain_list: %s not found.', protein_id)
     return None
+
+  def has_chain(self, pid, chain):
+    if pid in self.chain_list:
+      chain_group = self.chain_list[pid]
+      for g in chain_group:
+        if chain in g:
+          return True
+    return False
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking

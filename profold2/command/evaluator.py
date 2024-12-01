@@ -101,7 +101,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       assert 'coevolution' in r.headers
       if 'wij' in r.headers['coevolution']:
         wij = tensor_to_numpy(r.headers['coevolution']['wij'])
-        dump_pkl['coevolution'] = {'wij': wij}
+        bi = tensor_to_numpy(r.headers['coevolution']['bi'])
+        dump_pkl['coevolution'] = {'wij': wij, 'bi': bi}
 
       with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
         pickle.dump(dump_pkl, f)
