@@ -5,6 +5,7 @@
      for further help.
   """
 import os
+import collections
 import functools
 import glob
 import gzip
@@ -41,7 +42,7 @@ def mmcif_yield_chain(mmcif_dict, args):
 
   atom_id_list = mmcif_dict['_atom_site.label_atom_id']
   residue_id_list = mmcif_dict['_atom_site.label_comp_id']
-  label_seq_id_list = mmcif_dict['_atom_site.auth_seq_id']
+  label_seq_id_list = mmcif_dict['_atom_site.label_seq_id']
   chain_id_list = mmcif_dict['_atom_site.auth_asym_id']
   x_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_x']]
   y_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_y']]
@@ -50,6 +51,22 @@ def mmcif_yield_chain(mmcif_dict, args):
   b_factor_list = mmcif_dict['_atom_site.B_iso_or_equiv']
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
   model_list = mmcif_dict['_atom_site.pdbx_PDB_model_num']
+  mod_residue_id_list = collections.defaultdict(list)
+  if '_pdbx_struct_mod_residue.id' in mmcif_dict:
+    for asym_id, seq_id, comp_id, parent_comp_id in zip(
+        mmcif_dict['_pdbx_struct_mod_residue.auth_asym_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.label_seq_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.label_comp_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.parent_comp_id']):
+      mod_residue_id_list[(asym_id, seq_id, comp_id)].append(parent_comp_id)
+  elif '_struct_ref_seq_dif.mon_id' in mmcif_dict:  # FIX: 1xmz
+    for asym_id, seq_id, comp_id, parent_comp_id in zip(
+        mmcif_dict['_struct_ref_seq_dif.pdbx_pdb_strand_id'],
+        mmcif_dict['_struct_ref_seq_dif.seq_num'],
+        mmcif_dict['_struct_ref_seq_dif.mon_id'],
+        mmcif_dict['_struct_ref_seq_dif.db_mon_id']):
+      if parent_comp_id in residue_constants.restypes_with_x:
+        mod_residue_id_list[(asym_id, seq_id, comp_id)].append(parent_comp_id)
 
   def _get_residue(i):
     if residue_id_list[i] == 'MSE':
@@ -66,12 +83,10 @@ def mmcif_yield_chain(mmcif_dict, args):
 
   chain_id, seq, domains = None, [], []
   int_resseq_start, int_resseq_end = None, None
-  int_resseq_delta = 0
+  int_resseq_delta, int_resseq_offset = 0, 0
   coord_list, coord_mask_list, bfactor_list = [], [], []
   labels, label_mask, bfactors = None, None, None
   for i, atom_id in enumerate(atom_id_list):
-    if fieldname_list[i] != 'ATOM':
-      continue
     if model_list[i] != model_list[0]:  # the 1st model only: 5w0s
       continue
 
@@ -82,9 +97,9 @@ def mmcif_yield_chain(mmcif_dict, args):
       continue
 
     if chain_id_list[i] != chain_id:
-      if exists(chain_id):
+      if exists(chain_id) and seq:  # FIX: 5wj3
         domains += [
-            _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
+            _make_domain(int_resseq_start, int_resseq_end + int_resseq_offset, int_resseq_delta)]
         if exists(labels):
           coord_list.append(labels)
           coord_mask_list.append(label_mask)
@@ -93,15 +108,20 @@ def mmcif_yield_chain(mmcif_dict, args):
         yield chain_id, seq, domains, npz
       chain_id, seq, domains = chain_id_list[i], [], []
       int_resseq_start, int_resseq_end = None, None
-      int_resseq_delta = 0
+      int_resseq_delta, int_resseq_offset = 0, 0
       coord_list, coord_mask_list, bfactor_list = [], [], []
       labels, label_mask, bfactors = None, None, None
 
-    int_resseq = int(label_seq_id_list[i])
+    int_resseq = label_seq_id_list[i]
     residue_id = residue_id_list[i]
-    if residue_id == 'MSE':
-      residue_id = 'MET'
+    if fieldname_list[i] == 'HETATM' and (chain_id, int_resseq, residue_id) in mod_residue_id_list:
+      residue_id_arr = mod_residue_id_list[(chain_id, int_resseq, residue_id)]
+    elif fieldname_list[i] == 'ATOM':
+      residue_id_arr = [residue_id]
+    else:
+      continue
 
+    int_resseq = int(int_resseq)
     if not exists(int_resseq_start):
       int_resseq_start = int_resseq
       if int_resseq_start < 0:
@@ -109,49 +129,57 @@ def mmcif_yield_chain(mmcif_dict, args):
 
     if exists(int_resseq_end) and int_resseq - int_resseq_end > 1:
       domains += [
-          _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
+          _make_domain(int_resseq_start, int_resseq_end + int_resseq_offset, int_resseq_delta)]
       int_resseq_start = int_resseq
-    if not exists(int_resseq_end) or int_resseq != int_resseq_end:
-      resname = residue_constants.restype_3to1.get(
-          residue_id, residue_constants.restypes_with_x[-1])
-      seq.append(resname)
+      int_resseq_offset = 0
 
-      if exists(labels):
-        coord_list.append(labels)
-        coord_mask_list.append(label_mask)
-        bfactor_list.append(bfactors)
-      labels = np.zeros((14, 3), dtype=np.float32)
-      label_mask = np.zeros((14,), dtype=np.bool_)
-      bfactors = np.zeros((14,), dtype=np.float32)
+    if not exists(int_resseq_end) or int_resseq != int_resseq_end:
+      for j, residue_id in enumerate(residue_id_arr):
+        if residue_id == 'MSE':
+          residue_id = 'MET'
+
+        int_resseq_offset += (1 if j > 0 else 0)
+        resname = residue_constants.restype_3to1.get(
+            residue_id, residue_constants.restypes_with_x[-1])
+        seq.append(resname)
+
+        if exists(labels):
+          coord_list.append(labels)
+          coord_mask_list.append(label_mask)
+          bfactor_list.append(bfactors)
+        labels = np.zeros((14, 3), dtype=np.float32)
+        label_mask = np.zeros((14,), dtype=np.bool_)
+        bfactors = np.zeros((14,), dtype=np.float32)
 
     int_resseq_end = int_resseq
 
 
-    if residue_id in residue_constants.restype_name_to_atom14_names:
-      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
-    else:
-      res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
-    try:
-      atom14idx = res_atom14_list.index(atom_id)
-      coord = np.asarray((x_list[i], y_list[i], z_list[i]))
-      if np.any(np.isnan(coord)):
-        continue
-      labels[atom14idx] = coord
-      if np.any(coord != 0):
-        # occupancy & B factor
-        tempfactor = 0.0
-        try:
-          tempfactor = float(b_factor_list[i]) / 100.
-        except ValueError as e:
-          raise PDBConstructionException('Invalid or missing B factor') from e
-        bfactors[atom14idx] = tempfactor
-        label_mask[atom14idx] = True
-    except ValueError as e:
-      logger.debug(e)
+    if len(residue_id_arr) == 1:
+      if residue_id in residue_constants.restype_name_to_atom14_names:
+        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
+      else:
+        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
+      try:
+        atom14idx = res_atom14_list.index(atom_id)
+        coord = np.asarray((x_list[i], y_list[i], z_list[i]))
+        if np.any(np.isnan(coord)):
+          continue
+        labels[atom14idx] = coord
+        if np.any(coord != 0):
+          # occupancy & B factor
+          tempfactor = 0.0
+          try:
+            tempfactor = float(b_factor_list[i]) / 100.
+          except ValueError as e:
+            raise PDBConstructionException('Invalid or missing B factor') from e
+          bfactors[atom14idx] = tempfactor
+          label_mask[atom14idx] = True
+      except ValueError as e:
+        logger.debug(e)
 
-  if exists(chain_id):
+  if exists(chain_id) and seq:
     domains += [
-        _make_domain(int_resseq_start, int_resseq_end, int_resseq_delta)]
+        _make_domain(int_resseq_start, int_resseq_end + int_resseq_offset, int_resseq_delta)]
     if exists(labels):
       coord_list.append(labels)
       coord_mask_list.append(label_mask)
