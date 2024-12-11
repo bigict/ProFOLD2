@@ -41,6 +41,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       pseudo_linker_prob=args.pseudo_linker_prob,
       max_msa_depth=args.max_msa_size,
       max_var_depth=args.max_var_size,
+      var_task_num=args.num_var_task,
       min_crop_len=args.min_crop_len,
       max_crop_len=args.max_crop_len,
       crop_algorithm=args.crop_algorithm,
@@ -94,6 +95,10 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         dump_pkl['label'] = tensor_to_numpy(batch['variant_label'])
         logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
                      batch['variant_label'].tolist())
+      if 'variant_label_mask' in batch:
+        dump_pkl['label_mask'] = tensor_to_numpy(batch['variant_label_mask'])
+        logging.info('no: %d pid: %s, fitness: mask=%s', idx, fasta_name,
+                     batch['variant_label_mask'].tolist())
       if 'variant_pid' in batch:
         dump_pkl['pid'] = batch['variant_pid']
         logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
@@ -203,6 +208,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='filter out MSAs whose size>SIZE.')
   parser.add_argument('--max_var_size', type=int, default=None,
       help='filter out VARs whose size>SIZE.')
+  parser.add_argument('--num_var_task', type=int, default=1,
+      help='number of tasks in VARs.')
   parser.add_argument('--min_crop_len', type=int, default=None,
       help='filter out proteins whose length<LEN.')
   parser.add_argument('--max_crop_len', type=int, default=None,

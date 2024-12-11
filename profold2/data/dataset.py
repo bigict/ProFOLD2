@@ -83,15 +83,17 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
               num_msa=msa_depth)
 
 
-def _make_label_features(descriptions, attr_dict, defval=1.0):
+def _make_label_features(descriptions, attr_dict, task_num=1, defval=1.0):
   def _make_label(desc):
     pid, chain, _ = decompose_pid(desc.split()[0], return_domain=True)
-    k = compose_pid(pid, chain)
-    if k in attr_dict:
-      return attr_dict[k].get('label', defval)
-    if pid in attr_dict:
-      return attr_dict[pid].get('label', defval)
-    return defval
+    for k in (compose_pid(pid, chain), pid):
+      if k in attr_dict and 'label' in attr_dict[k]:
+        label = attr_dict[k]['label']
+        if not isinstance(label, list):
+          label = [label]
+        assert len(label) == task_num, (pid, chain, label)
+        return label
+    return [defval] * task_num
   return [_make_label(desc) for desc in descriptions]
 
 
@@ -109,8 +111,7 @@ def _make_var_choice(var_list, attr_list, max_var_depth, defval=1.0):
       return attr_list[var_pid].get('weight', defval)
     return defval
 
-  w = np.asarray(
-      [_var_w(var_pid) for var_pid, *_ in var_list])
+  w = np.asarray([_var_w(var_pid) for var_pid, *_ in var_list])
   w /= (np.sum(w) + 1e-8)
   new_order = np.random.choice(len(var_list),
                                size=max_var_depth,
@@ -866,6 +867,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                msa_as_seq_clustering=False,
                msa_as_seq_min_alr=0.75,
                msa_as_seq_min_ident=0.0,
+               var_task_num=1,
                feat_flags=FEAT_ALL & (~FEAT_MSA)):
     super().__init__()
 
@@ -881,6 +883,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_as_seq_clustering = msa_as_seq_clustering
     self.msa_as_seq_min_alr = msa_as_seq_min_alr
     self.msa_as_seq_min_ident = msa_as_seq_min_ident
+    self.var_task_num=var_task_num
     self.feat_flags = feat_flags
     with FileSystem(self.data_dir) as fs:
       data_idx = default(data_idx, 'name.idx')
@@ -1318,11 +1321,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       # realign the complex: iterate each target chain
       ret['variant_label'] = torch.as_tensor(
-          [1] + _make_label_features([k for k, _ in var_chain_list], self.attr_list),
+          [[1]*self.var_task_num] + _make_label_features([k for k, _ in var_chain_list], self.attr_list, task_num=self.var_task_num),
           dtype=torch.float32)
 
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
+      ret['variant_label_mask'] = [torch.ones(self.var_task_num, dtype=torch.bool)]
       for var_pid, chain_list in var_chain_list:
         variant, variant_mask = [None] * len(chains), [None] * len(chains)
         for idx, chain in enumerate(chains):
@@ -1339,10 +1343,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             variant[idx] = torch.full(
                 (n,), residue_constants.restypes_with_x_and_gap.index('-'))
             variant_mask[idx] = torch.zeros((n,))
+        # variant_label_mask
+        if var_pid in self.attr_list and 'label_mask' in self.attr_list[var_pid]:
+          variant_label_mask = torch.as_tensor(
+              self.attr_list[var_pid]['label_mask'], dtype=torch.bool)
+        else:
+          variant_label_mask = torch.ones(self.var_task_num, dtype=torch.bool)
         ret['variant'].append(torch.cat(variant, dim=-1))
         ret['variant_mask'].append(torch.cat(variant_mask, dim=-1))
         ret['variant_pid'].append(var_pid)
-      for idx, field in enumerate(('variant', 'variant_mask')):
+        ret['variant_label_mask'].append(variant_label_mask)
+      for idx, field in enumerate(('variant', 'variant_mask', 'variant_label_mask')):
         ret[field] = torch.stack(ret[field], dim=0)
 
       ret['num_var'] = len(ret['variant'])
@@ -1513,8 +1524,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                max_var_depth=self.max_var_depth)
       if exists(self.attr_list):
         ret['variant_label'] = torch.as_tensor(_make_label_features(
-            ret['desc_var'], self.attr_list),
+            ret['desc_var'], self.attr_list, task_num=self.var_task_num),
                                                dtype=torch.float32)
+        ret['variant_label_mask'] = torch.ones(len(ret['desc_var']),
+                                               self.var_task_num,
+                                               dtype=torch.bool)
       return ret
     return {}
 
@@ -1638,18 +1652,21 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                  num_msa=torch.as_tensor(num_msa, dtype=torch.int))
 
     if feat_flags & FEAT_VAR and all('variant' in b for b in batch):
-      fields = ('variant', 'variant_mask', 'variant_label', 'variant_pid', 'num_var')
-      variants, variant_msks, variant_labels, variant_pids, num_var = list(
+      fields = ('variant', 'variant_mask', 'variant_label', 'variant_pid', 'variant_label_mask', 'num_var')
+      variants, variant_msks, variant_labels, variant_pids, variant_label_msks, num_var = list(
           zip(*[[b[k] for k in fields] for b in batch]))
 
       padded_vars = pad_for_batch(variants, max_batch_len, 'msa')
       variant_msks = pad_for_batch(variant_msks, max_batch_len, 'msa_mask')
       variant_labels = pad_for_batch(variant_labels, max_batch_len,
                                      'msa_row_mask')
+      variant_label_msks = pad_for_batch(variant_label_msks, max_batch_len,
+                                         'msa_row_mask')
       # padded_dels = pad_for_batch(del_vars, max_batch_len, 'del_msa')
       ret.update(variant=padded_vars,
                  variant_mask=variant_msks,
                  variant_label=variant_labels,
+                 variant_label_mask=variant_label_msks,
                  variant_pid=variant_pids,
                  num_var=torch.as_tensor(num_var, dtype=torch.int))
 
@@ -1780,6 +1797,8 @@ def load(data_dir,
       'msa_as_seq_min_ident') if 'msa_as_seq_min_ident' in kwargs else None
   max_var_depth = kwargs.pop(
       'max_var_depth') if 'max_var_depth' in kwargs else 1024
+  var_task_num = kwargs.pop(
+      'var_task_num') if 'var_task_num' in kwargs else 1
   mapping_idx = kwargs.pop('mapping_idx') if 'mapping_idx' in kwargs else None
   chain_idx = kwargs.pop('chain_idx') if 'chain_idx' in kwargs else None
   attr_idx = kwargs.pop('attr_idx') if 'attr_idx' in kwargs else None
@@ -1832,6 +1851,7 @@ def load(data_dir,
                               msa_as_seq_min_ident=msa_as_seq_min_ident,
                               max_msa_depth=max_msa_depth,
                               max_var_depth=max_var_depth,
+                              var_task_num=var_task_num,
                               feat_flags=feat_flags)
       for i in range(len(data_dir))
   ])
