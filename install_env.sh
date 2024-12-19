@@ -20,6 +20,8 @@ conda install -y -c conda-forge \
 conda install -y -c pytorch -c nvidia \
     pytorch=${pytorch_version} \
     cuda-cccl=${pytorch_cuda} \
+    cuda-libraries-dev=${pytorch_cuda} \
+    cuda-nvcc=${pytorch_cuda} \
     pytorch-cuda=${pytorch_cuda}
 
 conda install -y -c nvidia/label/cuda-${cuda_version} \
