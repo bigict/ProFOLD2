@@ -1164,7 +1164,7 @@ class FitnessHead(nn.Module):
       self.return_motifs = bool(os.environ['profold2_fitness_return_motifs'])
 
   def predict(self, variant_logit, variant_mask, gating=None):
-    variant_logit, variant_mask = variant_logit[..., None], variant_mask[..., None]
+    variant_logit, variant_mask = variant_logit[..., None], variant_mask
     if exists(gating):
       variant_logit = variant_logit * gating
     if self.pooling == 'sum':
@@ -1233,6 +1233,10 @@ class FitnessHead(nn.Module):
     else:
       gating = None
     if not self.training:
+      if 'variant_task_mask' in batch:
+        variant_mask = batch['variant_task_mask']
+      else:
+        variant_mask = variant_mask[..., None]
       variant_mask = variant_mask * variant_mask[:, :1, ...]
       variant_logit = logits - logits[:, :1, ...]
       variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
@@ -1280,6 +1284,13 @@ class FitnessHead(nn.Module):
         if num_var_as_ref > 0:
           variant_weight = (torch.sum((variant_label > self.label_threshold) * variant_label_mask, dim=-1)) * label_mask
 
+      if 'variant_task_mask' in batch:
+        variant_mask = batch['variant_task_mask']
+      else:
+        variant_mask = variant_mask[..., None]
+
+      if self.num_var_as_ref > 0:
+        if num_var_as_ref > 0:
           b, _, n = logits.shape
           # sample reference based on variant_label
           ref_idx = torch.multinomial(variant_weight + 1e-3,
@@ -1294,7 +1305,7 @@ class FitnessHead(nn.Module):
               logits, 1, repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
           mask_ref = torch.gather(
               variant_mask, 1,
-              repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
+              repeat(ref_idx, 'b m -> b m i t', i=variant_mask.shape[-2], t=variant_mask.shape[-1]))
           label_ref = torch.gather(
               variant_label, 1,
               repeat(ref_idx, 'b m -> b m t', t=self.task_num))
@@ -1302,7 +1313,7 @@ class FitnessHead(nn.Module):
               variant_label_mask, 1,
               repeat(ref_idx, 'b m -> b m t', t=self.task_num))
     else:
-      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i')
+      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i ()')
       b = variant_mask.shape[0]
       variant_label = torch.ones((b, 1, self.task_num), device=variant_mask.device)
       variant_label_mask = torch.zeros(b, 1, self.task_num, device=variant_mask.device)
@@ -1316,8 +1327,8 @@ class FitnessHead(nn.Module):
     # pairwise logistic loss
     variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
         logits_ref, 'b n i -> b () n i')
-    variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
-        mask_ref, 'b n i -> b () n i')
+    variant_mask = rearrange(variant_mask, 'b m i t -> b m () i t') * rearrange(
+        mask_ref, 'b n i t -> b () n i t')
     variant_label = rearrange(variant_label, 'b m t -> b m () t') - rearrange(
         label_ref, 'b n t -> b () n t')
     variant_label = torch.sign(variant_label) * (
