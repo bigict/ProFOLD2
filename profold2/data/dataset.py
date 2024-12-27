@@ -10,6 +10,7 @@ import logging
 from io import BytesIO
 import pathlib
 import pickle
+import re
 import string
 import zipfile
 import weakref
@@ -83,18 +84,47 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
               num_msa=msa_depth)
 
 
+_label_pattern, _label_mask_pattern = '^label=(.+)', '^label_mask=(.+)'
+
 def _make_label_features(descriptions, attr_dict, task_num=1, defval=1.0):
   def _make_label(desc):
+    label, label_mask = None, None
+
     pid, chain, _ = decompose_pid(desc.split()[0], return_domain=True)
-    for k in (compose_pid(pid, chain), pid):
-      if k in attr_dict and 'label' in attr_dict[k]:
-        label = attr_dict[k]['label']
-        if not isinstance(label, list):
-          label = [label]
-        assert len(label) == task_num, (pid, chain, label)
-        return label
-    return [defval] * task_num
-  return [_make_label(desc) for desc in descriptions]
+    for k in (pid, compose_pid(pid, chain)):
+      if k in attr_dict:
+        if 'label' in attr_dict[k]:
+          label = attr_dict[k]['label']
+        if 'label_mask' in attr_dict[k]:
+          label_mask = attr_dict[k]['label_mask']
+
+    for s in desc.split():
+      r = re.match(_label_pattern, s)
+      if r:
+        label = json.loads(r.group(1))
+      r = re.match(_label_mask_pattern, s)
+      if r:
+        label_mask = json.loads(r.group(1))
+
+    if not exists(label):
+      label = [defval] * task_num
+    if not exists(label_mask):
+      label_mask = [True] * task_num
+    if not isinstance(label, list):
+      label = [label]
+    assert len(label) == task_num, (pid, chain, label)
+
+    if not isinstance(label_mask, list):
+      label_mask = [label_mask]
+    assert len(label_mask) == task_num, (pid, chain, label)
+
+    return label, label_mask
+
+  label, label_mask = [], []
+  for l, m in map(_make_label, descriptions):
+    label.append(l)
+    label_mask.append(m)
+  return label, label_mask
 
 
 def _make_var_pid(desc):
@@ -143,7 +173,7 @@ def _make_var_features(sequences,
     aligned_sequences = [s.translate(deletion_table) for s in sequences]
     return aligned_sequences, deletion_matrix
 
-  if exists(attr_dict):  # filter with attr_dict, NOTE: keep the 1st one alway.
+  if attr_dict:  # filter with attr_dict, NOTE: keep the 1st one alway.
     def _is_aligned(desc):
       var_pid = _make_var_pid(desc)
       return var_pid in attr_dict
@@ -174,6 +204,7 @@ def _make_var_features(sequences,
   return dict(variant=variant,
               variant_pid=variant_pid,
               variant_mask=variant_mask,
+              variant_task_mask=variant_mask[..., None],
               str_var=msa,
               desc_var=descriptions,
               del_var=torch.as_tensor(del_matirx, dtype=torch.int),
@@ -1326,13 +1357,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             var_chain_list = [var_chain_list[i] for i in new_order]
 
       # realign the complex: iterate each target chain
-      ret['variant_label'] = torch.as_tensor(
-          [[1]*self.var_task_num] + _make_label_features([k for k, _ in var_chain_list], self.attr_list, task_num=self.var_task_num),
-          dtype=torch.float32)
+      variant_label, variant_label_mask = _make_label_features([k for k, _ in var_chain_list], self.attr_list, task_num=self.var_task_num)
+      ret['variant_label'] = torch.as_tensor([[1]*self.var_task_num] + variant_label, dtype=torch.float32)
+      ret['variant_label_mask'] = torch.as_tensor([[True]*self.var_task_num] + variant_label_mask, dtype=torch.bool)
 
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
-      ret['variant_label_mask'] = [torch.ones(self.var_task_num, dtype=torch.bool)]
       def _make_task_mask(mask):
         variant_task_mask = [[] for _ in range(self.var_task_num)]
         if exists(task_def):
@@ -1369,18 +1399,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 (n,), residue_constants.restypes_with_x_and_gap.index('-'))
             variant_mask[idx] = torch.zeros((n,))
         variant_mask = torch.cat(variant_mask, dim=-1)
-        # variant_label_mask
-        if var_pid in self.attr_list and 'label_mask' in self.attr_list[var_pid]:
-          variant_label_mask = torch.as_tensor(
-              self.attr_list[var_pid]['label_mask'], dtype=torch.bool)
-        else:
-          variant_label_mask = torch.ones(self.var_task_num, dtype=torch.bool)
         ret['variant'].append(torch.cat(variant, dim=-1))
         ret['variant_mask'].append(variant_mask)
         ret['variant_pid'].append(var_pid)
-        ret['variant_label_mask'].append(variant_label_mask)
         ret['variant_task_mask'].append(_make_task_mask(variant_mask))
-      for idx, field in enumerate(('variant', 'variant_mask', 'variant_label_mask', 'variant_task_mask')):
+      for idx, field in enumerate(('variant', 'variant_mask', 'variant_task_mask')):
         ret[field] = torch.stack(ret[field], dim=0)
 
       ret['num_var'] = len(ret['variant'])
@@ -1550,12 +1573,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                                attr_dict=self.attr_list,
                                max_var_depth=self.max_var_depth)
       if exists(self.attr_list):
-        ret['variant_label'] = torch.as_tensor(_make_label_features(
-            ret['desc_var'], self.attr_list, task_num=self.var_task_num),
-                                               dtype=torch.float32)
-        ret['variant_label_mask'] = torch.ones(len(ret['desc_var']),
-                                               self.var_task_num,
-                                               dtype=torch.bool)
+        variant_label, variant_label_mask = _make_label_features(
+            ret['desc_var'], self.attr_list, task_num=self.var_task_num)
+        ret['variant_label'] = torch.as_tensor(variant_label, dtype=torch.float32)
+        ret['variant_label_mask'] = torch.as_tensor(variant_label_mask, dtype=torch.bool)
       return ret
     return {}
 
