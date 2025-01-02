@@ -371,7 +371,7 @@ class DistogramHead(nn.Module):
           rearrange(positions, 'b i c -> b i () c') -
           rearrange(positions, 'b j c -> b () j c')),
                         dim=-1,
-                        keepdims=True)
+                        keepdim=True)
 
       true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
       errors = softmax_cross_entropy(labels=F.one_hot(true_bins,
@@ -1035,7 +1035,7 @@ class MetricDictHead(nn.Module):
           prob = F.softmax(headers['coevolution']['logits'], dim=-1)
 
           pred = torch.sum(prob, dim=-3)
-          pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
+          pred = pred / (torch.sum(pred, dim=-1, keepdim=True) + 1e-6)
           sim = F.cosine_similarity(pred * label_mask,
                                     labels * label_mask,
                                     dim=-1)

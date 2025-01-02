@@ -322,7 +322,7 @@ def get_dihedral_numpy(c1, c2, c3, c4):
   u3 = c4 - c3
 
   return np.arctan2(
-      ((np.linalg.norm(u2, axis=-1, keepdims=True) * u1) *
+      ((np.linalg.norm(u2, axis=-1, keepdim=True) * u1) *
        np.cross(u2, u3, axis=-1)).sum(axis=-1),
       (np.cross(u1, u2, axis=-1) * np.cross(u2, u3, axis=-1)).sum(axis=-1))
 
@@ -463,8 +463,8 @@ def kabsch_numpy(x, y):
         Assumes x,y are both (Dims x N_points). See below for wrapper.
     """
   # center x and y to the origin
-  x_ = x - x.mean(axis=-1, keepdims=True)
-  y_ = y - y.mean(axis=-1, keepdims=True)
+  x_ = x - x.mean(axis=-1, keepdim=True)
+  y_ = y - y.mean(axis=-1, keepdim=True)
   # calculate convariance matrix (for each prot in the batch)
   c = np.dot(x_, y_.transpose())
   # Optimal rotation matrix via SVD
@@ -749,7 +749,7 @@ def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
       assert 0 < num_tops <= seq_len
       top_labels = sorted_pred_truth[:num_tops, 1]
       pred_corrects = ((0 < top_labels) & (top_labels <= cutoff))
-      pred_corrects = torch.sum(pred_corrects, dim=-1, keepdims=True)
+      pred_corrects = torch.sum(pred_corrects, dim=-1, keepdim=True)
       yield (i, j), ratio, pred_corrects / float(num_tops)
 
 

@@ -10,7 +10,6 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor
-from profold2.data.utils import decompose_pid
 from profold2.model import functional
 from profold2.utils import default, exists
 
@@ -424,28 +423,6 @@ def make_esm_embedd(protein,
   assert len(data_out.shape) == 4
   protein[field] = data_out
 
-  return protein
-
-
-@take1st
-def make_task_mask(protein, task_attr_file, task_num=1):
-  @functools.cache
-  def _task_attr():
-    task_attr_dict = {}
-    with open(task_attr_file, 'r') as f:
-      for line in filter(lambda x: x, map(lambda x: x.strip())):
-        k, v = line.split('\t', 1)
-        task_attr_dict[k] = json.loads(v)
-    return task_attr_dict
-  if 'variant_mask' in protein:
-    task_attr_dict = _task_attr()
-
-    protein['variant_task_mask'] = repeat(
-        protein['variant_mask'], 'b m i -> b m i t', t=task_num)
-    for b, pid in enumerate(protein['pid']):
-      pid, chains = decompose_pid(pid)
-    pid = list(map(decompose_pid, protein['pid']))
-    pass
   return protein
 
 

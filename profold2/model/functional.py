@@ -49,10 +49,12 @@ def make_mask(restypes, mask, device=None):
     return m.float()
   return torch.as_tensor([1.0] * num_class, device=device)
 
-def batched_gather(params, indices):
+def batched_gather(params, indices, has_batch_dim=False):
   b, device = indices.shape[0], indices.device
-  params = torch.from_numpy(params).to(device)
-  params = repeat(params, 'n ... -> b n ...', b=b)
+  if isinstance(params, np.ndarray):
+    params = torch.from_numpy(params).to(device)
+  if not has_batch_dim:
+    params = repeat(params, 'n ... -> b n ...', b=b)
   c = len(params.shape) - len(indices.shape)
   assert c >= 0
   ext = list(map(chr, range(ord('o'), ord('o') + c)))
