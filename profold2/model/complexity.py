@@ -102,7 +102,7 @@ def complexity_lcp(
   if S.shape[-2] < w:
     w = S.shape[-2]
 
-  S = S * mask[..., None, :, None]
+  S = S * mask[..., None]
 
   P, N, edge_idx, mask_ij = compositions(S, C, w=w)
 
@@ -137,7 +137,7 @@ def complexity_lcp(
     U_differentiable = torch.sum(U_ij.detach() * S[..., None, :], dim=(-1, -2))
     U = U.detach() + U_differentiable - U_differentiable.detach()
 
-  U = torch.sum(U * mask[..., None, :], dim=-1)
+  U = torch.sum(U * mask, dim=-1)
   return U
 
 def estimate_entropy(
@@ -186,7 +186,7 @@ if __name__ == '__main__':
   )
   print(S.shape)
   C = torch.ones(b, n)
-  mask = torch.ones(b, n)
+  mask = torch.ones(b, 1, n)
 
   # compositions(S, C, mask)
   U = complexity_lcp(S, C, mask)

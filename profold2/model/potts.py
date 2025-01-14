@@ -31,7 +31,7 @@ def energy(
   """
   S = F.one_hot(
       S.long(), num_classes=h.shape[-1]
-  ) * mask[..., None, :, None]
+  ).float() * mask[..., None]
 
   J_i = torch.einsum('b m j d,b i j c d -> b m i c', S, J)
   U_i = h[..., None, :, :] + J_i

@@ -96,7 +96,8 @@ def from_potts(
           `(num_batch, num_nodes, num_states)`.
       J (Tensor): Potts model couplings :math:`J_{ij}(s_i, s_j)` with shape
           `(num_batch, num_nodes, num_nodes, num_states, num_states)`.
-      mask (torch.Tensor): Node mask with shape `(num_batch, num_nodes)`.
+      mask (torch.Tensor): Node mask with shape
+          `(num_batch, num_seqs, num_nodes)`.
       S (torch.LongTensor, optional): Sequence for initialization with
           shape `(num_batch, num_seqs, num_nodes)`.
       mask_sample (torch.Tensor, optional): Binary sampling mask indicating
@@ -191,7 +192,7 @@ if __name__ == '__main__':
   h = torch.rand(b, n, len(residue_constants.restypes_with_x_and_gap))
   J = torch.rand(b, n, n, len(residue_constants.restypes_with_x_and_gap), len(residue_constants.restypes_with_x_and_gap))
   C = torch.ones(b, n)
-  mask = torch.ones(b, n)
+  mask = torch.ones(b, 1, n)
 
   penalty_func = lambda _S: complexity.complexity_lcp(_S, C, mask)
   # compositions(S, C, mask)

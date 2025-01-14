@@ -1345,7 +1345,9 @@ class FitnessHead(nn.Module):
                                              variant_label.float(),
                                              alpha=self.pos_weight,
                                              gammar=self.focal_loss)
-    avg_error_fitness = functional.masked_mean(value=errors, mask=variant_label_mask)
+    avg_error_fitness = functional.masked_mean(
+        value=errors, mask=variant_label_mask * self.task_weight
+    )
     logger.debug('FitnessHead.loss: %s', avg_error_fitness)
     return dict(loss=avg_error_motif + avg_error_fitness)
 
