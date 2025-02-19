@@ -371,7 +371,7 @@ class DistogramHead(nn.Module):
           rearrange(positions, 'b i c -> b i () c') -
           rearrange(positions, 'b j c -> b () j c')),
                         dim=-1,
-                        keepdims=True)
+                        keepdim=True)
 
       true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
       errors = softmax_cross_entropy(labels=F.one_hot(true_bins,
@@ -1035,7 +1035,7 @@ class MetricDictHead(nn.Module):
           prob = F.softmax(headers['coevolution']['logits'], dim=-1)
 
           pred = torch.sum(prob, dim=-3)
-          pred = pred / (torch.sum(pred, dim=-1, keepdims=True) + 1e-6)
+          pred = pred / (torch.sum(pred, dim=-1, keepdim=True) + 1e-6)
           sim = F.cosine_similarity(pred * label_mask,
                                     labels * label_mask,
                                     dim=-1)
@@ -1106,6 +1106,9 @@ class FitnessHead(nn.Module):
                prior_b=None,
                pooling='sum',
                alpha=None,
+               task_model=None,
+               task_num=1,
+               task_weight=None,
                num_var_as_ref=0,
                label_threshold=0.,
                label_epsilon=0.,
@@ -1113,14 +1116,29 @@ class FitnessHead(nn.Module):
                focal_loss=0.,
                shard_size=2048):
     super().__init__()
-    del dim
+    dim_single, _ = embedd_dim_get(dim)
+
+    self.task_num = task_num
+    if not exists(task_weight):
+      task_weight = [1.] * task_num
+    assert len(task_weight) == task_num
+    task_weight = torch.as_tensor(task_weight)
+    self.register_buffer('task_weight', task_weight, persistent=False)
+    if exists(task_model):
+      assert task_model in ('MMoE',)
+      self.task_gating = nn.Sequential(nn.Linear(dim_single, dim_single),
+                                        nn.GELU(),
+                                        nn.LayerNorm(dim_single),
+                                        nn.Linear(dim_single, task_num, bias=False))
+    else:
+      self.task_gating = None
 
     if softplus:  # ensure that \sigma >= 0
       assert prior_w >= 0
       self.sigma = nn.Parameter(torch.log(
-          torch.exp(torch.full((1,), max(prior_w, 1e-4))) - 1.))
+          torch.exp(torch.full((task_num,), max(prior_w, 1e-4))) - 1.))
     else:
-      self.sigma = nn.Parameter(torch.full((1,), prior_w))
+      self.sigma = nn.Parameter(torch.full((task_num,), prior_w))
     self.softplus = softplus
     self.prior_b = prior_b
 
@@ -1145,14 +1163,17 @@ class FitnessHead(nn.Module):
     if 'profold2_fitness_return_motifs' in os.environ:
       self.return_motifs = bool(os.environ['profold2_fitness_return_motifs'])
 
-  def predict(self, variant_logit, variant_mask):
+  def predict(self, variant_logit, variant_mask, gating=None):
+    variant_logit, variant_mask = variant_logit[..., None], variant_mask
+    if exists(gating):
+      variant_logit = variant_logit * gating
     if self.pooling == 'sum':
-      variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
+      variant_logit = torch.sum(variant_logit * variant_mask, dim=-2)
     else:
       assert self.pooling == 'mean'
       variant_logit = functional.masked_mean(value=variant_logit,
                                              mask=variant_mask,
-                                             dim=-1)
+                                             dim=-2)
     w = self.sigma
     if self.softplus:
       w = F.softplus(w)
@@ -1206,23 +1227,37 @@ class FitnessHead(nn.Module):
         shard_dim=1,
         cat_dim=_hamiton_cat)
 
-    variant_mask = variant_mask * variant_mask[:, :1, ...]
-    variant_logit = logits - logits[:, :1, ...]
-    variant_logit = self.predict(variant_logit, variant_mask)
+    r = dict(logits=logits)
+    if exists(self.task_gating):
+      gating = F.sigmoid(self.task_gating(representations['single']))
+    else:
+      gating = None
+    if not self.training:
+      if 'variant_task_mask' in batch:
+        variant_mask = batch['variant_task_mask']
+      else:
+        variant_mask = variant_mask[..., None]
+      variant_mask = variant_mask * variant_mask[:, :1, ...]
+      variant_logit = logits - logits[:, :1, ...]
+      variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
+      r.update(variant_logit=variant_logit)
+    else:
+      r.update(gating=gating)
 
-    r = dict(logits=logits, variant_logit=variant_logit)
     if exists(motifs):
       r.update(motifs=motifs)
     return r
 
   def loss(self, value, batch):
     logits, logits_ref = value['logits'], None
+    gating = value['gating']
     num_class = self.mask.shape[0]
     avg_error_motif = 0
 
     if 'variant' in batch:
       variant_mask = batch['variant_mask']
       variant_label = batch['variant_label']
+      variant_label_mask = batch['variant_label_mask']
 
       if exists(self.alpha) and self.alpha > 0:
         # predict motifs
@@ -1234,7 +1269,8 @@ class FitnessHead(nn.Module):
                                          logits=motifs,
                                          mask=self.mask,
                                          gammar=self.focal_loss)
-        motif_mask = (variant_label[..., None] > self.label_threshold) * variant_mask
+        motif_mask = ((variant_label > self.label_threshold) & variant_label_mask) | (~variant_label_mask)
+        motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
         avg_error_motif = self.alpha * avg_error_motif
@@ -1242,12 +1278,19 @@ class FitnessHead(nn.Module):
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
         label_mask = torch.sum(variant_mask, dim=-1) > 0
-        label_num = torch.min(torch.sum(label_mask, dim=-1))
+        label_num = torch.amin(torch.sum(label_mask, dim=-1))
 
         num_var_as_ref = min(self.num_var_as_ref, label_num)
         if num_var_as_ref > 0:
-          variant_weight = (variant_label > self.label_threshold) * label_mask
+          variant_weight = (torch.sum((variant_label > self.label_threshold) * variant_label_mask, dim=-1)) * label_mask
 
+      if 'variant_task_mask' in batch:
+        variant_mask = batch['variant_task_mask']
+      else:
+        variant_mask = variant_mask[..., None]
+
+      if self.num_var_as_ref > 0:
+        if num_var_as_ref > 0:
           b, _, n = logits.shape
           # sample reference based on variant_label
           ref_idx = torch.multinomial(variant_weight + 1e-3,
@@ -1256,36 +1299,45 @@ class FitnessHead(nn.Module):
           ref_idx = torch.cat((torch.zeros(
               (b, 1), dtype=ref_idx.dtype, device=logits.device), ref_idx),
                               dim=-1)
-          logger.debug("FitnessHead.ref_idx: %s", ref_idx)
+          logger.debug('FitnessHead.ref_idx: %s', ref_idx)
 
           logits_ref = torch.gather(
               logits, 1, repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
           mask_ref = torch.gather(
               variant_mask, 1,
-              repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1]))
-          label_ref = torch.gather(variant_label, 1, ref_idx)
+              repeat(ref_idx, 'b m -> b m i t', i=variant_mask.shape[-2], t=variant_mask.shape[-1]))
+          label_ref = torch.gather(
+              variant_label, 1,
+              repeat(ref_idx, 'b m -> b m t', t=self.task_num))
+          label_mask_ref = torch.gather(
+              variant_label_mask, 1,
+              repeat(ref_idx, 'b m -> b m t', t=self.task_num))
     else:
-      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i')
+      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i ()')
       b = variant_mask.shape[0]
-      variant_label = torch.ones((b, 1), device=variant_mask.device)
+      variant_label = torch.ones((b, 1, self.task_num), device=variant_mask.device)
+      variant_label_mask = torch.zeros(b, 1, self.task_num, device=variant_mask.device)
 
     if not exists(logits_ref):
       logits_ref = logits[:, :1, ...]
       mask_ref = variant_mask[:, :1, ...]
       label_ref = variant_label[:, :1, ...]
+      label_mask_ref = variant_label_mask[:, :1, ...]
 
     # pairwise logistic loss
     variant_logit = rearrange(logits, 'b m i -> b m () i') - rearrange(
         logits_ref, 'b n i -> b () n i')
-    variant_mask = rearrange(variant_mask, 'b m i -> b m () i') * rearrange(
-        mask_ref, 'b n i -> b () n i')
-    variant_label = rearrange(variant_label, 'b m -> b m ()') - rearrange(
-        label_ref, 'b n -> b () n')
+    variant_mask = rearrange(variant_mask, 'b m i t -> b m () i t') * rearrange(
+        mask_ref, 'b n i t -> b () n i t')
+    variant_label = rearrange(variant_label, 'b m t -> b m () t') - rearrange(
+        label_ref, 'b n t -> b () n t')
     variant_label = torch.sign(variant_label) * (
         torch.abs(variant_label) > self.label_epsilon)
     variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
+    variant_label_mask = rearrange(variant_label_mask, 'b m t -> b m () t') * rearrange(
+        label_mask_ref, 'b n t -> b () n t')
     # variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
-    variant_logit = self.predict(variant_logit, variant_mask)
+    variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
     with autocast(enabled=False):
@@ -1293,8 +1345,9 @@ class FitnessHead(nn.Module):
                                              variant_label.float(),
                                              alpha=self.pos_weight,
                                              gammar=self.focal_loss)
-    variant_mask = torch.sum(variant_mask, dim=-1) > 0
-    avg_error_fitness = functional.masked_mean(value=errors, mask=variant_mask)
+    avg_error_fitness = functional.masked_mean(
+        value=errors, mask=variant_label_mask * self.task_weight
+    )
     logger.debug('FitnessHead.loss: %s', avg_error_fitness)
     return dict(loss=avg_error_motif + avg_error_fitness)
 
