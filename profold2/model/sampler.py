@@ -125,7 +125,8 @@ def from_potts(
       proposal (str): MCMC proposal for Potts sampling. Currently implemented
               proposals are `dlmc` for Discrete Langevin Monte Carlo [1] or `gibbs`
               for Gibbs sampling with graph coloring.
-              [1] Sun et al. Discrete Langevin Sampler via Wasserstein Gradient Flow (2023).
+              [1] Sun et al. Discrete Langevin Sampler via Wasserstein Gradient Flow
+                  (2023).
 
   Returns:
       S (torch.LongTensor): Sampled sequences with

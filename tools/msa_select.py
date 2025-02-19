@@ -23,8 +23,8 @@ except:
 
 logger = logging.getLogger(__file__)
 
-
 MSA_LIST = ['BFD30_E-3']
+
 
 # helpers
 def exists(val):
@@ -39,28 +39,27 @@ def default(val, d):
 
 _seq_index_pattern = '(\\d+)-(\\d+)'
 
+
 def _seq_index_split(text):
   for s in text.split(','):
     r = re.match(_seq_index_pattern, s)
     assert r
     yield tuple(map(int, r.group(1, 2)))
 
+
 def _seq_index_join(seq_index):
   return ','.join(f'{i}-{j}' for i, j in seq_index)
 
-def _make_feats_shrinked(item,
-                         new_order,
-                         seq_feats=None,
-                         msa_feats=None):
+
+def _make_feats_shrinked(item, new_order, seq_feats=None, msa_feats=None):
   # Update seq related feats
   if 'str_seq' in item:
     item['str_seq'] = ''.join(item['str_seq'][k] for k in new_order)
 
-  for field in ('str_msa',):
+  for field in ('str_msa', ):
     if field in item:
       for j in range(len(item['str_msa'])):
-        item['str_msa'][j] = ''.join(
-            item['str_msa'][j][k] for k in new_order)
+        item['str_msa'][j] = ''.join(item['str_msa'][j][k] for k in new_order)
 
   # Update tensors
   new_order = np.asarray(new_order)
@@ -84,34 +83,34 @@ def _data_from_domain(item, domains):
   else:
     assert 'str_msa' in item
     n, new_order = len(item['str_msa'][0]), []
-  for i, j  in domains:
+  for i, j in domains:
     assert j < n, (item['pid'], domains)
     for k in range(i, j + 1):
       new_order.append(k)
 
   assert 0 <= len(new_order) <= n, (len(new_order), n)
   if len(new_order) < n:
-    item = _make_feats_shrinked(item,
-                                new_order,
-                                seq_feats=('seq', 'seq_index', 'mask'))
+    item = _make_feats_shrinked(item, new_order, seq_feats=('seq', 'seq_index', 'mask'))
   return item
+
 
 def decompose_pid(pid, return_domain=False):
   k = pid.find('/')
   if k != -1:
-    pid, domains = pid[:k], pid[k+1:]
+    pid, domains = pid[:k], pid[k + 1:]
   else:
     domains = None
 
   k = pid.find('_')
   if k != -1:
-    pid, chain = pid[:k], pid[k+1:]
+    pid, chain = pid[:k], pid[k + 1:]
   else:
     chain = None
 
   if return_domain:
     return pid, chain, domains
   return pid, chain
+
 
 def compose_pid(pid, chain, domains=None):
   if chain is not None:
@@ -124,7 +123,6 @@ def compose_pid(pid, chain, domains=None):
 class MsaDataset:
   """Read msa from dataset file
     """
-
   def __init__(self, data_dir, data_idx='name.idx', deletion_table=None):
     self.data_dir = pathlib.Path(data_dir)
     if zipfile.is_zipfile(self.data_dir):
@@ -137,8 +135,9 @@ class MsaDataset:
     self.mapping = {}
     if self._fstat('mapping.idx'):
       with self._fileobj('mapping.idx') as f:
-        for line in filter(lambda x: len(x) > 0,
-                           map(lambda x: self._ftext(x).strip(), f)):
+        for line in filter(
+            lambda x: len(x) > 0, map(lambda x: self._ftext(x).strip(), f)
+        ):
           v, k = line.split()
           self.mapping[k] = v
     self.deletion_table = '-' if deletion_table is None else deletion_table
@@ -205,7 +204,6 @@ class MsaDataset:
 
   def get_msa_features_new(self, protein_id):
     """Constructs a feature dict of MSA features."""
-
     def parse_a4m(sequences):
       deletion_matrix = []
       for msa_sequence in sequences:
@@ -220,9 +218,7 @@ class MsaDataset:
         deletion_matrix.append(deletion_vec)
       # Make the MSA matrix out of aligned (deletion-free) sequences
       deletion_table = str.maketrans('', '', self.deletion_table)
-      aligned_sequences = [
-          s.translate(deletion_table).upper() for s in sequences
-      ]
+      aligned_sequences = [s.translate(deletion_table).upper() for s in sequences]
       return aligned_sequences, deletion_matrix
 
     k = int(np.random.randint(len(MSA_LIST)))
@@ -238,21 +234,14 @@ class MsaDataset:
 
 
 def msa_select_args(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-w',
-                      '--weights',
-                      type=str,
-                      default=None,
-                      help='weights, default=None')
-  parser.add_argument('-n',
-                      '--count',
-                      type=int,
-                      default=10,
-                      help='weights, default=10')
+  parser.add_argument(
+      '-w', '--weights', type=str, default=None, help='weights, default=None'
+  )
+  parser.add_argument('-n', '--count', type=int, default=10, help='weights, default=10')
   return parser
 
 
 def msa_select_input(args):  # pylint: disable=redefined-outer-name
-
   def weights_from_file(filename):
     if filename:
       with open(filename, 'r', encoding='utf-8') as f:
@@ -307,9 +296,7 @@ def aligned_ratio_args(parser):  # pylint: disable=redefined-outer-name
 
 
 def aligned_ratio_input(args):  # pylint: disable=redefined-outer-name
-  dataset = MsaDataset(args.data,
-                       data_idx=args.data_idx,
-                       deletion_table='')
+  dataset = MsaDataset(args.data, data_idx=args.data_idx, deletion_table='')
   return dataset, range(len(dataset))
 
 
@@ -317,6 +304,7 @@ def aligned_ratio_process(item, dataset=None):  # pylint: disable=redefined-oute
   def aligned_ratio(msa, n):
     c = sum(1 for s in msa if s == '-')
     return 1. - c / n
+
   def aligned_ident(msa, seq):
     c = 0
     i, j = 0, 0
@@ -358,15 +346,14 @@ def aligned_ratio_result(item, args):  # pylint: disable=redefined-outer-name
     with open(output_dir / f'{pid}.alr', 'w') as f:
       f.write(ratio)
 
+
 def msa_cluster_args(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('--skip_done',
-                      action='store_true',
-                      help='skip done')
-  parser.add_argument('--num_workers',
-                      type=int,
-                      default=1,
-                      help='num_workers, default=1')
+  parser.add_argument('--skip_done', action='store_true', help='skip done')
+  parser.add_argument(
+      '--num_workers', type=int, default=1, help='num_workers, default=1'
+  )
   return parser
+
 
 def _msa_cluster_read(args, dataset, idx):
   from profold2.common import residue_constants
@@ -383,8 +370,9 @@ def _msa_cluster_read(args, dataset, idx):
     return False
 
   data = dataset[idx]
-  if 'str_msa' in data and (not args.skip_done or
-                            not _have_done(data['pid'], data['str_msa'])):
+  if 'str_msa' in data and (
+      not args.skip_done or not _have_done(data['pid'], data['str_msa'])
+  ):
     msa_depth = len(data['str_msa'])
     assert msa_depth >= 1
     seq_len = len(data['str_msa'][0])
@@ -399,35 +387,40 @@ def _msa_cluster_read(args, dataset, idx):
     #       k = residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
     #           residue_constants.HHBLITS_AA_TO_ID[res]]
     #       msa[i, j, k] = 1
-    # 
+    #
     msa = np.zeros((msa_depth, seq_len), dtype=np.int32)
     for i, sequence in enumerate(data['str_msa']):
       for j, res in enumerate(sequence):
         k = residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
             residue_constants.HHBLITS_AA_TO_ID[res]]
         msa[i, j] = k
-    
+
     logger.info('_msa_cluster_read: %s|%s done', idx, data.get('pid'))
     data['msa'] = msa
   else:
     logger.info('_msa_cluster_read: %s|%s skiped', idx, data.get('pid'))
   return idx, data
 
+
 def _msa_cluster_iter(args, dataset):
   with mp.Pool(args.num_workers) as p:
-    for item in p.imap(functools.partial(_msa_cluster_read, args, dataset), 
-                       range(len(dataset)),
-                       chunksize=100):
+    for item in p.imap(
+        functools.partial(_msa_cluster_read, args, dataset),
+        range(len(dataset)),
+        chunksize=100
+    ):
       idx, data = item
       if 'msa' in data:
         logger.info('_msa_cluster_iter: %d', idx)
         yield item
 
+
 def msa_cluster_input(args):  # pylint: disable=redefined-outer-name
-  dataset = MsaDataset(args.data,
-                       data_idx=args.data_idx,
-                       deletion_table=string.ascii_lowercase)
+  dataset = MsaDataset(
+      args.data, data_idx=args.data_idx, deletion_table=string.ascii_lowercase
+  )
   return dataset, _msa_cluster_iter(args, dataset)
+
 
 def msa_cluster_process(item, dataset=None):  # pylint: disable=redefined-outer-name
   from profold2.common import residue_constants
@@ -450,7 +443,7 @@ def msa_cluster_process(item, dataset=None):  # pylint: disable=redefined-outer-
     # #       k = residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
     # #           residue_constants.HHBLITS_AA_TO_ID[res]]
     # #       msa[i, j, k] = 1
-    # # 
+    # #
     # num_class = len(residue_constants.restypes_with_x_and_gap)
 
     # # disable gap
@@ -483,6 +476,7 @@ def msa_cluster_process(item, dataset=None):  # pylint: disable=redefined-outer-
     # return idx, data['pid'], agreement.tolist()
   return idx, None, None
 
+
 def msa_cluster_result(item, args):  # pylint: disable=redefined-outer-name
   idx, pid, agreement = item
   if pid:
@@ -505,9 +499,9 @@ def main(args, work_fn):  # pylint: disable=redefined-outer-name
 
   dataset, idx_list = work_input(args)
   with mp.Pool(args.processes) as p:
-    for item in p.imap(functools.partial(work_process, dataset=dataset),
-                       idx_list,
-                       chunksize=10):
+    for item in p.imap(
+        functools.partial(work_process, dataset=dataset), idx_list, chunksize=10
+    ):
       work_result(item, args)
 
 
@@ -515,45 +509,47 @@ if __name__ == '__main__':
   import argparse
 
   commands = {
-      'msa_select': (msa_select_args, msa_select_input, msa_select_process,
-                     msa_select_result),
-      'aligned_ratio': (aligned_ratio_args, aligned_ratio_input,
-                        aligned_ratio_process, aligned_ratio_result),
-      'msa_cluster': (msa_cluster_args, msa_cluster_input,
-                      msa_cluster_process, msa_cluster_result),
+      'msa_select':
+          (msa_select_args, msa_select_input, msa_select_process, msa_select_result),
+      'aligned_ratio':
+          (
+              aligned_ratio_args, aligned_ratio_input, aligned_ratio_process,
+              aligned_ratio_result
+          ),
+      'msa_cluster':
+          (
+              msa_cluster_args, msa_cluster_input, msa_cluster_process,
+              msa_cluster_result
+          ),
   }
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('-p',
-                      '--processes',
-                      type=int,
-                      default=None,
-                      help='number of worker processes to use, default=None')
+  parser.add_argument(
+      '-p',
+      '--processes',
+      type=int,
+      default=None,
+      help='number of worker processes to use, default=None'
+  )
   # command args
   subparsers = parser.add_subparsers(dest='command', required=True)
   for cmd, (add_argument, *_) in commands.items():
     cmd_parser = subparsers.add_parser(cmd)
-    cmd_parser.add_argument('-o',
-                            '--output_dir',
-                            type=str,
-                            default='.',
-                            help='Output directory, default=\'.\'')
-    cmd_parser.add_argument('-t',
-                            '--data',
-                            type=str,
-                            required=True,
-                            help='dataset')
-    cmd_parser.add_argument('--data_idx',
-                            type=str,
-                            default='name.idx',
-                            help='dataset idx')
+    cmd_parser.add_argument(
+        '-o',
+        '--output_dir',
+        type=str,
+        default='.',
+        help='Output directory, default=\'.\''
+    )
+    cmd_parser.add_argument('-t', '--data', type=str, required=True, help='dataset')
+    cmd_parser.add_argument(
+        '--data_idx', type=str, default='name.idx', help='dataset idx'
+    )
 
     add_argument(cmd_parser)
 
-    cmd_parser.add_argument('-v',
-                            '--verbose',
-                            action='store_true',
-                            help='verbose')
+    cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
   assert args.command in commands

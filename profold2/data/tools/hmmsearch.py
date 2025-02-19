@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A Python wrapper for hmmsearch - search profile against a sequence db."""
 
 import os
@@ -27,12 +26,13 @@ from alphafold.data.tools import utils
 
 class Hmmsearch(object):
   """Python wrapper of the hmmsearch binary."""
-
-  def __init__(self,
-               *,
-               binary_path: str,
-               database_path: str,
-               flags: Optional[Sequence[str]] = None):
+  def __init__(
+      self,
+      *,
+      binary_path: str,
+      database_path: str,
+      flags: Optional[Sequence[str]] = None
+  ):
     """Initializes the Python hmmsearch wrapper.
 
     Args:
@@ -62,29 +62,30 @@ class Hmmsearch(object):
       cmd = [
           self.binary_path,
           '--noali',  # Don't include the alignment in stdout.
-          '--cpu', '8'
+          '--cpu',
+          '8'
       ]
       # If adding flags, we have to do so before the output and input:
       if self.flags:
         cmd.extend(self.flags)
       cmd.extend([
-          '-A', a3m_out_path,
+          '-A',
+          a3m_out_path,
           hmm_input_path,
           self.database_path,
       ])
 
       logging.info('Launching sub-process %s', cmd)
-      process = subprocess.Popen(
-          cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-      with utils.timing(
-          f'hmmsearch ({os.path.basename(self.database_path)}) query'):
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      with utils.timing(f'hmmsearch ({os.path.basename(self.database_path)}) query'):
         stdout, stderr = process.communicate()
         retcode = process.wait()
 
       if retcode:
         raise RuntimeError(
-            'hmmsearch failed:\nstdout:\n%s\n\nstderr:\n%s\n' % (
-                stdout.decode('utf-8'), stderr.decode('utf-8')))
+            'hmmsearch failed:\nstdout:\n%s\n\nstderr:\n%s\n' %
+            (stdout.decode('utf-8'), stderr.decode('utf-8'))
+        )
 
       with open(a3m_out_path) as f:
         a3m_out = f.read()

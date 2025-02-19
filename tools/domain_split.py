@@ -13,16 +13,17 @@ import logging
 
 from profold2.data.parsers import parse_fasta
 
-
 logger = logging.getLogger(__file__)
 
 seq_index_pattern = '(\\d+)-(\\d+)'
+
 
 def domain_index_split(text):
   for s in text.split(','):
     r = re.match(seq_index_pattern, s)
     assert r
     yield tuple(map(int, r.group(1, 2)))
+
 
 def domain_index_find(description):
   positions = []
@@ -35,6 +36,7 @@ def domain_index_find(description):
       break
 
   return positions
+
 
 def process(item, args=None):  # pylint: disable=redefined-outer-name
   if args.domain_index_from_fasta:
@@ -63,14 +65,15 @@ def process(item, args=None):  # pylint: disable=redefined-outer-name
       delta = positions[0][0] - 1
     for k, (i, j) in enumerate(positions):
       if args.domain_from_compat_fasta and k > 0:
-        delta += positions[k][0] - positions[k-1][1] - 1
+        delta += positions[k][0] - positions[k - 1][1] - 1
       with open(os.path.join(args.prefix, f'{pid}_{k}.fasta'), 'w') as f:
         f.write(f'>{pid}@{k} {pid}:{i}-{j}\n')
-        f.write(seq[i-1-delta:j-delta])
+        f.write(seq[i - 1 - delta:j - delta])
       logger.info('pid: %s@%s->%s', pid, k, input_file)
     break
 
   return input_file
+
 
 def main(args):  # pylint: disable=redefined-outer-name
   logger.info('args - %s', args)
@@ -79,7 +82,9 @@ def main(args):  # pylint: disable=redefined-outer-name
   if args.domain_index_from_fasta:
     inputs = args.inputs
   else:
-    inputs = [(args.inputs[i], args.inputs[i+1]) for i in range(0, len(args.inputs), 2)]
+    inputs = [
+        (args.inputs[i], args.inputs[i + 1]) for i in range(0, len(args.inputs), 2)
+    ]
 
   with mp.Pool() as p:
     for _ in p.imap(functools.partial(process, args=args), inputs):
@@ -90,8 +95,7 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('inputs', metavar='file', type=str, nargs='+',
-      help='inputs')
+  parser.add_argument('inputs', metavar='file', type=str, nargs='+', help='inputs')
   parser.add_argument('-o', '--prefix')
   parser.add_argument('--filename_as_pid', action='store_true', help='')
   parser.add_argument('--domain_index_from_fasta', action='store_true', help='')

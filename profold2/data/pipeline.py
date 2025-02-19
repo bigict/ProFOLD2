@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Functions for building the input features for the AlphaFold model."""
 
 import os
@@ -35,16 +34,17 @@ FeatureDict = Mapping[str, np.ndarray]
 
 
 def make_sequence_features(
-    sequence: str, description: str, num_res: int) -> FeatureDict:
+    sequence: str, description: str, num_res: int
+) -> FeatureDict:
   """Constructs a feature dict of sequence features."""
   features = {}
   features['aatype'] = residue_constants.sequence_to_onehot(
       sequence=sequence,
       mapping=residue_constants.restype_order_with_x,
-      map_unknown_to_x=True)
-  features['between_segment_residues'] = np.zeros((num_res,), dtype=np.int32)
-  features['domain_name'] = np.array([description.encode('utf-8')],
-                                     dtype=np.object_)
+      map_unknown_to_x=True
+  )
+  features['between_segment_residues'] = np.zeros((num_res, ), dtype=np.int32)
+  features['domain_name'] = np.array([description.encode('utf-8')], dtype=np.object_)
   features['residue_index'] = np.array(range(num_res), dtype=np.int32)
   features['seq_length'] = np.array([num_res] * num_res, dtype=np.int32)
   features['sequence'] = np.array([sequence.encode('utf-8')], dtype=np.object_)
@@ -52,8 +52,8 @@ def make_sequence_features(
 
 
 def make_msa_features(
-    msas: Sequence[Sequence[str]],
-    deletion_matrices: Sequence[parsers.DeletionMatrix]) -> FeatureDict:
+    msas: Sequence[Sequence[str]], deletion_matrices: Sequence[parsers.DeletionMatrix]
+) -> FeatureDict:
   """Constructs a feature dict of MSA features."""
   if not msas:
     raise ValueError('At least one MSA must be provided.')
@@ -68,8 +68,7 @@ def make_msa_features(
       if sequence in seen_sequences:
         continue
       seen_sequences.add(sequence)
-      int_msa.append(
-          [residue_constants.HHBLITS_AA_TO_ID[res] for res in sequence])
+      int_msa.append([residue_constants.HHBLITS_AA_TO_ID[res] for res in sequence])
       deletion_matrix.append(deletion_matrices[msa_index][sequence_index])
 
   num_res = len(msas[0][0])
@@ -77,28 +76,28 @@ def make_msa_features(
   features = {}
   features['deletion_matrix_int'] = np.array(deletion_matrix, dtype=np.int32)
   features['msa'] = np.array(int_msa, dtype=np.int32)
-  features['num_alignments'] = np.array(
-      [num_alignments] * num_res, dtype=np.int32)
+  features['num_alignments'] = np.array([num_alignments] * num_res, dtype=np.int32)
   return features
 
 
 class DataPipeline:
   """Runs the alignment tools and assembles the input features."""
-
-  def __init__(self,
-               jackhmmer_binary_path: str,
-               hhblits_binary_path: str,
-               hhsearch_binary_path: str,
-               uniref90_database_path: str,
-               mgnify_database_path: str,
-               bfd_database_path: Optional[str],
-               uniclust30_database_path: Optional[str],
-               small_bfd_database_path: Optional[str],
-               pdb70_database_path: str,
-               template_featurizer: templates.TemplateHitFeaturizer,
-               use_small_bfd: bool,
-               mgnify_max_hits: int = int(os.environ.get('PIPELINE_MGNIFY_MAX_HITS', 501)),
-               uniref_max_hits: int = int(os.environ.get('PIPELINE_UNIREF_MAX_HITS', 10000))):
+  def __init__(
+      self,
+      jackhmmer_binary_path: str,
+      hhblits_binary_path: str,
+      hhsearch_binary_path: str,
+      uniref90_database_path: str,
+      mgnify_database_path: str,
+      bfd_database_path: Optional[str],
+      uniclust30_database_path: Optional[str],
+      small_bfd_database_path: Optional[str],
+      pdb70_database_path: str,
+      template_featurizer: templates.TemplateHitFeaturizer,
+      use_small_bfd: bool,
+      mgnify_max_hits: int = int(os.environ.get('PIPELINE_MGNIFY_MAX_HITS', 501)),
+      uniref_max_hits: int = int(os.environ.get('PIPELINE_UNIREF_MAX_HITS', 10000))
+  ):
     """Constructs a feature dict for a given FASTA file."""
     self._use_small_bfd = use_small_bfd
     # self.jackhmmer_uniref90_runner = jackhmmer.Jackhmmer(
@@ -128,8 +127,7 @@ class DataPipeline:
       input_fasta_str = f.read()
     input_seqs, input_descs = parsers.parse_fasta(input_fasta_str)
     if len(input_seqs) != 1:
-      raise ValueError(
-          f'More than one input sequence found in {input_fasta_path}.')
+      raise ValueError(f'More than one input sequence found in {input_fasta_path}.')
     input_sequence = input_seqs[0]
     input_description = input_descs[0]
     num_res = len(input_sequence)
@@ -148,12 +146,12 @@ class DataPipeline:
     #   f.write(jackhmmer_uniref90_result['sto'])
     if os.path.exists(uniref90_out_path):
       with open(uniref90_out_path, 'r') as f:
-        jackhmmer_uniref90_result = {'sto':f.read()}
+        jackhmmer_uniref90_result = {'sto': f.read()}
     else:
       uniref90_out_path = os.path.join(msa_output_dir, 'uniref90_hits.sto.gz')
       if os.path.exists(uniref90_out_path):
         with gzip.open(uniref90_out_path, 'rt') as f:
-          jackhmmer_uniref90_result = {'sto':f.read()}
+          jackhmmer_uniref90_result = {'sto': f.read()}
       else:
         jackhmmer_uniref90_result = {}
 
@@ -162,12 +160,12 @@ class DataPipeline:
     #   f.write(jackhmmer_mgnify_result['sto'])
     if os.path.exists(mgnify_out_path):
       with open(mgnify_out_path, 'r') as f:
-        jackhmmer_mgnify_result = {'sto':f.read()}
+        jackhmmer_mgnify_result = {'sto': f.read()}
     else:
       mgnify_out_path = os.path.join(msa_output_dir, 'mgnify_hits.sto.gz')
       if os.path.exists(mgnify_out_path):
         with gzip.open(mgnify_out_path, 'rt') as f:
-          jackhmmer_mgnify_result = {'sto':f.read()}
+          jackhmmer_mgnify_result = {'sto': f.read()}
       else:
         jackhmmer_mgnify_result = {}
 
@@ -175,16 +173,20 @@ class DataPipeline:
     #     jackhmmer_uniref90_result['sto'])
     if 'sto' in jackhmmer_uniref90_result:
       uniref90_msa, _, uniref90_name_list = parsers.parse_stockholm(
-          jackhmmer_uniref90_result['sto'])
+          jackhmmer_uniref90_result['sto']
+      )
       uniref90_msa, uniref90_name_list = (
-          uniref90_msa[:self.uniref_max_hits], uniref90_name_list[:self.uniref_max_hits])
+          uniref90_msa[:self.uniref_max_hits], uniref90_name_list[:self.uniref_max_hits]
+      )
     else:
       uniref90_msa, uniref90_name_list = [], []
     if 'sto' in jackhmmer_mgnify_result:
       mgnify_msa, _, mgnify_name_list = parsers.parse_stockholm(
-          jackhmmer_mgnify_result['sto'])
+          jackhmmer_mgnify_result['sto']
+      )
       mgnify_msa, mgnify_name_list = (
-          mgnify_msa[:self.mgnify_max_hits], mgnify_name_list[:self.mgnify_max_hits])
+          mgnify_msa[:self.mgnify_max_hits], mgnify_name_list[:self.mgnify_max_hits]
+      )
     else:
       mgnify_msa, mgnify_name_list = [], []
     # hhsearch_hits = parsers.parse_hhr(hhsearch_result)
@@ -198,10 +200,11 @@ class DataPipeline:
       #   f.write(jackhmmer_small_bfd_result['sto'])
       if os.path.exists(bfd_out_path):
         with open(bfd_out_path, 'r') as f:
-          jackhmmer_small_bfd_result = {'sto':f.read()}
+          jackhmmer_small_bfd_result = {'sto': f.read()}
 
         bfd_msa, _, bfd_name_list = parsers.parse_stockholm(
-            jackhmmer_small_bfd_result['sto'])
+            jackhmmer_small_bfd_result['sto']
+        )
       else:
         bfd_msa, bfd_name_list = [], []
     else:
@@ -213,10 +216,9 @@ class DataPipeline:
       #   f.write(hhblits_bfd_uniclust_result['a3m'])
       if os.path.exists(bfd_out_path):
         with open(bfd_out_path, 'r') as f:
-          hhblits_bfd_uniclust_result = {'a3m':f.read()}
+          hhblits_bfd_uniclust_result = {'a3m': f.read()}
 
-        bfd_msa, bfd_name_list = parsers.parse_fasta(
-            hhblits_bfd_uniclust_result['a3m'])
+        bfd_msa, bfd_name_list = parsers.parse_fasta(hhblits_bfd_uniclust_result['a3m'])
       else:
         bfd_msa, bfd_name_list = [], []
 
@@ -242,7 +244,11 @@ class DataPipeline:
     seq_msa = []
     seen_sequences = set()
     for msa_index, (msa, name_list) in enumerate(
-        [(uniref90_msa, uniref90_name_list), (mgnify_msa, mgnify_name_list), (bfd_msa, bfd_name_list)]):
+        [
+            (uniref90_msa, uniref90_name_list), (mgnify_msa, mgnify_name_list),
+            (bfd_msa, bfd_name_list)
+        ]
+    ):
       # if not msa:
       #   raise ValueError(f'MSA {msa_index} must contain at least one sequence.')
       for sequence_index, (sequence, name) in enumerate(zip(msa, name_list)):
@@ -253,36 +259,31 @@ class DataPipeline:
 
     return seq_msa
 
+
 def main(args):
   fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
-  level=logging.DEBUG if args.verbose else logging.INFO
-  handlers = [
-      logging.StreamHandler()]
-  logging.basicConfig(
-      format=fmt,
-      level=level,
-      handlers=handlers)
+  level = logging.DEBUG if args.verbose else logging.INFO
+  handlers = [logging.StreamHandler()]
+  logging.basicConfig(format=fmt, level=level, handlers=handlers)
 
   for tool_name in (  # pylint: disable=redefined-outer-name
       'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
     if not getattr(args, f'{tool_name}_binary_path'):
-      raise ValueError(f'Could not find path to the "{tool_name}" binary. Make '
-                       'sure it is installed on your system.')
+      raise ValueError(
+          f'Could not find path to the "{tool_name}" binary. Make '
+          'sure it is installed on your system.'
+      )
   # Check for duplicate FASTA file names.
   fasta_names = [pathlib.Path(p).stem for p in args.fasta_paths]
   if len(fasta_names) != len(set(fasta_names)):
     raise ValueError('All FASTA paths must have a unique basename.')
 
-  pipeline = DataPipeline(args.jackhmmer_binary_path,
-        args.hhblits_binary_path,
-        args.hhsearch_binary_path,
-        args.uniref90_database_path,
-        args.mgnify_database_path,
-        args.bfd_database_path,
-        args.uniclust30_database_path,
-        args.small_bfd_database_path,
-        args.pdb70_database_path,
-        None, args.use_small_bfd)
+  pipeline = DataPipeline(
+      args.jackhmmer_binary_path, args.hhblits_binary_path, args.hhsearch_binary_path,
+      args.uniref90_database_path, args.mgnify_database_path, args.bfd_database_path,
+      args.uniclust30_database_path, args.small_bfd_database_path,
+      args.pdb70_database_path, None, args.use_small_bfd
+  )
 
   for input_fasta_path, fasta_name in zip(args.fasta_paths, fasta_names):
     msa_output_dir = os.path.join(args.output_dir, fasta_name, 'msas')
@@ -295,27 +296,35 @@ def main(args):
         for seq, desc in seq_msa:
           f.write(f'>{desc}\n{seq}\n')
 
+
 if __name__ == '__main__':
   import argparse
   import shutil
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('-o', '--output_dir', type=str, default='.',
-      help='Output directory')
-  for tool_name in (
-      'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
-    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+  parser.add_argument(
+      '-o', '--output_dir', type=str, default='.', help='Output directory'
+  )
+  for tool_name in ('jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
+    parser.add_argument(
+        f'--{tool_name}_binary_path',
+        type=str,
         default=shutil.which(tool_name),
-        help=f'path to the `{tool_name}` executable.')
+        help=f'path to the `{tool_name}` executable.'
+    )
   for database_name in (
-      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'):
-    parser.add_argument(f'--{database_name}_database_path', type=str,
+      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'
+  ):
+    parser.add_argument(
+        f'--{database_name}_database_path',
+        type=str,
         default=None,
-        help=f'path to database {database_name}')
-  parser.add_argument('--fasta_paths', type=str, nargs='+',
-      help='list of fasta files')
-  parser.add_argument('--use_small_bfd', action='store_true',
-      help='use small bfd database or not')
+        help=f'path to database {database_name}'
+    )
+  parser.add_argument('--fasta_paths', type=str, nargs='+', help='list of fasta files')
+  parser.add_argument(
+      '--use_small_bfd', action='store_true', help='use small bfd database or not'
+  )
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

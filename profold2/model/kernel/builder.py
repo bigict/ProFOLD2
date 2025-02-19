@@ -8,14 +8,14 @@ from torch.utils.cpp_extension import BuildExtension, CUDA_HOME, CUDAExtension, 
 
 from profold2.utils import package_dir
 
-
 logger = logging.getLogger(__name__)
 
 
 def installed_cuda_version():
   assert CUDA_HOME and torch.version.cuda
-  raw_output = subprocess.check_output([CUDA_HOME + '/bin/nvcc', '-V'],
-                                       universal_newlines=True)
+  raw_output = subprocess.check_output(
+      [CUDA_HOME + '/bin/nvcc', '-V'], universal_newlines=True
+  )
   output = raw_output.split()
   release_idx = output.index('release') + 1
   release = output[release_idx].split('.')
@@ -40,7 +40,10 @@ def extra_compile_args(jit_mode=True):
     nvcc_threads = int(os.environ['PF_NVCC_THREADS'])
 
   nvcc_args = [
-      '-O3', '--use_fast_math', '-std=c++17', f'--threads={nvcc_threads}',
+      '-O3',
+      '--use_fast_math',
+      '-std=c++17',
+      f'--threads={nvcc_threads}',
       '-U__CUDA_NO_HALF_OPERATORS__',
       '-U__CUDA_NO_HALF_CONVERSIONS__',
       '-U__CUDA_NO_HALF2_OPERATORS__',
@@ -70,7 +73,9 @@ def extra_compile_args(jit_mode=True):
     if cross_compile_archs_env is not None:
       logger.warning(
           'env var `TORCH_CUDA_ARCH_LIST=%s` overrides `cross_compile_archs=%s`',  # pylint: disable=line-too-long
-          cross_compile_archs_env, cross_compile_archs)
+          cross_compile_archs_env,
+          cross_compile_archs
+      )
       cross_compile_archs = ';'.join(cross_compile_archs_env.split())
     compute_capabilities = cross_compile_archs.split(';')
 
@@ -80,11 +85,14 @@ def extra_compile_args(jit_mode=True):
     if minor.endswith('+PTX'):
       minor = minor[:-4]
       nvcc_args.append(
-          f'-gencode=arch=compute_{major}{minor},code=compute_{major}{minor}')
-    nvcc_args.extend([
-        '-gencode',
-        f'arch=compute_{major}{minor},code=sm_{major}{minor}',
-    ])
+          f'-gencode=arch=compute_{major}{minor},code=compute_{major}{minor}'
+      )
+    nvcc_args.extend(
+        [
+            '-gencode',
+            f'arch=compute_{major}{minor},code=sm_{major}{minor}',
+        ]
+    )
     if int(major) <= 7:
       enable_bf16 = False
   if enable_bf16:
@@ -109,7 +117,8 @@ if 'CUTLASS_PATH' not in os.environ:
   def_cutlass_path = os.path.join(package_dir(), 'cutlass')
   logger.warning(
       'You can specify the environment variable $CUTLASS_PATH to override `%s`',
-      def_cutlass_path)
+      def_cutlass_path
+  )
   os.environ['CUTLASS_PATH'] = def_cutlass_path
 
 ATTENTION_CORE_INC = [
@@ -165,13 +174,15 @@ def build(name, **kwargs):
     verbose = kwargs.pop('verbose')
 
   cxx_args, nvcc_args = extra_compile_args(jit_mode=True)
-  op_module = load(name=name,
-                   sources=sources,
-                   extra_include_paths=includes,
-                   extra_cflags=cxx_args,
-                   extra_cuda_cflags=nvcc_args,
-                   verbose=verbose,
-                   **kwargs)
+  op_module = load(
+      name=name,
+      sources=sources,
+      extra_include_paths=includes,
+      extra_cflags=cxx_args,
+      extra_cuda_cflags=nvcc_args,
+      verbose=verbose,
+      **kwargs
+  )
   _loaded_ops[name] = op_module
   return op_module
 
@@ -185,14 +196,16 @@ def setuptools(**kwargs):
     sources = [os.path.join(pwd, src) for src in sources]
 
     modules = [
-        CUDAExtension(name=ATTENTION_CORE_NAME,
-                      sources=sources,
-                      include_dirs=includes,
-                      extra_compile_args={
-                          'cxx': cxx_args,
-                          'nvcc': nvcc_args
-                      },
-                      **kwargs)
+        CUDAExtension(
+            name=ATTENTION_CORE_NAME,
+            sources=sources,
+            include_dirs=includes,
+            extra_compile_args={
+                'cxx': cxx_args,
+                'nvcc': nvcc_args
+            },
+            **kwargs
+        )
     ]
     return {'ext_modules': modules, 'cmdclass': {'build_ext': BuildExtension}}
   return {}

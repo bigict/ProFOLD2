@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Library to run HHblits from Python."""
 
 import glob
@@ -25,29 +24,29 @@ from profold2.data.tools import utils
 from profold2.data import parsers
 # Internal import (7716).
 
-
 _HHBLITS_DEFAULT_P = 20
 _HHBLITS_DEFAULT_Z = 500
 
 
 class HHBlits:
   """Python wrapper of the HHblits binary."""
-
-  def __init__(self,
-               *,
-               binary_path: str,
-               databases: Sequence[str],
-               n_cpu: int = 32,
-               n_iter: int = 3,
-               e_value: float = 0.001,
-               maxseq: int = 1_000_000,
-               realign_max: int = 100_000,
-               maxfilt: int = 100_000,
-               min_prefilter_hits: int = 1000,
-               all_seqs: bool = False,
-               alt: Optional[int] = None,
-               p: int = _HHBLITS_DEFAULT_P,
-               z: int = _HHBLITS_DEFAULT_Z):
+  def __init__(
+      self,
+      *,
+      binary_path: str,
+      databases: Sequence[str],
+      n_cpu: int = 32,
+      n_iter: int = 3,
+      e_value: float = 0.001,
+      maxseq: int = 1_000_000,
+      realign_max: int = 100_000,
+      maxfilt: int = 100_000,
+      min_prefilter_hits: int = 1000,
+      all_seqs: bool = False,
+      alt: Optional[int] = None,
+      p: int = _HHBLITS_DEFAULT_P,
+      z: int = _HHBLITS_DEFAULT_Z
+  ):
     """Initializes the Python HHblits wrapper.
 
     Args:
@@ -106,17 +105,15 @@ class HHBlits:
         db_cmd.append('-d')
         db_cmd.append(db_path)
       cmd = [
-          self.binary_path,
-          '-i', input_fasta_path,
-          '-cpu', str(self.n_cpu),
-          '-oa3m', a3m_path,
-          '-o', '/dev/null',
-          '-n', str(self.n_iter),
-          '-e', str(self.e_value),
-          '-maxseq', str(self.maxseq),
-          '-realign_max', str(self.realign_max),
-          '-maxfilt', str(self.maxfilt),
-          '-min_prefilter_hits', str(self.min_prefilter_hits)]
+          self.binary_path, '-i', input_fasta_path, '-cpu',
+          str(self.n_cpu), '-oa3m', a3m_path, '-o', '/dev/null', '-n',
+          str(self.n_iter), '-e',
+          str(self.e_value), '-maxseq',
+          str(self.maxseq), '-realign_max',
+          str(self.realign_max), '-maxfilt',
+          str(self.maxfilt), '-min_prefilter_hits',
+          str(self.min_prefilter_hits)
+      ]
       if self.all_seqs:
         cmd += ['-all']
       if self.alt:
@@ -128,8 +125,7 @@ class HHBlits:
       cmd += db_cmd
 
       logging.info('Launching subprocess "%s"', ' '.join(cmd))
-      process = subprocess.Popen(
-          cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
       with utils.timing('HHblits query'):
         stdout, stderr = process.communicate()
@@ -142,35 +138,33 @@ class HHBlits:
           if error_line.strip():
             logging.error(error_line.strip())
         logging.error('HHblits stderr end')
-        raise RuntimeError('HHblits failed\nstdout:\n%s\n\nstderr:\n%s\n' % (
-            stdout.decode('utf-8'), stderr[:500_000].decode('utf-8')))
+        raise RuntimeError(
+            'HHblits failed\nstdout:\n%s\n\nstderr:\n%s\n' %
+            (stdout.decode('utf-8'), stderr[:500_000].decode('utf-8'))
+        )
 
       with open(a3m_path) as f:
         a3m = f.read()
 
     raw_output = dict(
-        a3m=a3m,
-        output=stdout,
-        stderr=stderr,
-        n_iter=self.n_iter,
-        e_value=self.e_value)
+        a3m=a3m, output=stdout, stderr=stderr, n_iter=self.n_iter, e_value=self.e_value
+    )
     return raw_output
+
 
 def main(args):
   fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
-  level=logging.DEBUG if args.verbose else logging.INFO
-  handlers = [
-      logging.StreamHandler()]
-  logging.basicConfig(
-      format=fmt,
-      level=level,
-      handlers=handlers)
+  level = logging.DEBUG if args.verbose else logging.INFO
+  handlers = [logging.StreamHandler()]
+  logging.basicConfig(format=fmt, level=level, handlers=handlers)
 
   for tool_name in (  # pylint: disable=redefined-outer-name
       'jackhmmer', 'hmmsearch', 'hmmbuild'):
     if not getattr(args, f'{tool_name}_binary_path'):
-      raise ValueError(f'Could not find path to the "{tool_name}" binary. Make '
-                       'sure it is installed on your system.')
+      raise ValueError(
+          f'Could not find path to the "{tool_name}" binary. Make '
+          'sure it is installed on your system.'
+      )
   # Check for duplicate FASTA file names.
   fasta_names = [pathlib.Path(p).stem for p in args.fasta_paths]
   if len(fasta_names) != len(set(fasta_names)):
@@ -178,7 +172,8 @@ def main(args):
 
   hhblits_bfd_uniclust_runner = HHBlits(
       binary_path=args.hhblits_binary_path,
-      databases=[args.bfd_database_path, args.uniclust30_database_path])
+      databases=[args.bfd_database_path, args.uniclust30_database_path]
+  )
 
   for input_fasta_path, fasta_name in zip(args.fasta_paths, fasta_names):
     msa_output_dir = os.path.join(args.output_dir, fasta_name, 'msas')
@@ -190,8 +185,7 @@ def main(args):
 
     input_seqs, input_descs = parsers.parse_fasta(input_fasta_str)
     if len(input_seqs) != 1:
-      raise ValueError(
-          f'More than one input sequence found in {input_fasta_path}.')
+      raise ValueError(f'More than one input sequence found in {input_fasta_path}.')
     input_sequence = input_seqs[0]
     input_description = input_descs[0]
     num_res = len(input_sequence)
@@ -214,15 +208,13 @@ def main(args):
     # mgnify_msa = mgnify_msa[:args.mgnify_max_hits]
     # mgnify_deletion_matrix = mgnify_deletion_matrix[:args.mgnify_max_hits]
 
-    hhblits_bfd_uniclust_result = hhblits_bfd_uniclust_runner.query(
-        input_fasta_path)
+    hhblits_bfd_uniclust_result = hhblits_bfd_uniclust_runner.query(input_fasta_path)
 
     bfd_out_path = os.path.join(msa_output_dir, 'bfd_uniclust_hits.a3m')
     with open(bfd_out_path, 'w') as f:
       f.write(hhblits_bfd_uniclust_result['a3m'])
 
-    bfd_msa, bfd_deletion_matrix = parsers.parse_a3m(
-          hhblits_bfd_uniclust_result['a3m'])
+    bfd_msa, bfd_deletion_matrix = parsers.parse_a3m(hhblits_bfd_uniclust_result['a3m'])
 
     # sequence_features = make_sequence_features(
     #     sequence=input_sequence,
@@ -243,31 +235,41 @@ def main(args):
 
     # ret = {**sequence_features, **msa_features}
 
+
 if __name__ == '__main__':
   import argparse
   import shutil
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('-o', '--output_dir', type=str, default='.',
-      help='Output directory')
-  for tool_name in (
-      'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
-    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+  parser.add_argument(
+      '-o', '--output_dir', type=str, default='.', help='Output directory'
+  )
+  for tool_name in ('jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
+    parser.add_argument(
+        f'--{tool_name}_binary_path',
+        type=str,
         default=shutil.which(tool_name),
-        help=f'path to the `{tool_name}` executable.')
+        help=f'path to the `{tool_name}` executable.'
+    )
   for database_name in (
-      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'):
-    parser.add_argument(f'--{database_name}_database_path', type=str,
+      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'
+  ):
+    parser.add_argument(
+        f'--{database_name}_database_path',
+        type=str,
         default=None,
-        help=f'path to database {database_name}')
-  parser.add_argument('--fasta_paths', type=str, nargs='+',
-      help='list of fasta files')
-  parser.add_argument('--use_small_bfd', action='store_true',
-      help='use small bfd database or not')
-  parser.add_argument('--uniref_max_hits', type=int, default=10000,
-      help='max hits of uniref')
-  parser.add_argument('--mgnify_max_hits', type=int, default=501,
-      help='max hits of mgnify')
+        help=f'path to database {database_name}'
+    )
+  parser.add_argument('--fasta_paths', type=str, nargs='+', help='list of fasta files')
+  parser.add_argument(
+      '--use_small_bfd', action='store_true', help='use small bfd database or not'
+  )
+  parser.add_argument(
+      '--uniref_max_hits', type=int, default=10000, help='max hits of uniref'
+  )
+  parser.add_argument(
+      '--mgnify_max_hits', type=int, default=501, help='max hits of mgnify'
+  )
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

@@ -15,7 +15,7 @@ from profold2.utils import exists
 def decompose_pid(pid, return_domain=False):
   k = pid.find('/')
   if k != -1:
-    pid, domains = pid[:k], pid[k+1:]
+    pid, domains = pid[:k], pid[k + 1:]
   else:
     domains = None
 
@@ -23,13 +23,14 @@ def decompose_pid(pid, return_domain=False):
 
   k = pid.rfind('_')
   if k != -1:
-    pid, chain = pid[:k], pid[k+1:]
+    pid, chain = pid[:k], pid[k + 1:]
   else:
     chain = None
 
   if return_domain:
     return pid, chain, domains
   return pid, chain
+
 
 def compose_pid(pid, chain, domains=None):
   if exists(chain):
@@ -97,23 +98,17 @@ def parse_seq_index(description, input_sequence, seq_index):
     start, gap = p, 0
     for m, n in positions[1:]:
       gap += m - q - 1
-      seq_index[m - start - gap:n - start - gap + 1] = torch.arange(
-          m - start, n - start + 1, dtype=seq_index.dtype)
+      seq_index[m - start - gap:n - start - gap +
+                1] = torch.arange(m - start, n - start + 1, dtype=seq_index.dtype)
       p, q = m, n
 
   return seq_index
 
 
-def domain_parser(ca_coord,
-                  ca_mask,
-                  max_len=255,
-                  alpha=0.43,
-                  cutoff=8.0,
-                  epsilon=1e-5):
+def domain_parser(ca_coord, ca_mask, max_len=255, alpha=0.43, cutoff=8.0, epsilon=1e-5):
   n = ca_mask.shape[0]
   ca_dist = torch.cdist(ca_coord, ca_coord) < cutoff
-  ca_dist_mask = rearrange(ca_mask, 'n -> () n') * rearrange(
-      ca_mask, 'n -> n ()')
+  ca_dist_mask = rearrange(ca_mask, 'n -> () n') * rearrange(ca_mask, 'n -> n ()')
 
   positions, weights = [], []
   for i in range(1, n):
@@ -123,10 +118,11 @@ def domain_parser(ca_coord,
       positions.append(i)
       weights.append(
           torch.sum(ca_dist[i:q, p:i, ...] * ca_dist_mask[i:q, p:i, ...]) /
-          ((ll * lr)**alpha))
+          ((ll * lr)**alpha)
+      )
   assert len(positions) == len(weights)
 
-  p = torch.full((n,), (min(weights) + epsilon) if weights else 1.0)
+  p = torch.full((n, ), (min(weights) + epsilon) if weights else 1.0)
   for i, j in enumerate(positions):
     p[j] = weights[i] + epsilon
 
@@ -172,12 +168,14 @@ def batch_data_crop(batch, max_seq_len=None):
     coords = coords[:, :max_seq_len, ...]
     coord_mask = coord_mask[:, :max_seq_len, ...]
 
-    batch.update(seq=int_seqs,
-                 mask=mask,
-                 str_seq=str_seqs,
-                 coord=coords,
-                 coord_mask=coord_mask,
-                 clips=clips)
+    batch.update(
+        seq=int_seqs,
+        mask=mask,
+        str_seq=str_seqs,
+        coord=coords,
+        coord_mask=coord_mask,
+        clips=clips
+    )
   return batch
 
 
@@ -198,8 +196,9 @@ def weights_from_file(filename_list):
   if filename_list:
     for filename in filename_list.split(','):
       with open(filename, 'r', encoding='utf-8') as f:
-        for line in filter(lambda x: len(x) > 0 and not x.startswith('#'),
-                           map(lambda x: x.strip(), f)):
+        for line in filter(
+            lambda x: len(x) > 0 and not x.startswith('#'), map(lambda x: x.strip(), f)
+        ):
           items = line.split()
           yield float(items[0])
 
@@ -228,15 +227,17 @@ def tensor_to_numpy(t):
 
 
 def pdb_from_prediction(batch, headers, idx=None):
-
   def to_pdb_str(b):
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
     #aatype = batch['seq'][b,...].numpy()
-    aatype = np.array([
-        residue_constants.restype_order_with_x.get(
-            aa, residue_constants.unk_restype_index) for aa in str_seq
-    ])
+    aatype = np.array(
+        [
+            residue_constants.restype_order_with_x.get(
+                aa, residue_constants.unk_restype_index
+            ) for aa in str_seq
+        ]
+    )
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
       seq_index = tensor_to_numpy(batch['seq_index'][b])
     else:
@@ -248,23 +249,23 @@ def pdb_from_prediction(batch, headers, idx=None):
     if 'seq_color' in batch:
       features['seq_color'] = tensor_to_numpy(batch['seq_color'][b] - 1)
 
-    coords = tensor_to_numpy(headers['folding']['coords'][b,...])  # (b l c d)
+    coords = tensor_to_numpy(headers['folding']['coords'][b, ...])  # (b l c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if 'coord_exists' in batch:
-      coord_mask = tensor_to_numpy(batch['coord_exists'][b,...])
+      coord_mask = tensor_to_numpy(batch['coord_exists'][b, ...])
     else:
-      coord_mask = np.asarray(
-          [restype_atom14_mask[restype] for restype in aatype])
+      coord_mask = np.asarray([restype_atom14_mask[restype] for restype in aatype])
     b_factors = None
     if 'confidence' in headers and 'plddt' in headers['confidence']:
-      plddt = tensor_to_numpy(headers['confidence']['plddt'][b,...])  # (b l)
+      plddt = tensor_to_numpy(headers['confidence']['plddt'][b, ...])  # (b l)
       b_factors = coord_mask * plddt[..., None]
 
-    result = dict(structure_module=dict(
-        final_atom_mask=coord_mask, final_atom_positions=coords))
-    prot = protein.from_prediction(features=features,
-                                   result=result,
-                                   b_factors=b_factors)
+    result = dict(
+        structure_module=dict(final_atom_mask=coord_mask, final_atom_positions=coords)
+    )
+    prot = protein.from_prediction(
+        features=features, result=result, b_factors=b_factors
+    )
     return protein.to_pdb(prot)
 
   if exists(idx):
@@ -288,5 +289,7 @@ def pdb_save(batch, headers, prefix='/tmp', step=None):
         masked_seq_len = torch.sum(batch['mask'][idx, ...], dim=-1)
       else:
         masked_seq_len = len(str_seq)
-      logging.debug('step: %s/%s, length: %s/%s, PDB save: %s',
-          step, idx, masked_seq_len, len(str_seq), pid)
+      logging.debug(
+          'step: %s/%s, length: %s/%s, PDB save: %s', step, idx, masked_seq_len,
+          len(str_seq), pid
+      )

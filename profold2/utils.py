@@ -58,7 +58,6 @@ def timing(msg, print_fn, prefix='', callback_fn=None):
 
 
 def set_backend_kwarg(fn):
-
   @wraps(fn)
   def inner(*args, backend='auto', **kwargs):
     if backend == 'auto':
@@ -72,17 +71,14 @@ def set_backend_kwarg(fn):
 def expand_dims_to(t, length=3):
   if length == 0:
     return t
-  return t.reshape(*((1,) * length),
-                   *t.shape)  # will work with both torch and numpy
+  return t.reshape(*((1, ) * length), *t.shape)  # will work with both torch and numpy
 
 
 def expand_arg_dims(dim_len=3):
   """ pack here for reuse.
         turns input into (B x D x N)
     """
-
   def outer(fn):
-
     @wraps(fn)
     def inner(x, y, **kwargs):
       assert len(x.shape) == len(y.shape), 'Shapes of A and B must match.'
@@ -97,9 +93,7 @@ def expand_arg_dims(dim_len=3):
 
 
 def invoke_torch_or_numpy(torch_fn, numpy_fn):
-
   def outer(fn):
-
     @wraps(fn)
     def inner(*args, **kwargs):
       backend = kwargs.pop('backend')
@@ -127,20 +121,18 @@ def torch_default_dtype(dtype):
 
 @contextlib.contextmanager
 def torch_allow_tf32(allow=True):
-  if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda.matmul,
-                                                 'allow_tf32'):
+  if hasattr(torch.backends,
+             'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
     matmul_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
     torch.backends.cuda.matmul.allow_tf32 = allow
-  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn,
-                                                  'allow_tf32'):
+  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
     cudnn_allow_tf32 = torch.backends.cudnn.allow_tf32
     torch.backends.cudnn.allow_tf32 = allow
   yield
-  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn,
-                                                  'allow_tf32'):
+  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
     torch.backends.cudnn.allow_tf32 = cudnn_allow_tf32
-  if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda.matmul,
-                                                 'allow_tf32'):
+  if hasattr(torch.backends,
+             'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
     torch.backends.cuda.matmul.allow_tf32 = matmul_allow_tf32
 
 
@@ -150,12 +142,7 @@ def torch_allow_tf32(allow=True):
 # pylint: enable=line-too-long
 
 
-def mds_torch(pre_dist_mat,
-              weights=None,
-              iters=10,
-              tol=1e-5,
-              eigen=False,
-              verbose=2):
+def mds_torch(pre_dist_mat, weights=None, iters=10, tol=1e-5, eigen=False, verbose=2):
   """ Gets distance matrix. Outputs 3d. See below for wrapper.
         Assumes (for now) distogram is (N x N) and symmetric
         Outs:
@@ -164,8 +151,7 @@ def mds_torch(pre_dist_mat,
     """
   device = pre_dist_mat.device
   # ensure batched MDS
-  pre_dist_mat = expand_dims_to(pre_dist_mat,
-                                length=(3 - len(pre_dist_mat.shape)))
+  pre_dist_mat = expand_dims_to(pre_dist_mat, length=(3 - len(pre_dist_mat.shape)))
   # start
   batch, n, _ = pre_dist_mat.shape
   diag_idxs = np.arange(n)
@@ -193,8 +179,7 @@ def mds_torch(pre_dist_mat,
                            -2), torch.zeros_like(torch.stack(his, dim=0))
   elif eigen:
     if verbose:
-      print(
-          'Can\'t use eigen flag if weights are active. Fallback to iterative')
+      print('Can\'t use eigen flag if weights are active. Fallback to iterative')
 
   # continue the iterative way
   if weights is None:
@@ -231,12 +216,7 @@ def mds_torch(pre_dist_mat,
   return torch.transpose(best_3d_coords, -1, -2), torch.stack(his, dim=0)
 
 
-def mds_numpy(pre_dist_mat,
-              weights=None,
-              iters=10,
-              tol=1e-5,
-              eigen=False,
-              verbose=2):
+def mds_numpy(pre_dist_mat, weights=None, iters=10, tol=1e-5, eigen=False, verbose=2):
   """ Gets distance matrix. Outputs 3d. See below for wrapper.
         Assumes (for now) distrogram is (N x N) and symmetric
         Out:
@@ -248,8 +228,7 @@ def mds_numpy(pre_dist_mat,
     weights = np.ones_like(pre_dist_mat)
 
   # ensure batched MDS
-  pre_dist_mat = expand_dims_to(pre_dist_mat,
-                                length=(3 - len(pre_dist_mat.shape)))
+  pre_dist_mat = expand_dims_to(pre_dist_mat, length=(3 - len(pre_dist_mat.shape)))
   # start
   batch, n, _ = pre_dist_mat.shape
   his = [np.inf]
@@ -259,9 +238,9 @@ def mds_numpy(pre_dist_mat,
   # iterative updates:
   for i in range(iters):
     # compute distance matrix of coords and stress
-    dist_mat = np.linalg.norm(best_3d_coords[:, :, :, None] -
-                              best_3d_coords[:, :, None, :],
-                              axis=-3)
+    dist_mat = np.linalg.norm(
+        best_3d_coords[:, :, :, None] - best_3d_coords[:, :, None, :], axis=-3
+    )
     stress = ((weights * (dist_mat - pre_dist_mat))**2).sum(axis=(-1, -2)) * 0.5
     # perturb - update X using the Guttman transform - sklearn-like
     dist_mat[dist_mat == 0] = 1e-7
@@ -304,7 +283,8 @@ def get_dihedral_torch(c1, c2, c3, c4):
   return torch.atan2(
       ((torch.norm(u2, dim=-1, keepdim=True) * u1) *
        torch.cross(u2, u3, dim=-1)).sum(dim=-1),
-      (torch.cross(u1, u2, dim=-1) * torch.cross(u2, u3, dim=-1)).sum(dim=-1))
+      (torch.cross(u1, u2, dim=-1) * torch.cross(u2, u3, dim=-1)).sum(dim=-1)
+  )
 
 
 def get_dihedral_numpy(c1, c2, c3, c4):
@@ -324,15 +304,11 @@ def get_dihedral_numpy(c1, c2, c3, c4):
   return np.arctan2(
       ((np.linalg.norm(u2, axis=-1, keepdim=True) * u1) *
        np.cross(u2, u3, axis=-1)).sum(axis=-1),
-      (np.cross(u1, u2, axis=-1) * np.cross(u2, u3, axis=-1)).sum(axis=-1))
+      (np.cross(u1, u2, axis=-1) * np.cross(u2, u3, axis=-1)).sum(axis=-1)
+  )
 
 
-def calc_phis_torch(pred_coords,
-                    n_mask,
-                    ca_mask,
-                    c_mask=None,
-                    prop=True,
-                    verbose=0):
+def calc_phis_torch(pred_coords, n_mask, ca_mask, c_mask=None, prop=True, verbose=0):
   """ Filters mirrors selecting the 1 with most N of negative phis.
         Used as part of the MDScaling wrapper if arg is passed. See below.
         Angle Phi between planes:
@@ -365,8 +341,9 @@ def calc_phis_torch(pred_coords,
   c_terms = pred_coords_[:, c_mask[0].squeeze()]
   # compute phis for every pritein in the batch
   phis = [
-      get_dihedral_torch(c_terms[i, :-1], n_terms[i, 1:], c_alphas[i, 1:],
-                         c_terms[i, 1:]) for i in range(pred_coords.shape[0])
+      get_dihedral_torch(
+          c_terms[i, :-1], n_terms[i, 1:], c_alphas[i, 1:], c_terms[i, 1:]
+      ) for i in range(pred_coords.shape[0])
   ]
 
   # return percentage of lower than 0
@@ -375,12 +352,7 @@ def calc_phis_torch(pred_coords,
   return phis
 
 
-def calc_phis_numpy(pred_coords,
-                    n_mask,
-                    ca_mask,
-                    c_mask=None,
-                    prop=True,
-                    verbose=0):
+def calc_phis_numpy(pred_coords, n_mask, ca_mask, c_mask=None, prop=True, verbose=0):
   """ Filters mirrors selecting the 1 with most N of negative phis.
         Used as part of the MDScaling wrapper if arg is passed. See below.
         Angle Phi between planes:
@@ -409,8 +381,9 @@ def calc_phis_numpy(pred_coords,
                                ca_mask).squeeze().astype(bool)]
   # compute phis for every pritein in the batch
   phis = [
-      get_dihedral_numpy(c_terms[i, :-1], n_terms[i, 1:], c_alphas[i, 1:],
-                         c_terms[i, 1:]) for i in range(pred_coords.shape[0])
+      get_dihedral_numpy(
+          c_terms[i, :-1], n_terms[i, 1:], c_alphas[i, 1:], c_terms[i, 1:]
+      ) for i in range(pred_coords.shape[0])
   ]
 
   # return percentage of lower than 0
@@ -554,24 +527,23 @@ def tmscore_numpy(x, y, n):
   return (1 / (1 + (dist / d0)**2)).mean(axis=-1)
 
 
-def mdscaling_torch(pre_dist_mat,
-                    weights=None,
-                    iters=10,
-                    tol=1e-5,
-                    fix_mirror=True,
-                    n_mask=None,
-                    ca_mask=None,
-                    c_mask=None,
-                    eigen=False,
-                    verbose=2):
+def mdscaling_torch(
+    pre_dist_mat,
+    weights=None,
+    iters=10,
+    tol=1e-5,
+    fix_mirror=True,
+    n_mask=None,
+    ca_mask=None,
+    c_mask=None,
+    eigen=False,
+    verbose=2
+):
   """ Handles the specifics of MDS for proteins (mirrors, ...) """
   # batched mds for full parallel
-  preds, stresses = mds_torch(pre_dist_mat,
-                              weights=weights,
-                              iters=iters,
-                              tol=tol,
-                              eigen=eigen,
-                              verbose=verbose)
+  preds, stresses = mds_torch(
+      pre_dist_mat, weights=weights, iters=iters, tol=tol, eigen=eigen, verbose=verbose
+  )
   if not fix_mirror:
     return preds, stresses
 
@@ -586,22 +558,22 @@ def mdscaling_torch(pre_dist_mat,
   return preds, stresses
 
 
-def mdscaling_numpy(pre_dist_mat,
-                    weights=None,
-                    iters=10,
-                    tol=1e-5,
-                    fix_mirror=True,
-                    n_mask=None,
-                    ca_mask=None,
-                    c_mask=None,
-                    verbose=2):
+def mdscaling_numpy(
+    pre_dist_mat,
+    weights=None,
+    iters=10,
+    tol=1e-5,
+    fix_mirror=True,
+    n_mask=None,
+    ca_mask=None,
+    c_mask=None,
+    verbose=2
+):
   """ Handles the specifics of MDS for proteins (mirrors, ...) """
   # batched mds for full parallel
-  preds, stresses = mds_numpy(pre_dist_mat,
-                              weights=weights,
-                              iters=iters,
-                              tol=tol,
-                              verbose=verbose)
+  preds, stresses = mds_numpy(
+      pre_dist_mat, weights=weights, iters=iters, tol=tol, verbose=verbose
+  )
   if not fix_mirror:
     return preds, stresses
 
@@ -622,6 +594,7 @@ def mdscaling_numpy(pre_dist_mat,
 ################
 
 # pylint: disable=invalid-name
+
 
 @set_backend_kwarg
 @invoke_torch_or_numpy(mdscaling_torch, mdscaling_numpy)
@@ -698,8 +671,7 @@ def GDT(A, B, *, mode='TS', cutoffs=None, weights=None):
         * Outputs: tensor/array of size (B,)
     """
   # define cutoffs for each type of gdt and weights
-  cutoffs = default(cutoffs,
-                    [0.5, 1, 2, 4] if mode in ['HA', 'ha'] else [1, 2, 4, 8])
+  cutoffs = default(cutoffs, [0.5, 1, 2, 4] if mode in ['HA', 'ha'] else [1, 2, 4, 8])
   # calculate GDT
   return A, B, cutoffs, {'weights': weights}
 
@@ -721,7 +693,9 @@ def TMscore(A, B, *, L):
     """
   return A, B, dict(n=L)
 
+
 # pylint: enable=invalid-name
+
 
 def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
   # (..., l, l)
@@ -733,8 +707,9 @@ def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
   if exists(mask):
     mask1s = mask1s * (mask[..., :, None] * mask[..., None, :])
   mask_ranges = map(
-      lambda r: torch.triu(mask1s, default(r[0], 0)) - torch.triu(
-          mask1s, default(r[1], seq_len)), ranges)
+      lambda r: torch.triu(mask1s, default(r[0], 0)) - torch.
+      triu(mask1s, default(r[1], seq_len)), ranges
+  )
 
   pred_truth = torch.stack((pred, truth), dim=-1)
   for (i, j), m in zip(ranges, mask_ranges):
@@ -742,8 +717,9 @@ def contact_precision_torch(pred, truth, ratios, ranges, mask=None, cutoff=8):
     sorter_idx = (-masked_pred_truth[:, 0]).argsort()
     sorted_pred_truth = masked_pred_truth[sorter_idx]
 
-    num_corrects = ((0 < sorted_pred_truth[:,1]) &
-                    (sorted_pred_truth[:,1] <= cutoff)).sum()
+    num_corrects = (
+        (0 < sorted_pred_truth[:, 1]) & (sorted_pred_truth[:, 1] <= cutoff)
+    ).sum()
     for ratio in ratios:
       num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
       assert 0 < num_tops <= seq_len
@@ -763,8 +739,9 @@ def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
   if exists(mask):
     mask1s = mask1s * (mask[...:, None] * mask[..., None, :])
   mask_ranges = map(
-      lambda r: np.triu(mask1s, default(r[0], 0)) - np.triu(
-          mask1s, default(r[1], seq_len)), ranges)
+      lambda r: np.triu(mask1s, default(r[0], 0)) - np.
+      triu(mask1s, default(r[1], seq_len)), ranges
+  )
 
   pred_truth = np.stack((pred, truth), axis=-1)
   for (i, j), m in zip(ranges, mask_ranges):
@@ -772,8 +749,9 @@ def contact_precision_numpy(pred, truth, ratios, ranges, mask=None, cutoff=8):
     sorter_idx = (-masked_pred_truth[:, 0]).argsort()
     sorted_pred_truth = masked_pred_truth[sorter_idx]
 
-    num_corrects = ((0 < sorted_pred_truth[:,1]) &
-                    (sorted_pred_truth[:,1] <= cutoff)).sum()
+    num_corrects = (
+        (0 < sorted_pred_truth[:, 1]) & (sorted_pred_truth[:, 1] <= cutoff)
+    ).sum()
     for ratio in ratios:
       num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
       assert 0 < num_tops <= seq_len

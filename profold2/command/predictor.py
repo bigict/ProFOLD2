@@ -25,6 +25,7 @@ from profold2.utils import exists, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
+
 def _a3m_add_pseudo_linker(sequences, descriptions, pseudo_linker_len=100):
   s, d = [], []
 
@@ -44,6 +45,7 @@ def _a3m_add_pseudo_linker(sequences, descriptions, pseudo_linker_len=100):
     d += [f':{domains}']
   return [''.join(s)], [' '.join(d)]
 
+
 def _read_fasta(args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
     fasta_file = os.path.basename(fasta_file)
@@ -52,8 +54,7 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
 
   if exists(args.fasta_file_list):
     with open(args.fasta_file_list, 'r') as f:
-      for fasta_file in filter(lambda x: len(x) > 0,
-                               map(lambda x: x.strip(), f)):
+      for fasta_file in filter(lambda x: len(x) > 0, map(lambda x: x.strip(), f)):
         args.fasta_files.append(fasta_file)
   for fasta_glob in args.fasta_files:
     for fasta_file in glob.glob(fasta_glob):
@@ -61,6 +62,7 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
       with open(fasta_file, 'r') as f:
         fasta_str = f.read()
       yield fasta_name, fasta_str
+
 
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   kwargs = {'pin_memory': True, 'shuffle': False}
@@ -74,7 +76,9 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
         pseudo_linker_prob=1.0 if args.add_pseudo_linker else 0.0,
         pseudo_linker_shuffle=False,
         max_msa_depth=args.max_msa_size,
-        num_workers=args.num_workers, **kwargs)
+        num_workers=args.num_workers,
+        **kwargs
+    )
 
   sequences, descriptions, msa = [], [], []
   for fasta_name, fasta_str in _read_fasta(args):
@@ -96,26 +100,28 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
       sequences += s[:1]
       descriptions += d[:1]
       if len(s) > args.max_msa_size:
-        s = s[:1] + list(np.random.choice(
-            s,
-            size=args.max_msa_size - 1,
-            replace=False) if args.max_msa_size > 1 else [])
+        s = s[:1] + list(
+            np.random.choice(s, size=args.max_msa_size -
+                             1, replace=False) if args.max_msa_size > 1 else []
+        )
       msa += [s]
-  data = ProteinSequenceDataset(sequences,
-                                descriptions,
-                                msa=msa,
-                                domain_as_seq=args.add_pseudo_linker)
+  data = ProteinSequenceDataset(
+      sequences, descriptions, msa=msa, domain_as_seq=args.add_pseudo_linker
+  )
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
-    kwargs['sampler'] = DistributedSampler(data,
-                                           num_replicas=WorkerXPU.world_size(
-                                               args.nnodes),
-                                           rank=xpu.rank,
-                                           shuffle=False)
+    kwargs['sampler'] = DistributedSampler(
+        data,
+        num_replicas=WorkerXPU.world_size(args.nnodes),
+        rank=xpu.rank,
+        shuffle=False
+    )
   return torch.utils.data.DataLoader(
       data,
       collate_fn=ProteinSequenceDataset.collate_fn,
       num_workers=args.num_workers,
-      **kwargs)
+      **kwargs
+  )
+
 
 def _create_relaxer(use_gpu_relax=False):
   from profold2.relax import relax  # pylint: disable=import-outside-toplevel
@@ -126,7 +132,9 @@ def _create_relaxer(use_gpu_relax=False):
       stiffness=relax.RELAX_STIFFNESS,
       exclude_residues=relax.RELAX_EXCLUDE_RESIDUES,
       max_outer_iterations=relax.RELAX_MAX_OUTER_ITERATIONS,
-      use_gpu=use_gpu_relax)
+      use_gpu=use_gpu_relax
+  )
+
 
 def _load_models(rank, args):  # pylint: disable=redefined-outer-name
   def _location_split(model_location):
@@ -140,23 +148,24 @@ def _load_models(rank, args):  # pylint: disable=redefined-outer-name
   worker = WorkerModel(rank, args)
   for i, model_location in enumerate(args.models):
     model_name, model_location = _location_split(model_location)
-    logging.info('Load model [%d/%d] %s from %s',
-        i, len(args.models), model_name, model_location)
+    logging.info(
+        'Load model [%d/%d] %s from %s', i, len(args.models), model_name, model_location
+    )
 
     feats, model = worker.load(model_location)
     features = FeatureBuilder(feats).to(worker.device())
     yield model_name, (features, model)
 
+
 def predict(rank, args):  # pylint: disable=redefined-outer-name
   model_runners = dict(_load_models(rank, args))
-  logging.info('Have %d models: %s', len(model_runners),
-              list(model_runners.keys()))
+  logging.info('Have %d models: %s', len(model_runners), list(model_runners.keys()))
 
   test_loader = _create_dataloader(rank, args)
-  amber_relaxer = (None
-      if args.no_relaxer
-      else _create_relaxer(
-          use_gpu_relax=rank.is_available() and not args.no_gpu_relax))
+  amber_relaxer = (
+      None if args.no_relaxer else
+      _create_relaxer(use_gpu_relax=rank.is_available() and not args.no_gpu_relax)
+  )
 
   def timing_callback(timings, key, tic, toc):
     timings[key] = toc - tic
@@ -166,12 +175,12 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     timings = {}
 
     fasta_name = ','.join(batch['pid'])
-    with timing(f'Predicting {fasta_name}',
+    with timing(
+        f'Predicting {fasta_name}',
         print_fn=logging.info,
-        callback_fn=functools.partial(timing_callback,
-            timings, 'predict_structure')):
-      logging.debug('Sequence %d shape %s: %s',
-                    idx, fasta_name, batch['seq'].shape)
+        callback_fn=functools.partial(timing_callback, timings, 'predict_structure')
+    ):
+      logging.debug('Sequence %d shape %s: %s', idx, fasta_name, batch['seq'].shape)
       if args.fasta_fmt in ('a3m', 'a4m'):
         logging.debug('msa shape %s: %s', fasta_name, batch['msa'].shape)
 
@@ -182,22 +191,32 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
       ranking_scores = {}
       for model_name, (features, model) in model_runners.items():
         # Build features.
-        with timing(f'Building features for model {model_name} on {fasta_name}',
+        with timing(
+            f'Building features for model {model_name} on {fasta_name}',
             print_fn=logging.info,
-            callback_fn=functools.partial(timing_callback,
-                timings, f'build_features_{model_name}')):
+            callback_fn=functools.partial(
+                timing_callback, timings, f'build_features_{model_name}'
+            )
+        ):
           feats = features(batch, is_training=False)
 
         # Predict - out is (batch, L * 3, 3)
         with torch.no_grad():
-          with timing(f'Running model {model_name} on {fasta_name}',
+          with timing(
+              f'Running model {model_name} on {fasta_name}',
               print_fn=logging.info,
-              callback_fn=functools.partial(timing_callback,
-                  timings, f'predict_{model_name}')):
+              callback_fn=functools.partial(
+                  timing_callback, timings, f'predict_{model_name}'
+              )
+          ):
             with autocast_ctx(args.amp_enabled):
-              r = ReturnValues(**model(batch=feats,
-                  num_recycle=args.model_recycles,
-                  shard_size=args.model_shard_size))
+              r = ReturnValues(
+                  **model(
+                      batch=feats,
+                      num_recycle=args.model_recycles,
+                      shard_size=args.model_shard_size
+                  )
+              )
 
         ranking_scores[model_name] = 0
         if 'confidence' in r.headers:
@@ -207,26 +226,27 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
         if not args.no_pth:
           torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
 
-        unrelaxed_pdbs[model_name] = pdb_from_prediction(batch,
-                                                         r.headers,
-                                                         idx=0)
-        unrelaxed_pdb_path = os.path.join(output_dir,
-                                          f'unrelaxed_{model_name}.pdb')
+        unrelaxed_pdbs[model_name] = pdb_from_prediction(batch, r.headers, idx=0)
+        unrelaxed_pdb_path = os.path.join(output_dir, f'unrelaxed_{model_name}.pdb')
         with open(unrelaxed_pdb_path, 'w') as f:
           f.write(unrelaxed_pdbs[model_name])
 
         if exists(amber_relaxer):
           # Relax the prediction.
-          with timing(f'Relax pdb from model {model_name} on {fasta_name}',
+          with timing(
+              f'Relax pdb from model {model_name} on {fasta_name}',
               print_fn=logging.info,
-              callback_fn=functools.partial(timing_callback,
-                  timings, f'relax_{model_name}')):
+              callback_fn=functools.partial(
+                  timing_callback, timings, f'relax_{model_name}'
+              )
+          ):
             retry = 2
             while retry > 0:
               retry -= 1
               try:
                 relaxed_pdb_str, _, _ = amber_relaxer.process(
-                    prot=protein.from_pdb_string(unrelaxed_pdbs[model_name]))
+                    prot=protein.from_pdb_string(unrelaxed_pdbs[model_name])
+                )
                 break
               except ValueError as e:
                 logging.error('Relax throw an exception: %s', e)
@@ -238,15 +258,15 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           relaxed_pdbs[model_name] = relaxed_pdb_str
 
           # Save the relaxed PDB.
-          relaxed_output_path = os.path.join(
-              output_dir, f'relaxed_{model_name}.pdb')
+          relaxed_output_path = os.path.join(output_dir, f'relaxed_{model_name}.pdb')
           with open(relaxed_output_path, 'w') as f:
             f.write(relaxed_pdb_str)
 
       # Rank by model confidence and write out relaxed PDBs in rank order.
       ranked_order = []
       for i, (model_name, _) in enumerate(
-          sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)):
+          sorted(ranking_scores.items(), key=lambda x: x[1], reverse=True)
+      ):
         ranked_order.append(model_name)
         ranked_output_path = os.path.join(output_dir, f'ranked_{i}.pdb')
         with open(ranked_output_path, 'w') as f:
@@ -257,8 +277,14 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
       ranking_output_path = os.path.join(output_dir, 'ranking_debug.json')
       with open(ranking_output_path, 'w') as f:
-        f.write(json.dumps(
-            {'confidences': ranking_scores, 'order': ranked_order}, indent=4))
+        f.write(
+            json.dumps(
+                {
+                    'confidences': ranking_scores,
+                    'order': ranked_order
+                }, indent=4
+            )
+        )
 
     logging.info('Final timings for %s: %s', fasta_name, timings)
 
@@ -271,10 +297,11 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
       enabled=args.enable_profiler,
       record_shapes=True,
       profile_memory=True,
-      with_stack=True) as prof:
+      with_stack=True
+  ) as prof:
     with snapshot.memory_snapshot(
-        enabled=args.enable_memory_snapshot,
-        device=rank.device):
+        enabled=args.enable_memory_snapshot, device=rank.device
+    ):
       for idx, batch in enumerate(iter(test_loader)):
         try:
           predict_structure(idx, batch)
@@ -288,50 +315,75 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     logging.debug('%s', prof.key_averages().table(sort_by='cuda_time_total'))
   logging.debug('memory_summary: \n%s', rank.memory_summary())
 
+
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('--map_location', type=str, default=None,
-      help='remapped to an alternative set of devices.')
-  parser.add_argument('fasta_files', type=str, nargs='*',
-      help='fasta files.')
-  parser.add_argument('--fasta_file_list', type=str, default=None,
-      help='fasta file list.')
-  parser.add_argument('--fasta_fmt', type=str, default='single',
+  parser.add_argument(
+      '--map_location',
+      type=str,
+      default=None,
+      help='remapped to an alternative set of devices.'
+  )
+  parser.add_argument('fasta_files', type=str, nargs='*', help='fasta files.')
+  parser.add_argument(
+      '--fasta_file_list', type=str, default=None, help='fasta file list.'
+  )
+  parser.add_argument(
+      '--fasta_fmt',
+      type=str,
+      default='single',
       choices=['single', 'a3m', 'a4m'],
-      help='format of fasta files.')
+      help='format of fasta files.'
+  )
 
-  parser.add_argument('--data_dir', type=str, default=None,
-      help='load data from dataset.')
-  parser.add_argument('--data_idx', type=str, default=None,
-      help='dataset idx.')
-  parser.add_argument('--add_pseudo_linker', action='store_true',
-      help='enable loading complex data.')
-  parser.add_argument('--pseudo_linker_len', type=int, default=100,
-      help='add a pseudolinker with length=PSEUDO_LINKER_LEN.')
+  parser.add_argument(
+      '--data_dir', type=str, default=None, help='load data from dataset.'
+  )
+  parser.add_argument('--data_idx', type=str, default=None, help='dataset idx.')
+  parser.add_argument(
+      '--add_pseudo_linker', action='store_true', help='enable loading complex data.'
+  )
+  parser.add_argument(
+      '--pseudo_linker_len',
+      type=int,
+      default=100,
+      help='add a pseudolinker with length=PSEUDO_LINKER_LEN.'
+  )
 
-  parser.add_argument('--models', type=str, nargs='+', required=True,
+  parser.add_argument(
+      '--models',
+      type=str,
+      nargs='+',
+      required=True,
       metavar='[MODEL_NAME=]MODEL_PATH',
-      help=' Models to be loaded using [model_name=]model_location format.')
-  parser.add_argument('--model_recycles', type=int, default=0,
-      help='number of recycles in profold2.')
-  parser.add_argument('--model_shard_size', type=int, default=None,
-      help='shard size in evoformer model.')
-  parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out msas whose size>SIZE.')
+      help=' Models to be loaded using [model_name=]model_location format.'
+  )
+  parser.add_argument(
+      '--model_recycles', type=int, default=0, help='number of recycles in profold2.'
+  )
+  parser.add_argument(
+      '--model_shard_size',
+      type=int,
+      default=None,
+      help='shard size in evoformer model.'
+  )
+  parser.add_argument(
+      '--max_msa_size', type=int, default=1024, help='filter out msas whose size>SIZE.'
+  )
 
-  parser.add_argument('--num_workers', type=int, default=1,
-      help='number of workers.')
-  parser.add_argument('--no_relaxer', action='store_true',
-      help='do NOT run relaxer.')
-  parser.add_argument('--no_pth', action='store_true',
-      help='do NOT save prediction header.')
-  parser.add_argument('--no_gpu_relax', action='store_true',
-      help='run relax on cpu.')
-  parser.add_argument('--amp_enabled', action='store_true',
-      help='enable automatic mixed precision.')
-  parser.add_argument('--enable_profiler', action='store_true',
-      help='enable profiler.')
-  parser.add_argument('--enable_memory_snapshot', action='store_true',
-      help='enable memory snapshot.')
+  parser.add_argument('--num_workers', type=int, default=1, help='number of workers.')
+  parser.add_argument('--no_relaxer', action='store_true', help='do NOT run relaxer.')
+  parser.add_argument(
+      '--no_pth', action='store_true', help='do NOT save prediction header.'
+  )
+  parser.add_argument('--no_gpu_relax', action='store_true', help='run relax on cpu.')
+  parser.add_argument(
+      '--amp_enabled', action='store_true', help='enable automatic mixed precision.'
+  )
+  parser.add_argument('--enable_profiler', action='store_true', help='enable profiler.')
+  parser.add_argument(
+      '--enable_memory_snapshot', action='store_true', help='enable memory snapshot.'
+  )
+
 
 if __name__ == '__main__':
   import argparse
@@ -339,20 +391,27 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
   # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None,
-      help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0,
-      help='rank of the node.')
-  parser.add_argument('--local_rank', type=int, default=None,
-      help='local rank of xpu, default=None')
-  parser.add_argument('--init_method', type=str,
+  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
+  parser.add_argument(
+      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
+  )
+  parser.add_argument(
+      '--init_method',
+      type=str,
       default='file:///tmp/profold2.dist',
       help='method to initialize the process group, '
-           'default=\'file:///tmp/profold2.dist\'')
+      'default=\'file:///tmp/profold2.dist\''
+  )
 
   # output dir
-  parser.add_argument('-o', '--prefix', type=str, default='.',
-      help='prefix of out directory, default=\'.\'')
+  parser.add_argument(
+      '-o',
+      '--prefix',
+      type=str,
+      default='.',
+      help='prefix of out directory, default=\'.\''
+  )
   add_arguments(parser)
   # verbose
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
