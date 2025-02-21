@@ -1,6 +1,5 @@
 import collections
 import functools
-from inspect import isfunction
 
 import numpy as np
 import torch
@@ -10,8 +9,9 @@ from einops import rearrange, repeat
 from profold2.common import residue_constants
 from profold2.utils import default, exists
 
+
 def apc(x, dim=None, epsilon=1e-8):
-  "Perform average product correct, used for contact prediction."
+  """Perform average product correct, used for contact prediction."""
   i, j = default(dim, (-1, -2))
   a1 = torch.sum(x, dim=i, keepdim=True)
   a2 = torch.sum(x, dim=j, keepdim=True)
@@ -20,21 +20,29 @@ def apc(x, dim=None, epsilon=1e-8):
   avg = a1 * a2 / (a12 + epsilon)
   return x - avg
 
+
 def l2_norm(v, dim=-1, epsilon=1e-12):
-  return v / torch.clamp(torch.linalg.norm(v, dim=dim, keepdim=True),  # pylint: disable=not-callable
-                         min=epsilon)
+  return v / torch.clamp(
+      torch.linalg.norm(v, dim=dim, keepdim=True),  # pylint: disable=not-callable
+      min=epsilon
+  )
+
 
 def squared_cdist(x, y, keepdim=False):
-  return torch.sum(torch.square(
-      rearrange(x, '... i d -> ... i () d') -
-      rearrange(y, '... j d -> ... () j d')),
-                   dim=-1,
-                   keepdim=keepdim)
+  return torch.sum(
+      torch.square(
+          rearrange(x, '... i d -> ... i () d') - rearrange(y, '... j d -> ... () j d')
+      ),
+      dim=-1,
+      keepdim=keepdim
+  )
+
 
 def masked_mean(mask, value, dim=None, epsilon=1e-10):
   if exists(dim):
-    return torch.sum(mask*value, dim=dim) / (epsilon + torch.sum(mask, dim=dim))
-  return torch.sum(mask*value) / (epsilon + torch.sum(mask))
+    return torch.sum(mask * value, dim=dim) / (epsilon + torch.sum(mask, dim=dim))
+  return torch.sum(mask * value) / (epsilon + torch.sum(mask))
+
 
 @functools.lru_cache(maxsize=8)
 def make_mask(restypes, mask, device=None):
@@ -49,6 +57,7 @@ def make_mask(restypes, mask, device=None):
     return m.float()
   return torch.as_tensor([1.0] * num_class, device=device)
 
+
 def batched_gather(params, indices, has_batch_dim=False):
   b, device = indices.shape[0], indices.device
   if isinstance(params, np.ndarray):
@@ -61,15 +70,13 @@ def batched_gather(params, indices, has_batch_dim=False):
   kwargs = dict(zip(ext, params.shape[-c:]))
   ext = ' '.join(ext)
   return torch.gather(
-      params, 1, repeat(indices.long(), f'b n ... -> b n ... {ext}', **kwargs))
+      params, 1, repeat(indices.long(), f'b n ... -> b n ... {ext}', **kwargs)
+  )
 
-def sharded_apply(fn,
-                  sharded_args,
-                  *args,
-                  shard_size=1,
-                  shard_dim=0,
-                  cat_dim=0,
-                  **kwargs):
+
+def sharded_apply(
+    fn, sharded_args, *args, shard_size=1, shard_dim=0, cat_dim=0, **kwargs
+):
   """Sharded apply.
 
   Applies `fn` over shards to sharded_args
@@ -81,10 +88,11 @@ def sharded_apply(fn,
     assert len(sharded_args) > 0 and exists(sharded_args[0])
     batched_dim = sharded_args[0].shape[shard_dim]
     assert all(
-        map(lambda x: not exists(x) or x.shape[shard_dim] == batched_dim,
-            sharded_args))
-    for slice_args in zip(*map(
-        lambda x: torch.split(x, shard_size, dim=shard_dim), sharded_args)):
+        map(lambda x: not exists(x) or x.shape[shard_dim] == batched_dim, sharded_args)
+    )
+    for slice_args in zip(
+        *map(lambda x: torch.split(x, shard_size, dim=shard_dim), sharded_args)
+    ):
       yield run_fn(*slice_args)
 
   # shard size None denotes no sharding
@@ -94,6 +102,7 @@ def sharded_apply(fn,
   if isinstance(cat_dim, int):
     return torch.cat(list(run_chunk(*sharded_args)), dim=cat_dim)
   return cat_dim(run_chunk(*sharded_args))
+
 
 """
 The transformation matrices returned from the functions in this file assume
@@ -119,6 +128,7 @@ e.g.
     points = [[0, 1, 2]]  # (1 x 3) xyz coordinates of a point
     transformed_points = points * R.transpose(1, 0)
 """
+
 
 def quaternion_to_matrix(quaternions):
   """
@@ -149,6 +159,7 @@ def quaternion_to_matrix(quaternions):
       -1,
   )
   return o.reshape(quaternions.shape[:-1] + (3, 3))
+
 
 def _copysign(a, b):
   """
@@ -202,6 +213,7 @@ def matrix_to_quaternion(matrix):
   o2 = _copysign(y, matrix[..., 0, 2] - matrix[..., 2, 0])
   o3 = _copysign(z, matrix[..., 1, 0] - matrix[..., 0, 1])
   return torch.stack((o0, o1, o2, o3), -1)
+
 
 def standardize_quaternion(quaternions):
   """
@@ -264,28 +276,33 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
       torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
-      all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :])
+      all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
+  )
 
   if all_atom_masks is not None:
-    pseudo_beta_mask = torch.where(is_gly, all_atom_masks[..., ca_idx],
-                                   all_atom_masks[..., cb_idx])
+    pseudo_beta_mask = torch.where(
+        is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
+    )
     pseudo_beta_mask = pseudo_beta_mask.float()
     return pseudo_beta, pseudo_beta_mask
 
   return pseudo_beta
 
+
 def distogram_from_positions(coords, breaks):
   lo_breaks = torch.square(breaks)
   hi_breaks = torch.cat(
-      (lo_breaks[1:], torch.full((1,), 1e8, device=breaks.device)), dim=-1)
+      (lo_breaks[1:], torch.full((1, ), 1e8, device=breaks.device)), dim=-1
+  )
   dist2 = squared_cdist(coords, coords, keepdim=True)
   dgram = (dist2 > lo_breaks) * (dist2 < hi_breaks)
   return dgram.float()
 
+
 def lddt(pred_points, true_points, points_mask, cutoff=15.):
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
-      Inputs: 
+      Inputs:
       * pred_coords: (b, l, d) array of predicted 3D points.
       * true_points: (b, l, d) array of true 3D points.
       * points_mask : (b, l) binary-valued array. 1 for points that exist in
@@ -304,9 +321,10 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
   true_cdist = torch.cdist(true_points, true_points, p=2)
 
   cdist_to_score = (
-      (true_cdist < cutoff) * (rearrange(points_mask, 'b i -> b i ()') *
-                               rearrange(points_mask, 'b j -> b () j')) *
-      (1.0 - torch.eye(true_cdist.shape[1], device=points_mask.device))
+      (true_cdist < cutoff) * (
+          rearrange(points_mask, 'b i -> b i ()') *
+          rearrange(points_mask, 'b j -> b () j')
+      ) * (1.0 - torch.eye(true_cdist.shape[1], device=points_mask.device))
   )  # Exclude self-interaction
 
   # Shift unscored distances to be far away
@@ -320,6 +338,7 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
   return (torch.sum(cdist_to_score * score, dim=-1) +
           eps) / (torch.sum(cdist_to_score, dim=-1) + eps)
 
+
 def plddt(logits):
   """Compute per-residue pLDDT from logits
   """
@@ -331,14 +350,15 @@ def plddt(logits):
   probs = F.softmax(logits, dim=-1)
   return torch.einsum('c,... c -> ...', centers, probs)
 
+
 def bin_centers_from_breaks(breaks):
   # Add half-step to get the center
   step = (breaks[..., 1:] - breaks[..., :-1])
   step = torch.cat((step, torch.mean(step, dim=-1, keepdim=True)), dim=-1)
   bin_centers = breaks + step
-  bin_centers = torch.cat((bin_centers, bin_centers[...,-1:] + step[...,-1:]),
-                           dim=-1)
+  bin_centers = torch.cat((bin_centers, bin_centers[..., -1:] + step[..., -1:]), dim=-1)
   return bin_centers
+
 
 def pae(logits, breaks, return_mae=False):
   """Computes aligned confidence metrics from logits
@@ -349,8 +369,9 @@ def pae(logits, breaks, return_mae=False):
   expected_align_error = torch.sum(probs * bin_centers, dim=-1)
 
   if return_mae:  # return max aligned error
-    return expected_align_error, bin_centers[...,-1]
+    return expected_align_error, bin_centers[..., -1]
   return expected_align_error
+
 
 def ptm(logits, breaks, mask=None):
   """Compute predicted TM alignment
@@ -370,7 +391,7 @@ def ptm(logits, breaks, mask=None):
   # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
   # "Scoring function for automated assessment of protein structure template
   # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
-  d0 = 1.24 * (n - 15) ** (1./3) - 1.8
+  d0 = 1.24 * (n - 15)**(1. / 3) - 1.8
 
   # TM-Score term for every bin.
   tm_per_bin = 1. / (1 + (bin_centers / d0)**2)
@@ -386,7 +407,9 @@ def ptm(logits, breaks, mask=None):
 
   return torch.amax(per_alignment, dim=-1)
 
+
 Rigids = collections.namedtuple('Rigids', ['rotations', 'translations'])
+
 
 def rotations_from_vecs(v1, v2, epsilon=1e-8):
   e1 = l2_norm(v1, epsilon=epsilon)
@@ -397,6 +420,7 @@ def rotations_from_vecs(v1, v2, epsilon=1e-8):
   R = torch.stack((e1, e2, e3), dim=-1)  # pylint: disable=invalid-name
 
   return R
+
 
 def rigids_from_3x3(points, indices=None, epsilon=1e-6):
   """Create rigids from 3 points.
@@ -421,6 +445,7 @@ def rigids_from_3x3(points, indices=None, epsilon=1e-6):
 
   return R, t
 
+
 def rigids_from_4x4(m):
   """Create rigids from 4x4 array
   """
@@ -428,12 +453,10 @@ def rigids_from_4x4(m):
   assert m.shape[-2:] == (4, 4)
   return m[..., :3, :3], m[..., :3, 3]
 
-def angles_from_positions(aatypes,
-                          coords,
-                          coord_mask,
-                          placeholder_for_undefined=False):
-  prev_coords, prev_mask = coords[..., :-1, :, :], coord_mask[..., :-1, :]
-  this_coords, this_mask = coords[..., 1:, :, :], coord_mask[..., 1:, :]
+
+def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined=False):
+  # prev_coords, prev_mask = coords[..., :-1, :, :], coord_mask[..., :-1, :]
+  # this_coords, this_mask = coords[..., 1:, :, :], coord_mask[..., 1:, :]
 
   #omega_points = torch.stack((prev_coords[...,]))
   # (N, 7, 4, 14)
@@ -441,24 +464,24 @@ def angles_from_positions(aatypes,
       batched_gather(residue_constants.chi_angles_atom14_indices,
                      aatypes).long(), residue_constants.atom14_type_num)
   torsion_atom14_exists = batched_gather(
-      residue_constants.chi_angles_atom14_exists, aatypes)
+      residue_constants.chi_angles_atom14_exists, aatypes
+  )
 
   # (N, 7, 4, 3)
-  torsion_points = torch.einsum('... n d,... g m n -> ... g m d', coords,
-                                torsion_atom14_idx.float())
+  torsion_points = torch.einsum(
+      '... n d,... g m n -> ... g m d', coords, torsion_atom14_idx.float()
+  )
   # (N, 7, 4)
-  torsion_point_mask = torch.einsum('... n,... g m n -> ... g m',
-                                    coord_mask.float(),
-                                    torsion_atom14_idx.float())
+  torsion_point_mask = torch.einsum(
+      '... n,... g m n -> ... g m', coord_mask.float(), torsion_atom14_idx.float()
+  )
 
   # fix omega, phi angles
   for i in range(torsion_points.shape[-4] - 1, 0, -1):
-    torsion_points[..., i, 0, :2, :] = torsion_points[..., i - 1,
-                                                      0, :2, :]  # omega
+    torsion_points[..., i, 0, :2, :] = torsion_points[..., i - 1, 0, :2, :]  # omega
     torsion_point_mask[..., i, 0, :2] = torsion_point_mask[..., i - 1, 0, :2]
 
-    torsion_points[..., i, 1, :1, :] = torsion_points[..., i - 1,
-                                                      1, :1, :]  # phi
+    torsion_points[..., i, 1, :1, :] = torsion_points[..., i - 1, 1, :1, :]  # phi
     torsion_point_mask[..., i, 1, :1] = torsion_point_mask[..., i - 1, 1, :1]
 
   torsion_points[..., 0, 0, :2, :] = 0  # omega
@@ -473,53 +496,62 @@ def angles_from_positions(aatypes,
   # torsion_frames = rigids_from_3x3(torsion_points, indices=(1, 2, 0))
   torsion_frames = rotations_from_vecs(
       torsion_points[..., 2, :] - torsion_points[..., 1, :],
-      torsion_points[..., 0, :] -
-      torsion_points[..., 2, :]), torsion_points[..., 2, :]
+      torsion_points[..., 0, :] - torsion_points[..., 2, :]
+  ), torsion_points[..., 2, :]
 
   # Compute the position of the forth atom in this frame (y and z coordinate
   # define the chi angle)
   def to_angles(rotations, translations, torsion_points_4):
-    local_points = torch.einsum('... w,... w h -> ... h',
-                                torsion_points_4 - translations, rotations)
-    angles_sin_cos = torch.stack((local_points[..., 2], local_points[..., 1]),
-                                 dim=-1)
+    local_points = torch.einsum(
+        '... w,... w h -> ... h', torsion_points_4 - translations, rotations
+    )
+    angles_sin_cos = torch.stack((local_points[..., 2], local_points[..., 1]), dim=-1)
     return angles_sin_cos / torch.sqrt(
-        1e-8 + torch.sum(angles_sin_cos**2, dim=-1, keepdim=True))
+        1e-8 + torch.sum(angles_sin_cos**2, dim=-1, keepdim=True)
+    )
 
   torsion_angles = to_angles(*torsion_frames, torsion_points[..., 3, :])
-  torsion_angles_mask = torch.prod(torsion_point_mask,
-                                   dim=-1) * torsion_atom14_exists
+  torsion_angles_mask = torch.prod(torsion_point_mask, dim=-1) * torsion_atom14_exists
 
   # Mirror psi, because we computed it from the Oxygen-atom.
   torsion_angles *= rearrange(
-      torch.as_tensor([1., 1., -1., 1., 1., 1., 1.],
-                      device=torsion_angles.device), 'g -> g ()')
+      torch.as_tensor([1., 1., -1., 1., 1., 1., 1.], device=torsion_angles.device),
+      'g -> g ()'
+  )
 
   # Create alternative angles for ambiguous atom names.
   chi_is_ambiguous = batched_gather(
-      np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32), aatypes)
+      np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32), aatypes
+  )
   mirror_ambiguous = torch.cat(
-      (torch.ones(aatypes.shape + (3,),
-                  dtype=torch.float32,
-                  device=aatypes.device), 1 - 2 * chi_is_ambiguous),
-      dim=-1)
+      (
+          torch.ones(aatypes.shape + (3, ), dtype=torch.float32,
+                     device=aatypes.device), 1 - 2 * chi_is_ambiguous
+      ),
+      dim=-1
+  )
   torsion_angles_alt = torsion_angles * mirror_ambiguous[..., None]
   if placeholder_for_undefined:
     # Add placeholder torsions in place of undefined torsion angles
     # (e.g. N-terminus pre-omega)
-    placeholder_torsions = torch.stack([
-        torch.ones(torsion_angles.shape[:-1], device=torsion_angles.device),
-        torch.zeros(torsion_angles.shape[:-1], device=torsion_angles.device)
-    ],
-                                       dim=-1)
+    placeholder_torsions = torch.stack(
+        [
+            torch.ones(torsion_angles.shape[:-1], device=torsion_angles.device),
+            torch.zeros(torsion_angles.shape[:-1], device=torsion_angles.device)
+        ],
+        dim=-1
+    )
     torsion_angles = torsion_angles * torsion_angles_mask[
         ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
     torsion_angles_alt = torsion_angles_alt * torsion_angles_mask[
         ..., None] + placeholder_torsions * (1 - torsion_angles_mask[..., None])
 
-  return dict(torsion_angles=torsion_angles,  # pylint: disable=use-dict-literal
-              torsion_angles_mask=torsion_angles_mask,
-              torsion_angles_alt=torsion_angles_alt)
+  return dict(
+      torsion_angles=torsion_angles,  # pylint: disable=use-dict-literal
+      torsion_angles_mask=torsion_angles_mask,
+      torsion_angles_alt=torsion_angles_alt
+  )
+
 
 def rigids_from_positions(aatypes, coords, coord_mask):
   # (N, 8, 3, 14)
@@ -528,28 +560,32 @@ def rigids_from_positions(aatypes, coords, coord_mask):
                      aatypes).long(), residue_constants.atom14_type_num)
   # Compute a mask whether the group exists.
   # (N, 8)
-  group_exists = batched_gather(residue_constants.restype_rigid_group_mask,
-                                aatypes)
+  group_exists = batched_gather(residue_constants.restype_rigid_group_mask, aatypes)
   if not exists(coords):
     return dict(atom_affine_exists=group_exists)  # pylint: disable=use-dict-literal
 
-  group_points = torch.einsum('... n d,... g m n -> ... g m d', coords,
-                              group_atom14_idx.float())
-  group_point_mask = torch.einsum('... n,... g m n', coord_mask.float(),
-                                  group_atom14_idx.float())
+  group_points = torch.einsum(
+      '... n d,... g m n -> ... g m d', coords, group_atom14_idx.float()
+  )
+  group_point_mask = torch.einsum(
+      '... n,... g m n', coord_mask.float(), group_atom14_idx.float()
+  )
 
   # Compute a mask whether ground truth exists for the group
   group_mask = torch.all(group_point_mask > 0, dim=-1) * group_exists
 
   # Compute the Rigids.
   # group_affine = rigids_from_3x3(group_points)
-  group_affine = (rotations_from_vecs(
-      group_points[..., 1, :] - group_points[..., 0, :],
-      group_points[..., 2, :] - group_points[..., 1, :]), group_points[...,
-                                                                       1, :])
+  group_affine = (
+      rotations_from_vecs(
+          group_points[..., 1, :] - group_points[..., 0, :],
+          group_points[..., 2, :] - group_points[..., 1, :]
+      ), group_points[..., 1, :]
+  )
   # Adapt backbone frame to old convention (mirror x-axis and z-axis).
   rots = torch.tile(
-      torch.eye(3, dtype=torch.float32, device=group_points.device), [8, 1, 1])
+      torch.eye(3, dtype=torch.float32, device=group_points.device), [8, 1, 1]
+  )
   rots[0, 0, 0] = -1
   rots[0, 2, 2] = -1
   group_affine = rigids_rotate(group_affine, rots)
@@ -557,87 +593,91 @@ def rigids_from_positions(aatypes, coords, coord_mask):
   # The frames for ambiguous rigid groups are just rotated by 180 degree around
   # the x-axis. The ambiguous group is always the last chi-group.
   restype_rigid_group_is_ambiguous = np.zeros([21, 8], dtype=np.float32)
-  restype_rigid_group_rotations = np.tile(np.eye(3, dtype=np.float32),
-                                          [21, 8, 1, 1])
+  restype_rigid_group_rotations = np.tile(np.eye(3, dtype=np.float32), [21, 8, 1, 1])
 
   for resname, _ in residue_constants.residue_atom_renaming_swaps.items():
-    restype = residue_constants.restype_order[
-        residue_constants.restype_3to1[resname]]
+    restype = residue_constants.restype_order[residue_constants.restype_3to1[resname]]
     chi_idx = int(sum(residue_constants.chi_angles_mask[restype]) - 1)
     restype_rigid_group_is_ambiguous[restype, chi_idx + 4] = 1
     restype_rigid_group_rotations[restype, chi_idx + 4, 1, 1] = -1
     restype_rigid_group_rotations[restype, chi_idx + 4, 2, 2] = -1
 
   group_is_ambiguous = batched_gather(restype_rigid_group_is_ambiguous, aatypes)
-  group_ambiguous_rotations = batched_gather(restype_rigid_group_rotations,
-                                             aatypes)
+  group_ambiguous_rotations = batched_gather(restype_rigid_group_rotations, aatypes)
 
   # Create the alternative ground truth frames.
   group_affine_alt = rigids_rotate(group_affine, group_ambiguous_rotations)
 
-  return dict(atom_affine=group_affine,  # pylint: disable=use-dict-literal
-              atom_affine_exists=group_exists,
-              atom_affine_mask=group_mask,
-              atom_affine_is_ambiguous=group_is_ambiguous,
-              atom_affine_alt=group_affine_alt)
+  return dict(
+      atom_affine=group_affine,  # pylint: disable=use-dict-literal
+      atom_affine_exists=group_exists,
+      atom_affine_mask=group_mask,
+      atom_affine_is_ambiguous=group_is_ambiguous,
+      atom_affine_alt=group_affine_alt
+  )
+
 
 def rigids_to_positions(frames, aatypes):
   # Shape ((b, l, 8, 3, 3), (b, l, 8, 3))
   rotations, translations = frames
 
   # Shape (b, l, 14)
-  group_idx = batched_gather(residue_constants.restype_atom14_to_rigid_group,
-                             aatypes)
+  group_idx = batched_gather(residue_constants.restype_atom14_to_rigid_group, aatypes)
   # Shape (b, l, 14, 8)
   group_mask = F.one_hot(group_idx.long(), num_classes=8).float()  # pylint: disable=not-callable
 
-  rotations = torch.einsum('... m n,... n h w->... m h w', group_mask,
-                           rotations)
-  translations = torch.einsum('... m n,... n h->... m h', group_mask,
-                              translations)
+  rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
+  translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
 
   # Gather the literature atom positions for each residue.
   # Shape (b, l, 14, 3)
   group_pos = batched_gather(
-      residue_constants.restype_atom14_rigid_group_positions, aatypes)
+      residue_constants.restype_atom14_rigid_group_positions, aatypes
+  )
 
   # Transform each atom from it's local frame to the global frame.
-  positions = torch.einsum('... w,... h w -> ... h', group_pos,
-                           rotations) + translations
+  positions = torch.einsum(
+      '... w,... h w -> ... h', group_pos, rotations
+  ) + translations
 
   # Mask out non-existing atoms.
   mask = batched_gather(residue_constants.restype_atom14_mask, aatypes)
   return positions * rearrange(mask, '... d->... d ()')
 
+
 def rigids_slice(frames, start=0, end=None):
   rotations, translations = frames
   return rotations[..., start:end, :, :], translations[..., start:end, :]
+
 
 def rigids_rearrange(frames, ops):
   rotations, translations = frames
   return rearrange(rotations, ops), rearrange(translations, ops)
 
+
 def rigids_multiply(a, b):
   rots_a, trans_a = a
   rots_b, trans_b = b
   rotations = torch.einsum('... h d,... d w -> ... h w', rots_a, rots_b)
-  translations = torch.einsum('... w,... h w -> ... h', trans_b,
-                              rots_a) + trans_a
+  translations = torch.einsum('... w,... h w -> ... h', trans_b, rots_a) + trans_a
   return rotations, translations
+
 
 def rigids_apply(frames, points):
   rotations, translations = frames
-  return torch.einsum('... h w,... w -> ... h', rotations,
-                      points) + translations
+  return torch.einsum('... h w,... w -> ... h', rotations, points) + translations
+
 
 def rigids_rotate(frames, mat3x3):
   rotations, translations = frames
   rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
   return rotations, translations
 
+
 def rigids_scale(frames, position_scale):
   rotations, translations = frames
   return rotations, translations * position_scale
+
 
 def rigids_from_angles(aatypes, backb_frames, angles):
   """Create rigids from torsion angles
@@ -654,8 +694,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
   _, _, n = angles.shape[:3]
 
   # Gather the default frames for all rigids (b, l, 8, 3, 3), (b, l, 8, 3)
-  m = batched_gather(residue_constants.restype_rigid_group_default_frame,
-                     aatypes)
+  m = batched_gather(residue_constants.restype_rigid_group_default_frame, aatypes)
   default_frames = rigids_slice(rigids_from_4x4(m), 0, n + 1)
 
   #
@@ -664,16 +703,26 @@ def rigids_from_angles(aatypes, backb_frames, angles):
 
   # Insert zero rotation for backbone group.
   # Shape (b, l, n+1, 2)
-  angles = torch.cat((rearrange(
-      torch.stack((torch.zeros_like(aatypes), torch.ones_like(aatypes)),
-                  dim=-1), 'b l r -> b l () r'), angles),
-                     dim=-2)
+  angles = torch.cat(
+      (
+          rearrange(
+              torch.stack(
+                  (torch.zeros_like(aatypes), torch.ones_like(aatypes)), dim=-1
+              ), 'b l r -> b l () r'
+          ), angles
+      ),
+      dim=-2
+  )
   sin_angles, cos_angles = torch.unbind(angles, dim=-1)
   zeros, ones = torch.zeros_like(sin_angles), torch.ones_like(cos_angles)
   # Shape (b, l, n+1, 3, 3)
-  rotations = torch.stack((ones, zeros, zeros, zeros, cos_angles, -sin_angles,
-                           zeros, sin_angles, cos_angles),
-                          dim=-1)
+  rotations = torch.stack(
+      (
+          ones, zeros, zeros, zeros, cos_angles, -sin_angles, zeros, sin_angles,
+          cos_angles
+      ),
+      dim=-1
+  )
   rotations = rearrange(rotations, '... (h w) -> ... h w', h=3, w=3)
 
   # Apply rotations to the frames.
@@ -689,30 +738,35 @@ def rigids_from_angles(aatypes, backb_frames, angles):
 
     ri, ti = rigids_multiply(
         (rotations[..., idx - 1:idx, :, :], translations[..., idx - 1:idx, :]),
-        (rotations[..., idx:idx + 1, :, :], translations[..., idx:idx + 1, :]))
+        (rotations[..., idx:idx + 1, :, :], translations[..., idx:idx + 1, :])
+    )
     return torch.cat(
-        (rotations[..., :idx, :, :], ri, rotations[..., idx + 1:, :, :]),
-        dim=-3), torch.cat(
-            (translations[..., :idx, :], ti, translations[..., idx + 1:, :]),
-            dim=-2)
+        (rotations[..., :idx, :, :], ri, rotations[..., idx + 1:, :, :]), dim=-3
+    ), torch.cat(
+        (translations[..., :idx, :], ti, translations[..., idx + 1:, :]), dim=-2
+    )
 
   for i in range(5, n + 1):
     atom_frames = to_prev_frames(atom_frames, i)
 
   return rigids_multiply(
-      rigids_rearrange(backb_frames, 'b l ... -> b l () ...'), atom_frames)
+      rigids_rearrange(backb_frames, 'b l ... -> b l () ...'), atom_frames
+  )
 
-def fape(pred_frames,
-         true_frames,
-         frames_mask,
-         pred_points,
-         true_points,
-         points_mask,
-         clamp_distance=None,
-         clamp_ratio=1.0,
-         dij_weight=None,
-         use_weighted_mask=True,
-         epsilon=1e-8):
+
+def fape(
+    pred_frames,
+    true_frames,
+    frames_mask,
+    pred_points,
+    true_points,
+    points_mask,
+    clamp_distance=None,
+    clamp_ratio=1.0,
+    dij_weight=None,
+    use_weighted_mask=True,
+    epsilon=1e-8
+):
   """ FAPE(Frame Aligined Point Error) - Measure point error under different
   alignments
   """
@@ -733,11 +787,9 @@ def fape(pred_frames,
   def to_local(rotations, translations, points):
     # inverse frames
     rotations = rearrange(rotations, '... h w -> ... w h')
-    translations = -torch.einsum('... w,... h w -> ... h', translations,
-                                 rotations)
-    return torch.einsum(
-        '... j w,... i h w -> ... i j h', points, rotations) + rearrange(
-            translations, '... i h -> ... i () h')
+    translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
+    return torch.einsum('... j w,... i h w -> ... i j h', points,
+                        rotations) + rearrange(translations, '... i h -> ... i () h')
 
   pred_xij = to_local(pred_rotations, pred_trans, pred_points)
   true_xij = to_local(true_rotations, true_trans, true_points)
@@ -748,10 +800,9 @@ def fape(pred_frames,
     if clamp_ratio >= 1.0:
       dij = torch.clamp(dij, 0, clamp_distance)
     else:
-      dij = (1 - clamp_ratio) * dij + clamp_ratio * torch.clamp(
-          dij, 0, clamp_distance)
-  dij_mask = rearrange(frames_mask, '... i -> ... i ()') * rearrange(
-      points_mask, '... j -> ... () j')
+      dij = (1 - clamp_ratio) * dij + clamp_ratio * torch.clamp(dij, 0, clamp_distance)
+  dij_mask = rearrange(frames_mask, '... i -> ... i ()'
+                      ) * rearrange(points_mask, '... j -> ... () j')
 
   dij_weight = default(dij_weight, 1.0)
   if use_weighted_mask:
@@ -761,11 +812,10 @@ def fape(pred_frames,
 
   return masked_mean(value=dij, mask=dij_mask, epsilon=epsilon)
 
-def between_ca_ca_distance_loss(pred_points,
-                                points_mask,
-                                residue_index,
-                                tau=1.5,
-                                epsilon=1e-6):
+
+def between_ca_ca_distance_loss(
+    pred_points, points_mask, residue_index, tau=1.5, epsilon=1e-6
+):
   assert pred_points.shape[-1] == 3
   assert pred_points.shape[:-1] == points_mask.shape
   assert points_mask.shape[:-1] == residue_index.shape
@@ -778,19 +828,23 @@ def between_ca_ca_distance_loss(pred_points,
   next_ca_mask = points_mask[..., 1:, ca_idx]
   no_gap_mask = (residue_index[..., 1:] - residue_index[..., :-1]) == 1
 
-  ca_ca_distance = torch.sqrt(epsilon + torch.sum(
-      (this_ca_point - next_ca_point)**2, dim=-1))
+  ca_ca_distance = torch.sqrt(
+      epsilon + torch.sum((this_ca_point - next_ca_point)**2, dim=-1)
+  )
   violations = torch.gt(ca_ca_distance - residue_constants.ca_ca, tau)
   mask = this_ca_mask * next_ca_mask * no_gap_mask
   return masked_mean(mask=mask, value=violations, epsilon=epsilon)
 
-def between_residue_bond_loss(pred_points,
-                              points_mask,
-                              residue_index,
-                              aatypes,
-                              tau=12.0,
-                              epsilon=1e-6,
-                              loss_only=False):
+
+def between_residue_bond_loss(
+    pred_points,
+    points_mask,
+    residue_index,
+    aatypes,
+    tau=12.0,
+    epsilon=1e-6,
+    loss_only=False
+):
   assert pred_points.shape[-1] == 3
   assert pred_points.shape[:-1] == points_mask.shape
   assert points_mask.shape[:-1] == residue_index.shape
@@ -811,14 +865,16 @@ def between_residue_bond_loss(pred_points,
   next_ca_mask = points_mask[..., 1:, ca_idx]
   no_gap_mask = (residue_index[..., 1:] - residue_index[..., :-1]) == 1
 
-
   # Compute bond length
-  c_n_bond_length = torch.sqrt(epsilon + torch.sum(
-      (this_c_point - next_n_point)**2, dim=-1))
-  ca_c_bond_length = torch.sqrt(epsilon + torch.sum(
-      (this_ca_point - this_c_point)**2, dim=-1))
-  n_ca_bond_length = torch.sqrt(epsilon + torch.sum(
-      (next_n_point - next_ca_point)**2, dim=-1))
+  c_n_bond_length = torch.sqrt(
+      epsilon + torch.sum((this_c_point - next_n_point)**2, dim=-1)
+  )
+  ca_c_bond_length = torch.sqrt(
+      epsilon + torch.sum((this_ca_point - this_c_point)**2, dim=-1)
+  )
+  n_ca_bond_length = torch.sqrt(
+      epsilon + torch.sum((next_n_point - next_ca_point)**2, dim=-1)
+  )
 
   # Compute loss for the C--N bond.
   # The C-N bond to proline has slightly different length because of the ring.
@@ -826,22 +882,24 @@ def between_residue_bond_loss(pred_points,
     gt_length, gt_stddev = gt
     length_errors = torch.sqrt(epsilon + (pred_length - gt_length)**2)
     length_loss = F.relu(length_errors - tau * gt_stddev)
-    return (length_loss,
-            masked_mean(mask=mask, value=length_loss, epsilon=epsilon),
-            mask * (length_errors > tau * gt_stddev))
+    return (
+        length_loss, masked_mean(mask=mask, value=length_loss, epsilon=epsilon),
+        mask * (length_errors > tau * gt_stddev)
+    )
 
-  next_is_proline = (aatypes[...,
-                             1:] == residue_constants.resname_to_idx['PRO'])
+  next_is_proline = (aatypes[..., 1:] == residue_constants.resname_to_idx['PRO'])
   c_n_bond_labels = (
       (~next_is_proline) * residue_constants.between_res_bond_length_c_n[0] +
-      next_is_proline * residue_constants.between_res_bond_length_c_n[1])
+      next_is_proline * residue_constants.between_res_bond_length_c_n[1]
+  )
   c_n_bond_stddev = (
-      (~next_is_proline) *
-      residue_constants.between_res_bond_length_stddev_c_n[0] +
-      next_is_proline * residue_constants.between_res_bond_length_stddev_c_n[1])
+      (~next_is_proline) * residue_constants.between_res_bond_length_stddev_c_n[0] +
+      next_is_proline * residue_constants.between_res_bond_length_stddev_c_n[1]
+  )
   c_n_bond_errors, c_n_loss, c_n_violation_mask = bond_length_loss(
       c_n_bond_length, (c_n_bond_labels, c_n_bond_stddev),
-      this_c_mask * next_n_mask * no_gap_mask)
+      this_c_mask * next_n_mask * no_gap_mask
+  )
 
   # Compute loss for the angles.
   c_ca_unit_vec = (this_ca_point - this_c_point) / ca_c_bond_length[..., None]
@@ -853,79 +911,97 @@ def between_residue_bond_loss(pred_points,
     pred_angle = torch.sum(x * y, dim=-1)
     angle_errors = torch.sqrt(epsilon + (pred_angle - gt_angle)**2)
     angle_loss = F.relu(angle_errors - tau * gt_stddev)
-    return (angle_loss, masked_mean(mask=mask,
-                                    value=angle_loss,
-                                    epsilon=epsilon),
-            mask * (angle_errors > tau * gt_stddev))
+    return (
+        angle_loss, masked_mean(mask=mask, value=angle_loss, epsilon=epsilon),
+        mask * (angle_errors > tau * gt_stddev)
+    )
 
   ca_c_n_erros, ca_c_n_loss, ca_c_n_violation_mask = bond_angle_loss(
-      c_ca_unit_vec, c_n_unit_vec,
-      residue_constants.between_res_cos_angles_ca_c_n,
-      this_ca_mask * this_c_mask * next_n_mask * no_gap_mask)
+      c_ca_unit_vec, c_n_unit_vec, residue_constants.between_res_cos_angles_ca_c_n,
+      this_ca_mask * this_c_mask * next_n_mask * no_gap_mask
+  )
   c_n_ca_errors, c_n_ca_loss, c_n_ca_violation_mask = bond_angle_loss(
-      -c_n_unit_vec, n_ca_unit_vec,
-      residue_constants.between_res_cos_angles_c_n_ca,
-      this_c_mask * next_n_mask * next_ca_mask * no_gap_mask)
+      -c_n_unit_vec, n_ca_unit_vec, residue_constants.between_res_cos_angles_c_n_ca,
+      this_c_mask * next_n_mask * next_ca_mask * no_gap_mask
+  )
 
   if loss_only:
-    return dict(c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
-                ca_c_n_loss=ca_c_n_loss,
-                c_n_ca_loss=c_n_ca_loss)
+    return dict(
+        c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
+        ca_c_n_loss=ca_c_n_loss,
+        c_n_ca_loss=c_n_ca_loss
+    )
 
   # Compute a per residue loss (equally distribute the loss to both
   # neighbouring residues).
   per_residue_violation = c_n_bond_errors + ca_c_n_erros + c_n_ca_errors
-  per_residue_violation = 0.5 * (F.pad(per_residue_violation,
-                                       (0, 1)) + F.pad(per_residue_violation,
-                                                       (1, 0)))
+  per_residue_violation = 0.5 * (
+      F.pad(per_residue_violation, (0, 1)) + F.pad(per_residue_violation, (1, 0))
+  )
 
   # Compute hard violations.
-  per_residue_violation_mask = torch.amax(torch.stack(
-      (c_n_violation_mask, ca_c_n_violation_mask, c_n_ca_violation_mask),
-      dim=0),
-                                          dim=0)
+  per_residue_violation_mask = torch.amax(
+      torch.stack(
+          (c_n_violation_mask, ca_c_n_violation_mask, c_n_ca_violation_mask), dim=0
+      ),
+      dim=0
+  )
   per_residue_violation_mask = torch.maximum(
       F.pad(per_residue_violation_mask, (0, 1)),
-      F.pad(per_residue_violation_mask, (1, 0)))
+      F.pad(per_residue_violation_mask, (1, 0))
+  )
 
-  return dict(c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
-              ca_c_n_loss=ca_c_n_loss,
-              c_n_ca_loss=c_n_ca_loss,
-              per_residue_violation=per_residue_violation,
-              per_residue_violation_mask=per_residue_violation_mask)
+  return dict(
+      c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
+      ca_c_n_loss=ca_c_n_loss,
+      c_n_ca_loss=c_n_ca_loss,
+      per_residue_violation=per_residue_violation,
+      per_residue_violation_mask=per_residue_violation_mask
+  )
 
-def between_residue_clash_loss(pred_points,
-                               points_mask,
-                               residue_index,
-                               aatypes,
-                               tau=1.5,
-                               epsilon=1e-6,
-                               loss_only=False):
+
+def between_residue_clash_loss(
+    pred_points,
+    points_mask,
+    residue_index,
+    aatypes,
+    tau=1.5,
+    epsilon=1e-6,
+    loss_only=False
+):
   """Loss to penalize steric clashes between residues"""
   assert pred_points.shape[-1] == 3
   assert pred_points.shape[:-1] == points_mask.shape
   assert points_mask.shape[:-1] == residue_index.shape
   assert aatypes.shape == residue_index.shape
 
-  atom_radius = batched_gather(residue_constants.atom14_van_der_waals_radius,
-                               aatypes)
+  atom_radius = batched_gather(residue_constants.atom14_van_der_waals_radius, aatypes)
   atom_radius = atom_radius[..., :points_mask.shape[-1]]
   assert atom_radius.shape == points_mask.shape
 
   # Create the distance matrix
-  dists = torch.sqrt(epsilon + torch.sum(
-      (rearrange(pred_points, '... i m d -> ... i () m () d') -
-       rearrange(pred_points, '... j n d -> ... () j () n d'))**2,
-      dim=-1))
+  dists = torch.sqrt(
+      epsilon + torch.sum(
+          (
+              rearrange(pred_points, '... i m d -> ... i () m () d') -
+              rearrange(pred_points, '... j n d -> ... () j () n d')
+          )**2,
+          dim=-1
+      )
+  )
 
   # Create the mask for valid distances.
-  dist_mask = (rearrange(points_mask, '... i m -> ... i () m ()') *
-               rearrange(points_mask, '... j n -> ... () j () n'))
+  dist_mask = (
+      rearrange(points_mask, '... i m -> ... i () m ()') *
+      rearrange(points_mask, '... j n -> ... () j () n')
+  )
   # Mask out all the duplicate entries in the lower triangular matrix.
   # Also mask out the diagonal (atom-pairs from the same residue) -- these atoms
   # are handled separately.
-  dist_mask *= (rearrange(residue_index, '... i -> ... i () () ()')
-                < rearrange(residue_index, '... j -> ... () j () ()'))
+  dist_mask *= (
+      rearrange(residue_index, '... i -> ... i () () ()') <
+      rearrange(residue_index, '... j -> ... () j () ()')
+  )
 
   # Backbone C--N bond between subsequent residues is no clash.
   n_idx = residue_constants.atom_order['N']
@@ -936,10 +1012,14 @@ def between_residue_clash_loss(pred_points,
   n_atom = F.one_hot(  # pylint: disable=not-callable
       torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device),
       points_mask.shape[-1])
-  neighbour_mask = (rearrange(residue_index, '... i -> ... i () () ()') +
-                    1 == rearrange(residue_index, '... j -> ... () j () ()'))
-  c_n_bonds = (neighbour_mask * rearrange(c_atom, 'm -> () () m ()') *
-               rearrange(n_atom, 'n -> () () () n'))
+  neighbour_mask = (
+      rearrange(residue_index, '... i -> ... i () () ()') +
+      1 == rearrange(residue_index, '... j -> ... () j () ()')
+  )
+  c_n_bonds = (
+      neighbour_mask * rearrange(c_atom, 'm -> () () m ()') *
+      rearrange(n_atom, 'n -> () () () n')
+  )
   dist_mask *= (~c_n_bonds.bool())
 
   # Disulfide bridge between two cysteines is no clash.
@@ -948,14 +1028,17 @@ def between_residue_clash_loss(pred_points,
     cys_sg_atom = F.one_hot(  # pylint: disable=not-callable
         torch.as_tensor(cys_sg_idx, dtype=torch.long,
                         device=pred_points.device), points_mask.shape[-1])
-    disulfide_bonds = (rearrange(cys_sg_atom, 'm -> () () m ()') *
-                       rearrange(cys_sg_atom, 'n -> () () () n'))
+    disulfide_bonds = (
+        rearrange(cys_sg_atom, 'm -> () () m ()') *
+        rearrange(cys_sg_atom, 'n -> () () () n')
+    )
     dist_mask *= (~disulfide_bonds.bool())
 
   # Compute the lower bound for the allowed distances.
   dist_lower_bound = dist_mask * (
       rearrange(atom_radius, '... i m -> ... i () m ()') +
-      rearrange(atom_radius, '... j n -> ... () j () n'))
+      rearrange(atom_radius, '... j n -> ... () j () n')
+  )
 
   # Compute the error.
   dist_errors = dist_mask * F.relu(dist_lower_bound - tau - dists)
@@ -968,31 +1051,41 @@ def between_residue_clash_loss(pred_points,
   #     return dict(between_residue_clash_loss=clash_loss)
 
   # Compute the per atom loss sum.
-  per_atom_clash = (torch.sum(dist_errors, dim=(-4, -2)) +
-                    torch.sum(dist_errors, dim=(-3, -1)))
+  per_atom_clash = (
+      torch.sum(dist_errors, dim=(-4, -2)) + torch.sum(dist_errors, dim=(-3, -1))
+  )
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
   if loss_only:
-    return dict(between_residue_clash_loss=torch.sum(per_atom_clash /  # pylint: disable=use-dict-literal
-                                                     (1e-6 + num_atoms)))
+    return dict(
+        between_residue_clash_loss=torch.
+        sum(per_atom_clash /  # pylint: disable=use-dict-literal
+            (1e-6 + num_atoms))
+    )
 
   # Compute the hard clash mask.
   clash_mask = dist_mask * (dists < (dist_lower_bound - tau))
-  per_atom_clash_mask = torch.maximum(torch.amax(clash_mask, dim=(-4, -2)),
-                                      torch.amax(clash_mask, dim=(-3, -1)))
+  per_atom_clash_mask = torch.maximum(
+      torch.amax(clash_mask, dim=(-4, -2)), torch.amax(clash_mask, dim=(-3, -1))
+  )
 
-  return dict(between_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
-              per_atom_clash=per_atom_clash,
-              per_atom_clash_mask=per_atom_clash_mask)
+  return dict(
+      between_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
+      per_atom_clash=per_atom_clash,
+      per_atom_clash_mask=per_atom_clash_mask
+  )
 
-def within_residue_clash_loss(pred_points,
-                              points_mask,
-                              residue_index,
-                              aatypes,
-                              tau1=1.5,
-                              tau2=15,
-                              epsilon=1e-12,
-                              loss_only=False):
+
+def within_residue_clash_loss(
+    pred_points,
+    points_mask,
+    residue_index,
+    aatypes,
+    tau1=1.5,
+    tau2=15,
+    epsilon=1e-12,
+    loss_only=False
+):
   """Loss to penalize steric clashes within residues"""
   assert pred_points.shape[-1] == 3
   assert pred_points.shape[:-1] == points_mask.shape
@@ -1000,27 +1093,36 @@ def within_residue_clash_loss(pred_points,
   assert aatypes.shape == residue_index.shape
 
   # Compute the mask for each residue.
-  dist_mask = (rearrange(points_mask, '... m -> ... m ()') *
-               rearrange(points_mask, '... n -> ... () n'))
-  dist_mask *= (~torch.eye(
-      points_mask.shape[-1], dtype=torch.bool, device=points_mask.device))
+  dist_mask = (
+      rearrange(points_mask, '... m -> ... m ()') *
+      rearrange(points_mask, '... n -> ... () n')
+  )
+  dist_mask *= (
+      ~torch.eye(points_mask.shape[-1], dtype=torch.bool, device=points_mask.device)
+  )
 
   # Distance matrix
-  dists = torch.sqrt(epsilon + torch.sum(
-      (rearrange(pred_points, '... m d -> ... m () d') -
-       rearrange(pred_points, '... n d -> ... () n d'))**2,
-      dim=-1))
+  dists = torch.sqrt(
+      epsilon + torch.sum(
+          (
+              rearrange(pred_points, '... m d -> ... m () d') -
+              rearrange(pred_points, '... n d -> ... () n d')
+          )**2,
+          dim=-1
+      )
+  )
 
   # Compute the loss.
   restype_atom14_bounds = residue_constants.make_atom14_dists_bounds(
-      overlap_tolerance=tau1, bond_length_tolerance_factor=tau2)
+      overlap_tolerance=tau1, bond_length_tolerance_factor=tau2
+  )
   num_atoms = points_mask.shape[-1]
   atom_lower_bound = batched_gather(
-      restype_atom14_bounds['lower_bound'][..., :num_atoms, :num_atoms],
-      aatypes)
+      restype_atom14_bounds['lower_bound'][..., :num_atoms, :num_atoms], aatypes
+  )
   atom_upper_bound = batched_gather(
-      restype_atom14_bounds['upper_bound'][..., :num_atoms, :num_atoms],
-      aatypes)
+      restype_atom14_bounds['upper_bound'][..., :num_atoms, :num_atoms], aatypes
+  )
 
   lower_errors = F.relu(atom_lower_bound - dists)
   upper_errors = F.relu(dists - atom_upper_bound)
@@ -1035,23 +1137,30 @@ def within_residue_clash_loss(pred_points,
   #     return dict(within_residue_clash_loss=clash_loss)
 
   # Compute the per atom loss sum.
-  per_atom_clash = (torch.sum(dist_errors, dim=-2) +
-                    torch.sum(dist_errors, dim=-1))
+  per_atom_clash = (torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1))
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
   if loss_only:
-    return dict(within_residue_clash_loss=torch.sum(per_atom_clash /  # pylint: disable=use-dict-literal
-                                                    (1e-6 + num_atoms)))
+    return dict(
+        within_residue_clash_loss=torch.
+        sum(per_atom_clash /  # pylint: disable=use-dict-literal
+            (1e-6 + num_atoms))
+    )
 
   # Compute the violations mask.
-  per_atom_clash_mask = dist_mask * ((dists < atom_lower_bound) |
-                                     (dists > atom_upper_bound))
-  per_atom_clash_mask = torch.maximum(torch.amax(per_atom_clash_mask, dim=-2),
-                                      torch.amax(per_atom_clash_mask, dim=-1))
+  per_atom_clash_mask = dist_mask * (
+      (dists < atom_lower_bound) | (dists > atom_upper_bound)
+  )
+  per_atom_clash_mask = torch.maximum(
+      torch.amax(per_atom_clash_mask, dim=-2), torch.amax(per_atom_clash_mask, dim=-1)
+  )
 
-  return dict(within_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
-              per_atom_clash=per_atom_clash,
-              per_atom_clash_mask=per_atom_clash_mask)
+  return dict(
+      within_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
+      per_atom_clash=per_atom_clash,
+      per_atom_clash_mask=per_atom_clash_mask
+  )
+
 
 def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
   coord_exists = batched_gather(residue_constants.restype_atom14_mask, seq)
@@ -1062,30 +1171,34 @@ def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
   # shape (num_res, 14, 14)
   renaming_transform = batched_gather(residue_constants.RENAMING_MATRICES, seq)
 
-  coord_alt = torch.einsum('... m d,... m n->... n d', coord,
-                           renaming_transform)
-  coord_alt_mask = torch.einsum('... m,... m n->... n', coord_mask.float(),
-                                renaming_transform)
+  coord_alt = torch.einsum('... m d,... m n->... n d', coord, renaming_transform)
+  coord_alt_mask = torch.einsum(
+      '... m,... m n->... n', coord_mask.float(), renaming_transform
+  )
 
-  is_symmetric_mask = 1.0 - np.eye(
-      residue_constants.RENAMING_MATRICES.shape[-1])
+  is_symmetric_mask = 1.0 - np.eye(residue_constants.RENAMING_MATRICES.shape[-1])
   coord_is_symmetric = batched_gather(
-      np.sum(is_symmetric_mask * residue_constants.RENAMING_MATRICES, axis=-1)
-      > 0, seq)
+      np.sum(is_symmetric_mask * residue_constants.RENAMING_MATRICES, axis=-1) > 0, seq
+  )
 
-  return dict(coord_alt=coord_alt,  # pylint: disable=use-dict-literal
-              coord_alt_mask=coord_alt_mask.bool(),
-              coord_is_symmetric=coord_is_symmetric,
-              coord_exists=coord_exists)
+  return dict(
+      coord_alt=coord_alt,  # pylint: disable=use-dict-literal
+      coord_alt_mask=coord_alt_mask.bool(),
+      coord_is_symmetric=coord_is_symmetric,
+      coord_exists=coord_exists
+  )
 
-def symmetric_ground_truth_find_optimal(coord_pred,
-                                        coord_exists,
-                                        coord,
-                                        coord_mask,
-                                        coord_alt,
-                                        coord_alt_mask,
-                                        coord_is_symmetric,
-                                        epsilon=1e-10):
+
+def symmetric_ground_truth_find_optimal(
+    coord_pred,
+    coord_exists,
+    coord,
+    coord_mask,
+    coord_alt,
+    coord_alt_mask,
+    coord_is_symmetric,
+    epsilon=1e-10
+):
   """Find optimal renaming for ground truth that maximizes LDDT. """
   assert coord_pred.shape == coord.shape
   assert coord_pred.shape == coord_alt.shape
@@ -1094,10 +1207,16 @@ def symmetric_ground_truth_find_optimal(coord_pred,
   assert coord_exists.shape == coord_is_symmetric.shape
 
   def to_distance(point):
-    return torch.sqrt(epsilon + torch.sum(
-        (rearrange(point, '... i c r-> ... i () c () r') -
-         rearrange(point, '... j d r -> ... () j () d r'))**2,
-        dim=-1))
+    return torch.sqrt(
+        epsilon + torch.sum(
+            (
+                rearrange(point, '... i c r-> ... i () c () r') -
+                rearrange(point, '... j d r -> ... () j () d r')
+            )**2,
+            dim=-1
+        )
+    )
+
   # Create the pred distance matrix.
   # shape (N, N, 14, 14)
   pred_dist = to_distance(coord_pred)
@@ -1108,6 +1227,7 @@ def symmetric_ground_truth_find_optimal(coord_pred,
 
   def to_lddt(x, y):
     return torch.sqrt(epsilon + (x - y)**2)
+
   # Compute LDDT's.
   # shape (N, N, 14, 14)
   lddt_prim = to_lddt(pred_dist, gt_dist)
@@ -1117,8 +1237,7 @@ def symmetric_ground_truth_find_optimal(coord_pred,
   # in cols.
   # shape (N ,N, 14, 14)
   mask = (
-      rearrange(coord_mask * coord_is_symmetric,
-                '... i c -> ... i () c ()') *  # rows
+      rearrange(coord_mask * coord_is_symmetric, '... i c -> ... i () c ()') *  # rows
       rearrange(coord_mask * (~coord_is_symmetric), '... j d -> ... () j () d')
   )  # cols
 
@@ -1131,30 +1250,39 @@ def symmetric_ground_truth_find_optimal(coord_pred,
   # shape (N)
   return per_res_lddt_alt < per_res_lddt  # alt_naming_is_better
 
-def symmetric_ground_truth_rename(coord_pred,
-                                  coord_exists,
-                                  coord,
-                                  coord_mask,
-                                  coord_alt,
-                                  coord_alt_mask,
-                                  coord_is_symmetric,
-                                  epsilon=1e-10):
+
+def symmetric_ground_truth_rename(
+    coord_pred,
+    coord_exists,
+    coord,
+    coord_mask,
+    coord_alt,
+    coord_alt_mask,
+    coord_is_symmetric,
+    epsilon=1e-10
+):
   """Find optimal renaming of ground truth based on the predicted positions. """
-  alt_naming_is_better = symmetric_ground_truth_find_optimal(coord_pred,
-                                                             coord_exists,
-                                                             coord,
-                                                             coord_mask,
-                                                             coord_alt,
-                                                             coord_alt_mask,
-                                                             coord_is_symmetric,
-                                                             epsilon=epsilon)
+  alt_naming_is_better = symmetric_ground_truth_find_optimal(
+      coord_pred,
+      coord_exists,
+      coord,
+      coord_mask,
+      coord_alt,
+      coord_alt_mask,
+      coord_is_symmetric,
+      epsilon=epsilon
+  )
   coord_renamed = (
       rearrange(~alt_naming_is_better, '... i -> ... i () ()') * coord +
-      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt)
+      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt
+  )
   coord_renamed_mask = (
       rearrange(~alt_naming_is_better, '... i -> ... i () ()') * coord_mask +
-      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt_mask)
+      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt_mask
+  )
 
-  return dict(alt_naming_is_better=alt_naming_is_better,  # pylint: disable=use-dict-literal
-              coord_renamed=coord_renamed,
-              coord_renamed_mask=coord_renamed_mask)
+  return dict(
+      alt_naming_is_better=alt_naming_is_better,  # pylint: disable=use-dict-literal
+      coord_renamed=coord_renamed,
+      coord_renamed_mask=coord_renamed_mask
+  )

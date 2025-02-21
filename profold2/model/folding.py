@@ -9,12 +9,11 @@ from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
-from profold2.model.commons import (embedd_dim_get,
-                                    tensor_add,
-                                    InvariantPointAttention)
-from profold2.model.functional import (l2_norm, quaternion_multiply,
-                                       quaternion_to_matrix, rigids_from_angles,
-                                       rigids_scale, rigids_to_positions)
+from profold2.model.commons import (embedd_dim_get, tensor_add, InvariantPointAttention)
+from profold2.model.functional import (
+    l2_norm, quaternion_multiply, quaternion_to_matrix, rigids_from_angles,
+    rigids_scale, rigids_to_positions
+)
 from profold2.utils import exists, torch_default_dtype
 
 logger = logging.getLogger(__name__)
@@ -44,14 +43,7 @@ class IPABlock(nn.Module):
   """One transformer block based on IPA
      In the paper, they used 3 layer transition (feedforward) block
     """
-  def __init__(
-      self,
-      *,
-      dim,
-      ff_mult=1,
-      ff_num_layers=3,
-      dropout=.0,
-      **kwargs):
+  def __init__(self, *, dim, ff_mult=1, ff_num_layers=3, dropout=.0, **kwargs):
     super().__init__()
     dim_single, _ = embedd_dim_get(dim)
 
@@ -73,12 +65,12 @@ class IPABlock(nn.Module):
 
 
 class AngleNetBlock(nn.Module):
-
   def __init__(self, dim, channel=128):
     super().__init__()
 
-    self.net = nn.Sequential(nn.ReLU(), nn.Linear(dim, channel), nn.ReLU(),
-                             nn.Linear(channel, dim))
+    self.net = nn.Sequential(
+        nn.ReLU(), nn.Linear(dim, channel), nn.ReLU(), nn.Linear(channel, dim)
+    )
 
   def forward(self, x):
     return tensor_add(x, self.net(x))
@@ -94,7 +86,8 @@ class AngleNet(nn.Module):
     self.projection_init = nn.Linear(dim, channel)
 
     self.blocks = nn.Sequential(
-        *[AngleNetBlock(channel, channel) for _ in range(num_blocks)])
+        *[AngleNetBlock(channel, channel) for _ in range(num_blocks)]
+    )
 
     self.to_groups = nn.Linear(channel, 14)
 
@@ -115,13 +108,15 @@ class AngleNet(nn.Module):
 class StructureModule(nn.Module):
   """Iteratively updating rotations and translations
     """
-  def __init__(self,
-               dim,
-               structure_module_depth,
-               structure_module_heads,
-               dropout=.0,
-               position_scale=1.0,
-               **kwargs):
+  def __init__(
+      self,
+      dim,
+      structure_module_depth,
+      structure_module_heads,
+      dropout=.0,
+      position_scale=1.0,
+      **kwargs
+  ):
     super().__init__()
     dim_single, dim_pairwise = embedd_dim_get(dim)
 
@@ -129,11 +124,13 @@ class StructureModule(nn.Module):
     self.structure_module_depth = structure_module_depth
     self.position_scale = position_scale
     with torch_default_dtype(torch.float32):
-      self.ipa_block = IPABlock(dim=dim_single,
-                                pairwise_repr_dim=dim_pairwise,
-                                heads=structure_module_heads,
-                                dropout=dropout,
-                                **kwargs)
+      self.ipa_block = IPABlock(
+          dim=dim_single,
+          pairwise_repr_dim=dim_pairwise,
+          heads=structure_module_heads,
+          dropout=dropout,
+          **kwargs
+      )
 
       self.to_affine_update = nn.Linear(dim_single, 6)
 
@@ -146,8 +143,7 @@ class StructureModule(nn.Module):
   def forward(self, representations, batch):
     b, n, device = *batch['seq'].shape[:2], batch['seq'].device
 
-    single_repr, pairwise_repr = representations['single'], representations[
-        'pair']
+    single_repr, pairwise_repr = representations['single'], representations['pair']
 
     single_repr = self.single_repr_norm(single_repr)
     pairwise_repr = self.pairwise_repr_norm(pairwise_repr)
@@ -157,8 +153,7 @@ class StructureModule(nn.Module):
 
     # prepare float32 precision for equivariance
     original_dtype = single_repr.dtype
-    single_repr, pairwise_repr = map(lambda t: t.float(),
-                                     (single_repr, pairwise_repr))
+    single_repr, pairwise_repr = map(lambda t: t.float(), (single_repr, pairwise_repr))
 
     outputs = []
 
@@ -179,41 +174,45 @@ class StructureModule(nn.Module):
         is_last = i == (self.structure_module_depth - 1)
 
         with autocast(enabled=False):
-          single_repr = self.ipa_block(single_repr.float(),
-                                       mask=batch['mask'].bool(),
-                                       pairwise_repr=pairwise_repr.float(),
-                                       rotations=rotations.float(),
-                                       translations=translations.float())
+          single_repr = self.ipa_block(
+              single_repr.float(),
+              mask=batch['mask'].bool(),
+              pairwise_repr=pairwise_repr.float(),
+              rotations=rotations.float(),
+              translations=translations.float()
+          )
 
         # update quaternion and translation
-        quaternion_update, translation_update = self.to_affine_update(
-            single_repr).chunk(2, dim=-1)
+        quaternion_update, translation_update = self.to_affine_update(single_repr
+                                                                     ).chunk(2, dim=-1)
         quaternion_update = F.pad(quaternion_update, (1, 0), value=1.)
         # FIX: make sure quaternion_update is standardized
         quaternion_update = l2_norm(quaternion_update)
 
         quaternions = quaternion_multiply(quaternions, quaternion_update)
-        translations = torch.einsum('b n c, b n r c -> b n r',
-                                    translation_update,
-                                    rotations) + translations
+        translations = torch.einsum(
+            'b n c, b n r c -> b n r', translation_update, rotations
+        ) + translations
         rotations = quaternion_to_matrix(quaternions)
         # No rotation gradients between iterations to stabilize training.
         if not is_last:
           rotations = rotations.detach()
 
-
         if self.training or is_last:
-          angles = self.to_angles(single_repr,
-                                  single_repr_init=single_repr_init)
+          angles = self.to_angles(single_repr, single_repr_init=single_repr_init)
           frames = rigids_from_angles(
               batch['seq'],
               rigids_scale((rotations, translations), self.position_scale),
-              l2_norm(angles))
+              l2_norm(angles)
+          )
           coords = rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(
-              dict(frames=rigids_scale((rotations, translations), self.position_scale),
-                   act=single_repr,
-                   atoms=dict(frames=frames, coords=coords, angles=angles)))
+              dict(
+                  frames=rigids_scale((rotations, translations), self.position_scale),
+                  act=single_repr,
+                  atoms=dict(frames=frames, coords=coords, angles=angles)
+              )
+          )
 
     return outputs

@@ -45,12 +45,7 @@ restype_3to1 = {v: k for k, v in restype_1to3.items()}
 class CustomSelect(Select):
   """Callback functions
     """
-
-  def __init__(self,
-               model=None,
-               chain_id=None,
-               backbone_only=False,
-               skip_het=False):
+  def __init__(self, model=None, chain_id=None, backbone_only=False, skip_het=False):
     super().__init__()
     self.model = model
     self.backbone_only = backbone_only
@@ -86,8 +81,8 @@ def process(input_file, args=None):  # pylint: disable=redefined-outer-name
     input_pid, _ = os.path.splitext(input_pid)
   input_pid, input_type = os.path.splitext(input_pid)
   assert input_type in ('.cif', '.pdb')
-  pdb_parser = PDBParser(
-      QUIET=True) if input_type in ('.pdb',) else MMCIFParser(QUIET=True)
+  pdb_parser = PDBParser(QUIET=True
+                        ) if input_type in ('.pdb', ) else MMCIFParser(QUIET=True)
   try:
     if input_file.endswith('.gz'):
       with gzip.open(input_file, 'rt') as f:
@@ -100,10 +95,10 @@ def process(input_file, args=None):  # pylint: disable=redefined-outer-name
     io.set_structure(protein_structure)
     for chain in chains:
       print(chain.get_full_id())
-      io.save(os.path.join(args.prefix,
-                           f'{input_pid}_{chain.id}.{args.pdb_fmt}'),
-              select=CustomSelect(model, chain.id, args.backbone_only,
-                                  args.skip_het))
+      io.save(
+          os.path.join(args.prefix, f'{input_pid}_{chain.id}.{args.pdb_fmt}'),
+          select=CustomSelect(model, chain.id, args.backbone_only, args.skip_het)
+      )
   except Exception as e:
     logger.error('error: %s (%s)', input_file, str(e))
 
@@ -115,8 +110,8 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   os.makedirs(args.prefix, exist_ok=True)
   input_files = functools.reduce(
-      lambda x, y: x + y,
-      [glob.glob(input_file) for input_file in args.input_files])
+      lambda x, y: x + y, [glob.glob(input_file) for input_file in args.input_files]
+  )
 
   with mp.Pool() as p:
     for _ in p.imap(functools.partial(process, args=args), input_files):
@@ -127,17 +122,17 @@ if __name__ == '__main__':
   import argparse
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('input_files',
-                      metavar='file',
-                      type=str,
-                      nargs='+',
-                      help='input files')
+  parser.add_argument(
+      'input_files', metavar='file', type=str, nargs='+', help='input files'
+  )
   parser.add_argument('-o', '--prefix')
-  parser.add_argument('--pdb_fmt',
-                      type=str,
-                      default='pdb',
-                      choices=['pdb', 'cif'],
-                      help='type of output format, default=\'pdb\'')
+  parser.add_argument(
+      '--pdb_fmt',
+      type=str,
+      default='pdb',
+      choices=['pdb', 'cif'],
+      help='type of output format, default=\'pdb\''
+  )
   parser.add_argument('-c', '--chain', nargs='*')
   parser.add_argument('-M', '--backbone_only', action='store_true')
   parser.add_argument('-s', '--skip_het', action='store_true')

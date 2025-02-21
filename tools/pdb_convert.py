@@ -18,6 +18,7 @@ from Bio.PDB.PDBParser import PDBParser
 
 logger = logging.getLogger(__file__)
 
+
 class CustomSelect(Select):
   def accept_chain(self, chain):
     del chain
@@ -26,6 +27,7 @@ class CustomSelect(Select):
   def accept_atom(self, atom):
     del atom
     return True
+
 
 def mmcif_rename_chains(structure):
   next_chain = 0
@@ -42,10 +44,12 @@ def mmcif_rename_chains(structure):
     chain.id = new_chain_id
   return structure, dict(filter(lambda c: len(c[0]) != 1, chainmap.items()))
 
+
 def output_get_basename(filename):
   if filename.suffix == '.gz':
     filename = filename.stem
   return pathlib.Path(filename).name
+
 
 def mmcif_get_structure(filename):
   o = MMCIFParser(QUIET=True)
@@ -56,12 +60,14 @@ def mmcif_get_structure(filename):
     structure = o.get_structure('1n2c', filename)
   return structure
 
+
 def pdb_get_structure(filename):
   o = PDBParser(QUIET=True)
   if filename.suffix == '.gz':
     with gzip.open(filename, 'rt', encoding='utf-8') as f:
       return o.get_structure('1n2c', f)
   return o.get_structure('1n2c', filename)
+
 
 def cif2pdb(mmcif_file, pdb_file):
   try:
@@ -82,6 +88,7 @@ def cif2pdb(mmcif_file, pdb_file):
   logger.info(mmcif_file)
   return mmcif_file
 
+
 def pdb2cif(pdb_file, mmcif_file):
   io = MMCIFIO()
   try:
@@ -99,6 +106,7 @@ def pdb2cif(pdb_file, mmcif_file):
     logger.error(mmcif_file)
   return pdb_file
 
+
 def read_pairwise_list(f, output):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     input_file, output_file = line.split('\t')
@@ -108,9 +116,11 @@ def read_pairwise_list(f, output):
       output_file = output / output_file
     yield input_file, output_file
 
+
 def work_fn_wrap(item, work_fn=None):
   input_file, output_file = item
   return work_fn(input_file, output_file)
+
 
 def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
   logger.debug(args)
@@ -143,8 +153,7 @@ def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
       pairwise_list.append((input_file, output_file))
 
   with mp.Pool() as p:
-    for _ in p.imap(functools.partial(work_fn_wrap, work_fn=work_fn),
-                    pairwise_list):
+    for _ in p.imap(functools.partial(work_fn_wrap, work_fn=work_fn), pairwise_list):
       pass
 
 
@@ -152,23 +161,25 @@ if __name__ == '__main__':
   import argparse
 
   commands = {
-    'pdb2cif': (pdb2cif, '.cif'),
-    'cif2pdb': (cif2pdb, '.pdb'),
+      'pdb2cif': (pdb2cif, '.cif'),
+      'cif2pdb': (cif2pdb, '.pdb'),
   }
 
   parser = argparse.ArgumentParser()
   sub_parsers = parser.add_subparsers(dest='command', required=True)
   for cmd in commands:
     cmd_parser = sub_parsers.add_parser(cmd)
-    cmd_parser.add_argument('-o', '--output', type=str, default='.',
-                            help='output dir, default=\'.\'')
+    cmd_parser.add_argument(
+        '-o', '--output', type=str, default='.', help='output dir, default=\'.\''
+    )
     cmd_parser.add_argument('--gzip', action='store_true', help='verbose')
-    cmd_parser.add_argument('-v', '--verbose', action='store_true',
-                            help='verbose')
-    cmd_parser.add_argument('-l', '--pairwise_list', default=None,
-                            help='read pdb file from list.')
-    cmd_parser.add_argument('files', type=str, nargs='*',
-                            help='list of pdb/mmcif files')
+    cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+    cmd_parser.add_argument(
+        '-l', '--pairwise_list', default=None, help='read pdb file from list.'
+    )
+    cmd_parser.add_argument(
+        'files', type=str, nargs='*', help='list of pdb/mmcif files'
+    )
   args = parser.parse_args()
 
   logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)

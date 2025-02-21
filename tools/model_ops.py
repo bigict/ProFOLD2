@@ -11,10 +11,7 @@ def params_count_do(params, pattern=None, verbose=False, verbose_w=False):
   n = 0
   if isinstance(params, list):
     for p in params:
-      n += params_count_do(p,
-                           pattern=pattern,
-                           verbose=verbose,
-                           verbose_w=verbose_w)
+      n += params_count_do(p, pattern=pattern, verbose=verbose, verbose_w=verbose_w)
   if isinstance(params, dict):
     for k, p in params.items():
       if pattern is None or pattern.match(k):
@@ -38,27 +35,18 @@ def params_count_main(args):
   for model_file in args.model_file:
     m = torch.load(model_file, map_location='cpu')
     assert 'model' in m
-    c = params_count_do(m['model'],
-                        pattern=p,
-                        verbose=args.verbose,
-                        verbose_w=args.verbose_w)
+    c = params_count_do(
+        m['model'], pattern=p, verbose=args.verbose, verbose_w=args.verbose_w
+    )
     print(f'{c}\t{model_file}')
 
 
 def params_count_add_argument(parser):
-  parser.add_argument('model_file',
-                      type=str,
-                      nargs='+',
-                      help='list of model files')
-  parser.add_argument('-E',
-                      '--grep',
-                      type=str,
-                      default=None,
-                      help='parameter patterns, default=None')
-  parser.add_argument('-w',
-                      '--verbose-w',
-                      action='store_true',
-                      help='verbose w')
+  parser.add_argument('model_file', type=str, nargs='+', help='list of model files')
+  parser.add_argument(
+      '-E', '--grep', type=str, default=None, help='parameter patterns, default=None'
+  )
+  parser.add_argument('-w', '--verbose-w', action='store_true', help='verbose w')
   return parser
 
 
@@ -85,17 +73,17 @@ def params_modify_main(args):
   torch.save(x, args.model_files[1])
   logging.info('done.')
 
+
 def params_modify_add_argument(parser):
-  parser.add_argument('model_files',
-                      type=str,
-                      nargs=2,
-                      help='list of model files')
-  parser.add_argument('-E',
-                      '--grep',
-                      type=str,
-                      nargs='+',
-                      default=None,
-                      help='parameter patterns, default=None')
+  parser.add_argument('model_files', type=str, nargs=2, help='list of model files')
+  parser.add_argument(
+      '-E',
+      '--grep',
+      type=str,
+      nargs='+',
+      default=None,
+      help='parameter patterns, default=None'
+  )
   return parser
 
 
@@ -117,15 +105,10 @@ def strip_optim_main(args):
 
 
 def strip_optim_add_argument(parser):
-  parser.add_argument('model_files',
-                      type=str,
-                      nargs=2,
-                      help='list of model files')
-  parser.add_argument('-E',
-                      '--grep',
-                      type=str,
-                      default=None,
-                      help='parameter patterns, default=None')
+  parser.add_argument('model_files', type=str, nargs=2, help='list of model files')
+  parser.add_argument(
+      '-E', '--grep', type=str, default=None, help='parameter patterns, default=None'
+  )
   return parser
 
 
@@ -142,10 +125,7 @@ def to_state_dict_main(args):
 
 
 def to_state_dict_add_argument(parser):
-  parser.add_argument('model_files',
-                      type=str,
-                      nargs=2,
-                      help='list of model files')
+  parser.add_argument('model_files', type=str, nargs=2, help='list of model files')
   return parser
 
 
@@ -165,10 +145,7 @@ if __name__ == '__main__':
   for cmd, (_, add_argument) in commands.items():
     cmd_parser = sub_parsers.add_parser(cmd)
     add_argument(cmd_parser)
-    cmd_parser.add_argument('-v',
-                            '--verbose',
-                            action='store_true',
-                            help='verbose')
+    cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
 

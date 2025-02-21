@@ -6,7 +6,6 @@ from contextlib import suppress as nullcontext
 import torch
 from torch.profiler import (ProfilerActivity, tensorboard_trace_handler)  # pylint: disable=unused-import
 
-
 _enabled = False
 
 

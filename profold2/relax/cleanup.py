@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Cleans up a PDB file using pdbfixer in preparation for OpenMM simulations.
 
 fix_pdb uses a third-party tool. We also support fixing some additional edge
@@ -55,8 +54,7 @@ def fix_pdb(pdbfile, alterations_info):
   fixer.addMissingAtoms(seed=0)
   fixer.addMissingHydrogens()
   out_handle = io.StringIO()
-  app.PDBFile.writeFile(fixer.topology, fixer.positions, out_handle,
-                        keepIds=True)
+  app.PDBFile.writeFile(fixer.topology, fixer.positions, out_handle, keepIds=True)
   return out_handle.getvalue()
 
 
@@ -88,8 +86,7 @@ def _remove_heterogens(fixer, alterations_info, keep_water):
   for chain in fixer.topology.chains():
     for residue in chain.residues():
       final_resnames.add(residue.name)
-  alterations_info['removed_heterogens'] = (
-      initial_resnames.difference(final_resnames))
+  alterations_info['removed_heterogens'] = (initial_resnames.difference(final_resnames))
 
 
 def _replace_met_se(pdb_structure, alterations_info):

@@ -27,10 +27,12 @@ class Recyclables:
   frames: tuple = None
 
   def asdict(self):
-    return dict(msa_first_row_repr=self.msa_first_row_repr,
-                pairwise_repr=self.pairwise_repr,
-                coords=self.coords,
-                frames=self.frames)
+    return dict(
+        msa_first_row_repr=self.msa_first_row_repr,
+        pairwise_repr=self.pairwise_repr,
+        coords=self.coords,
+        frames=self.frames
+    )
 
 
 @dataclass
@@ -41,108 +43,109 @@ class _ReturnValues:
 
 
 class ReturnValues(_ReturnValues):
-
   def __init__(self, **kwargs):
     if 'recyclables' in kwargs and exists(kwargs['recyclables']):
       kwargs['recyclables'] = Recyclables(**kwargs['recyclables'])
     super().__init__(**kwargs)
 
   def asdict(self):
-    return dict(recyclables=self.recyclables.asdict()
-                if exists(self.recyclables) else self.recyclables,
-                headers=self.headers,
-                loss=self.loss)
+    return dict(
+        recyclables=self.recyclables.asdict()
+        if exists(self.recyclables) else self.recyclables,
+        headers=self.headers,
+        loss=self.loss
+    )
 
 
 class AlphaFold2(nn.Module):
   """An implementation of the AlphaFold2 model
    """
-
-  def __init__(self,
-               *,
-               dim,
-               depth=48,
-               heads=8,
-               dim_head=32,
-               max_rel_dist=32,
-               num_tokens=len(residue_constants.restypes_with_x),
-               attn_dropout=0.,
-               ff_dropout=0.,
-               disable_token_embed=False,
-               accept_msa_attn=True,
-               accept_frame_attn=False,
-               accept_frame_update=False,
-               recycling_single_repr=True,
-               recycling_frames=False,
-               recycling_pos=False,
-               recycling_pos_min_bin=3.25,
-               recycling_pos_max_bin=20.75,
-               recycling_pos_num_bin=15,
-               headers=None):
+  def __init__(
+      self,
+      *,
+      dim,
+      depth=48,
+      heads=8,
+      dim_head=32,
+      max_rel_dist=32,
+      num_tokens=len(residue_constants.restypes_with_x),
+      attn_dropout=0.,
+      ff_dropout=0.,
+      disable_token_embed=False,
+      accept_msa_attn=True,
+      accept_frame_attn=False,
+      accept_frame_update=False,
+      recycling_single_repr=True,
+      recycling_frames=False,
+      recycling_pos=False,
+      recycling_pos_min_bin=3.25,
+      recycling_pos_max_bin=20.75,
+      recycling_pos_num_bin=15,
+      headers=None
+  ):
     super().__init__()
 
     self.dim = dim
     dim_single, dim_msa, dim_pairwise = dim
 
     # token embedding
-    self.token_emb = nn.Embedding(
-        num_tokens + 1, dim_msa) if not disable_token_embed else Always(0)
+    self.token_emb = nn.Embedding(num_tokens +
+                                  1, dim_msa) if not disable_token_embed else Always(0)
     self.disable_token_embed = disable_token_embed
-    self.to_pairwise_repr = PairwiseEmbedding((dim_msa, dim_pairwise),
-                                              max_rel_dist)
+    self.to_pairwise_repr = PairwiseEmbedding((dim_msa, dim_pairwise), max_rel_dist)
 
     # main trunk modules
-    self.evoformer = Evoformer(depth=depth,
-                               dim_msa=dim_msa,
-                               dim_pairwise=dim_pairwise,
-                               heads=heads,
-                               dim_head=dim_head,
-                               accept_msa_attn=accept_msa_attn,
-                               accept_frame_attn=accept_frame_attn,
-                               accept_frame_update=accept_frame_update,
-                               attn_dropout=attn_dropout,
-                               ff_dropout=ff_dropout)
+    self.evoformer = Evoformer(
+        depth=depth,
+        dim_msa=dim_msa,
+        dim_pairwise=dim_pairwise,
+        heads=heads,
+        dim_head=dim_head,
+        accept_msa_attn=accept_msa_attn,
+        accept_frame_attn=accept_frame_attn,
+        accept_frame_update=accept_frame_update,
+        attn_dropout=attn_dropout,
+        ff_dropout=ff_dropout
+    )
 
     # msa to single activations
     self.to_single_repr = nn.Linear(dim_msa, dim_single)
 
     # recycling params
     self.recycling_to_msa_repr = nn.Linear(
-        dim_single, dim_msa) if recycling_single_repr else None
+        dim_single, dim_msa
+    ) if recycling_single_repr else None
     self.recycling_pos_linear = nn.Linear(
-        recycling_pos_num_bin, dim_pairwise) if recycling_pos else None
+        recycling_pos_num_bin, dim_pairwise
+    ) if recycling_pos else None
     self.recycling_frames = recycling_frames
     if recycling_pos:
       self.recycling_pos_breaks = torch.linspace(
-          recycling_pos_min_bin,
-          recycling_pos_max_bin,
-          steps=recycling_pos_num_bin)
+          recycling_pos_min_bin, recycling_pos_max_bin, steps=recycling_pos_num_bin
+      )
     self.recycling_msa_norm = nn.LayerNorm(dim_msa)
     self.recycling_pairwise_norm = nn.LayerNorm(dim_pairwise)
 
-    self.headers = HeaderBuilder.build((dim_single, dim_pairwise),
-                                       headers,
-                                       parent=self)
+    self.headers = HeaderBuilder.build((dim_single, dim_pairwise), headers, parent=self)
 
   def embeddings(self):
-    return dict(token=self.token_emb.weight,
-                pairwise=self.to_pairwise_repr.embeddings())
+    return dict(
+        token=self.token_emb.weight, pairwise=self.to_pairwise_repr.embeddings()
+    )
 
-  def forward(self,
-              batch,
-              *,
-              return_recyclables=False,
-              compute_loss=True,
-              shard_size=None):
+  def forward(
+      self, batch, *, return_recyclables=False, compute_loss=True, shard_size=None
+  ):
     seq, mask, seq_embed, seq_index = map(
-        batch.get, ('seq', 'mask', 'emb_seq', 'seq_index'))
+        batch.get, ('seq', 'mask', 'emb_seq', 'seq_index')
+    )
     msa_enabled = batch.get('msa_enabled', False)
     if msa_enabled:
       msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
     else:
       msa, msa_mask, msa_embed = None, None, None  # msa as features disabled
-    embedds, = map(batch.get, ('embedds',))
-    recyclables, = map(batch.get, ('recyclables',))
+    embedds, = map(batch.get, ('embedds', ))
+    recyclables, = map(batch.get, ('recyclables', ))
 
     # variables
     # b, n, device = *seq.shape[:2], seq.device
@@ -188,8 +191,7 @@ class AlphaFold2(nn.Module):
       m = embedds
 
       # get msa_mask to all ones if none was passed
-      msa_mask = default(msa_mask,
-                         lambda: torch.ones_like(embedds[..., -1]).bool())
+      msa_mask = default(msa_mask, lambda: torch.ones_like(embedds[..., -1]).bool())
     else:
       raise ValueError('either MSA or embeds must be given')
 
@@ -204,7 +206,8 @@ class AlphaFold2(nn.Module):
         dgram = distogram_from_positions(pseudo_beta, breaks)
         x = tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
       m[:, 0] = tensor_add(
-          m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr))
+          m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr)
+      )
       x = tensor_add(x, self.recycling_pairwise_norm(recyclables.pairwise_repr))
 
     # add recyclables, if present
@@ -218,12 +221,14 @@ class AlphaFold2(nn.Module):
       translations = torch.zeros((b, n, 3), device=device)
 
     # trunk
-    x, m, t = self.evoformer(x,
-                             m,
-                             frames=(quaternions, translations),
-                             mask=x_mask,
-                             msa_mask=msa_mask,
-                             shard_size=shard_size)
+    x, m, t = self.evoformer(
+        x,
+        m,
+        frames=(quaternions, translations),
+        mask=x_mask,
+        msa_mask=msa_mask,
+        shard_size=shard_size
+    )
 
     s = self.to_single_repr(m[:, 0])
 
@@ -253,16 +258,15 @@ class AlphaFold2(nn.Module):
     if return_recyclables:
       msa_first_row_repr, pairwise_repr = m[:, 0], representations['pair']
       if exists(self.recycling_to_msa_repr):
-        msa_first_row_repr = self.recycling_to_msa_repr(
-            representations['single'])
+        msa_first_row_repr = self.recycling_to_msa_repr(representations['single'])
       msa_first_row_repr, pairwise_repr = map(
-          torch.detach, (msa_first_row_repr, pairwise_repr))
+          torch.detach, (msa_first_row_repr, pairwise_repr)
+      )
       coords = None
       if 'folding' in ret.headers and 'coords' in ret.headers['folding']:
         coords = ret.headers['folding']['coords'].detach()
       frames = representations['frames'] if self.recycling_frames else None
-      ret.recyclables = Recyclables(msa_first_row_repr, pairwise_repr, coords,
-                                    frames)
+      ret.recyclables = Recyclables(msa_first_row_repr, pairwise_repr, coords, frames)
 
     return ret.asdict()
 
@@ -270,7 +274,6 @@ class AlphaFold2(nn.Module):
 class AlphaFold2WithRecycling(nn.Module):
   """Wrap the AlphaFold2 with recycling
    """
-
   def __init__(self, **kwargs):
     super().__init__()
 
@@ -292,27 +295,28 @@ class AlphaFold2WithRecycling(nn.Module):
       batch['recyclables'] = Recyclables(
           msa_first_row_repr=torch.zeros(b, n, dim_msa, device=device),
           pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device),
-          coords=torch.zeros(b, n, residue_constants.atom_type_num, 3,
-                             device=device))
+          coords=torch.zeros(b, n, residue_constants.atom_type_num, 3, device=device)
+      )
 
     if self.training:
       num_recycle = random.randint(0, num_recycle)
-    cycling_function = functools.partial(self.impl,
-                                         return_recyclables=True,
-                                         compute_loss=False,
-                                         **kwargs)
+    cycling_function = functools.partial(
+        self.impl, return_recyclables=True, compute_loss=False, **kwargs
+    )
 
     with torch.no_grad():
       for i in range(num_recycle):
         ret = ReturnValues(**cycling_function(batch))
         if 'tmscore' in ret.headers:
-          logger.debug('%s/%s pid: %s, tmscore: %s', i, num_recycle,
-                       ','.join(batch['pid']),
-                       ret.headers['tmscore']['loss'])
+          logger.debug(
+              '%s/%s pid: %s, tmscore: %s', i, num_recycle, ','.join(batch['pid']),
+              ret.headers['tmscore']['loss']
+          )
         batch['recyclables'] = ret.recyclables
 
-    ret = ReturnValues(**self.impl(
-        batch, return_recyclables=False, compute_loss=True, **kwargs))
+    ret = ReturnValues(
+        **self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs)
+    )
     metrics = {}
     if 'plddt_mean' in batch:
       metrics['plddt_mean'] = batch['plddt_mean']
@@ -325,9 +329,10 @@ class AlphaFold2WithRecycling(nn.Module):
     if 'tmscore' in ret.headers:
       metrics['tmscore'] = ret.headers['tmscore']['loss']
     if metrics:
-      msg = ', '.join(['%s: %s']*len(metrics))
-      logger.debug(f'%s/%s pid: %s, {msg}', num_recycle, num_recycle,
-                   ','.join(batch['pid']),
-                   *functools.reduce(lambda x, y: x + y, metrics.items()))
+      msg = ', '.join(['%s: %s'] * len(metrics))
+      logger.debug(
+          f'%s/%s pid: %s, {msg}', num_recycle, num_recycle, ','.join(batch['pid']),
+          *functools.reduce(lambda x, y: x + y, metrics.items())
+      )
 
     return ret.asdict()

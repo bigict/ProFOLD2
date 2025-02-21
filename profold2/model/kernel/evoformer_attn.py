@@ -13,7 +13,7 @@ kernel_ = None
 
 def _on_cuda(tensor):
   return hasattr(tensor, 'device') and tensor.device.type == 'cuda'
-  
+
 
 def attention_fwd(Q, K, V, bias1, bias2):
   assert Q.shape[-3] > 16, 'seq_len must be greater than 16'
@@ -58,22 +58,20 @@ def attention_bwd(dO, Q, K, V, O, lse, bias1, bias2, bias1_grad, bias2_grad):
     dB2 = torch.zeros_like(bias2, dtype=torch.float32)
   else:
     dB2 = torch.tensor([], dtype=torch.float32, device=bias2.device)
-  kernel_.attention_bwd(dO, Q, K, V, O, lse, delta, bias1, bias2, dQ, dK, dV,
-                        dB1, dB2)
+  kernel_.attention_bwd(dO, Q, K, V, O, lse, delta, bias1, bias2, dQ, dK, dV, dB1, dB2)
   return dQ, dK, dV, dB1.to(dO.dtype), dB2.to(dO.dtype)
 
 
 class EvoformerFusedAttention(torch.autograd.Function):
-
   @staticmethod
   def forward(ctx, q, k, v, bias1=None, bias2=None):
     """
         q, k, v: are in shape [*, L, H, D]
     """
-    bias1_ = bias1.contiguous() if bias1 is not None else torch.tensor(
-        [], dtype=q.dtype, device=q.device)
-    bias2_ = bias2.contiguous() if bias2 is not None else torch.tensor(
-        [], dtype=q.dtype, device=q.device)
+    bias1_ = bias1.contiguous(
+    ) if bias1 is not None else torch.tensor([], dtype=q.dtype, device=q.device)
+    bias2_ = bias2.contiguous(
+    ) if bias2 is not None else torch.tensor([], dtype=q.dtype, device=q.device)
     q = q.contiguous()
     k = k.contiguous()
     v = v.contiguous()
@@ -86,8 +84,9 @@ class EvoformerFusedAttention(torch.autograd.Function):
     q, k, v, o, lse, bias1, bias2 = ctx.saved_tensors
     is_b1_grad = bias1.numel() != 0 and ctx.needs_input_grad[3]
     is_b2_grad = bias2.numel() != 0 and ctx.needs_input_grad[4]
-    dQ, dK, dV, dB1, dB2 = attention_bwd(grad_output, q, k, v, o, lse, bias1,
-                                         bias2, is_b1_grad, is_b2_grad)
+    dQ, dK, dV, dB1, dB2 = attention_bwd(
+        grad_output, q, k, v, o, lse, bias1, bias2, is_b1_grad, is_b2_grad
+    )
     if not is_b1_grad:
       dB1 = None
     if not is_b2_grad:

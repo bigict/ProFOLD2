@@ -43,7 +43,8 @@ def to_fasta_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('--dump_keys', action='store_true', help='dump keys')
   parser.add_argument('--print_fasta', action='store_true', help='print fasta')
   parser.add_argument(
-      '--print_first_only', action='store_true', help='print first only')
+      '--print_first_only', action='store_true', help='print first only'
+  )
   return parser
 
 
@@ -56,12 +57,14 @@ def to_pdb(data, args):  # pylint: disable=redefined-outer-name
     if args.coord_pad:
       coord_mask = torch.clone(coord_mask)
       coord_mask[:, :cb_idx] = True
-    prot = protein.Protein(aatype=np.array(feat['seq']),
-                           atom_positions=np.array(feat['coord']),
-                           atom_mask=np.array(coord_mask),
-                           residue_index=np.array(feat['seq_index']) + 1,
-                           chain_index=np.array(feat['seq_color']) - 1,
-                           b_factors=np.zeros_like(feat['coord_mask']))
+    prot = protein.Protein(
+        aatype=np.array(feat['seq']),
+        atom_positions=np.array(feat['coord']),
+        atom_mask=np.array(coord_mask),
+        residue_index=np.array(feat['seq_index']) + 1,
+        chain_index=np.array(feat['seq_color']) - 1,
+        b_factors=np.zeros_like(feat['coord_mask'])
+    )
     pid = feat['pid']
     with open(os.path.join(args.output, f'{pid}.pdb'), 'w') as f:
       if args.verbose:
@@ -70,10 +73,8 @@ def to_pdb(data, args):  # pylint: disable=redefined-outer-name
 
 
 def to_pdb_add_argument(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument(
-      '-o', '--output', type=str, default=None, help='output file')
-  parser.add_argument(
-      '--coord_pad', action='store_true', help='coord padded')
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
+  parser.add_argument('--coord_pad', action='store_true', help='coord padded')
   return parser
 
 
@@ -106,10 +107,8 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
 
 
 def checksum_add_argument(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument(
-      '--msa_required', action='store_true', help='MSA required')
-  parser.add_argument(
-      '--coord_required', action='store_true', help='coord required')
+  parser.add_argument('--msa_required', action='store_true', help='MSA required')
+  parser.add_argument('--coord_required', action='store_true', help='coord required')
   return parser
 
 
@@ -142,38 +141,28 @@ def plddt(data, args):  # pylint: disable=redefined-outer-name
     else:
       with mp.Pool(args.num_workers) as p:
         for pid, score, seq_len in p.imap_unordered(
-            work_fn, range(range_start, range_stop), chunksize=args.chunksize):
+            work_fn, range(range_start, range_stop), chunksize=args.chunksize
+        ):
           if exists(score):
             f.write(f'plddt\t{pid}\t{score.item()}\t{seq_len}\n')
 
 
 def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
   parser.add_argument(
-      '-o', '--output', type=str, default=None, help='output file')
+      '--num_workers', type=int, default=None, help='num of workers, default=#cpus'
+  )
   parser.add_argument(
-      '--num_workers',
-      type=int,
-      default=None,
-      help='num of workers, default=#cpus')
+      '--chunksize', type=int, default=10, help='chunk size of each worker, default=1'
+  )
+  parser.add_argument('--msa_required', action='store_true', help='MSA required')
+  parser.add_argument('--coord_required', action='store_true', help='coord required')
   parser.add_argument(
-      '--chunksize',
-      type=int,
-      default=10,
-      help='chunk size of each worker, default=1')
+      '--range_start', type=int, default=0, help='num of workers, default=#cpus'
+  )
   parser.add_argument(
-      '--msa_required', action='store_true', help='MSA required')
-  parser.add_argument(
-      '--coord_required', action='store_true', help='coord required')
-  parser.add_argument(
-      '--range_start',
-      type=int,
-      default=0,
-      help='num of workers, default=#cpus')
-  parser.add_argument(
-      '--range_stop',
-      type=int,
-      default=None,
-      help='num of workers, default=#cpus')
+      '--range_stop', type=int, default=None, help='num of workers, default=#cpus'
+  )
   return parser
 
 
@@ -192,20 +181,26 @@ def contacts_func(args, feat, data, idx):  # pylint: disable=redefined-outer-nam
     def _calc_contacts(seq_index_i, seq_color_i, positions_i, mask_i):
       squared_idx = torch.abs(
           rearrange(seq_index_i, '... i -> ... i ()') -
-          rearrange(seq_index, '... j -> ... () j'))
-      squared_mask = rearrange(mask_i, '... i -> ... i ()') * rearrange(
-          mask, '... j -> ... () j')
+          rearrange(seq_index, '... j -> ... () j')
+      )
+      squared_mask = rearrange(mask_i, '... i -> ... i ()'
+                              ) * rearrange(mask, '... j -> ... () j')
       dist2 = squared_cdist(positions_i, positions)
       all_contacts = (dist2 <= args.contact_cutoff**2) * squared_mask
 
-      pair_clr_mask = (rearrange(seq_color_i, '... i -> ... i ()') == rearrange(
-          seq_color, '... j -> ... () j'))
+      pair_clr_mask = (
+          rearrange(seq_color_i,
+                    '... i -> ... i ()') == rearrange(seq_color, '... j -> ... () j')
+      )
       intra_contacts = torch.sum(
           all_contacts * pair_clr_mask * (squared_idx >= args.contact_range_min),
-          dim=-1)
+          dim=-1
+      )
 
-      pair_clr_mask = (rearrange(seq_color_i, '... i -> ... i ()') != rearrange(
-          seq_color, '... j -> ... () j'))
+      pair_clr_mask = (
+          rearrange(seq_color_i, '... i -> ... i ()') !=
+          rearrange(seq_color, '... j -> ... () j')
+      )
       inter_contacts = torch.sum(all_contacts * pair_clr_mask, dim=-1)
 
       return intra_contacts, inter_contacts
@@ -215,19 +210,20 @@ def contacts_func(args, feat, data, idx):  # pylint: disable=redefined-outer-nam
       for x, y in chunk_iter:
         intra_contacts.append(x)
         inter_contacts.append(y)
-      return torch.cat(
-          intra_contacts, dim=-1), torch.cat(
-              inter_contacts, dim=-1)
+      return torch.cat(intra_contacts, dim=-1), torch.cat(inter_contacts, dim=-1)
 
     intra_contacts, inter_contacts = sharded_apply(
         _calc_contacts, [seq_index, seq_color, positions, mask],
         shard_size=args.shard_size,
         shard_dim=0,
-        cat_dim=_cat_contacts)
+        cat_dim=_cat_contacts
+    )
     intra_contacts = torch.scatter_add(
-        torch.zeros(n,), -1, seq_color - 1, (intra_contacts > 0).float())
+        torch.zeros(n, ), -1, seq_color - 1, (intra_contacts > 0).float()
+    )
     inter_contacts = torch.scatter_add(
-        torch.zeros(n,), -1, seq_color - 1, (inter_contacts > 0).float())
+        torch.zeros(n, ), -1, seq_color - 1, (inter_contacts > 0).float()
+    )
   return pid, intra_contacts, inter_contacts
 
 
@@ -249,7 +245,8 @@ def contacts(data, args):  # pylint: disable=redefined-outer-name
     else:
       with mp.Pool(args.num_workers) as p:
         for pid, intra_contacts, inter_contacts in p.imap_unordered(
-            work_fn, range(len(data)), chunksize=args.chunksize):
+            work_fn, range(len(data)), chunksize=args.chunksize
+        ):
           if not (exists(intra_contacts) and exists(inter_contacts)):
             continue
           pid, chains, *_ = decompose_pid(pid)
@@ -260,40 +257,32 @@ def contacts(data, args):  # pylint: disable=redefined-outer-name
 
 
 def contacts_add_argument(parser):  # pylint: disable=redefined-outer-name
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
   parser.add_argument(
-      '-o', '--output', type=str, default=None, help='output file')
+      '--num_workers', type=int, default=None, help='num of workers, default=#cpus'
+  )
   parser.add_argument(
-      '--num_workers',
-      type=int,
-      default=None,
-      help='num of workers, default=#cpus')
-  parser.add_argument(
-      '--chunksize',
-      type=int,
-      default=10,
-      help='chunk size of each worker, default=1')
+      '--chunksize', type=int, default=10, help='chunk size of each worker, default=1'
+  )
   parser.add_argument(
       '--shard_size',
       type=int,
       default=None,
-      help='shard size of each protein, default=None')
+      help='shard size of each protein, default=None'
+  )
+  parser.add_argument('--msa_required', action='store_true', help='MSA required')
   parser.add_argument(
-      '--msa_required', action='store_true', help='MSA required')
+      '--contact_cutoff', type=float, default=8, help='Contact cutoff, default=8'
+  )
   parser.add_argument(
-      '--contact_cutoff',
-      type=float,
-      default=8,
-      help='Contact cutoff, default=8')
-  parser.add_argument(
-      '--contact_range_min',
-      type=int,
-      default=6,
-      help='Contact range start, default=6')
+      '--contact_range_min', type=int, default=6, help='Contact range start, default=6'
+  )
   parser.add_argument(
       '--contact_range_max',
       type=int,
       default=-1,
-      help='Contact range start, default=-1')
+      help='Contact range start, default=-1'
+  )
   return parser
 
 
@@ -309,7 +298,8 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
       pseudo_linker_shuffle=False,
       data_rm_mask_prob=args.data_rm_mask_prob,
       msa_as_seq_prob=args.msa_as_seq_prob,
-      feat_flags=feat_flags)
+      feat_flags=feat_flags
+  )
   with timing(f'{args.command}', logging.info):
     work_fn(data, args)
 
@@ -332,23 +322,21 @@ if __name__ == '__main__':
     cmd_parser = sub_parsers.add_parser(cmd)
 
     cmd_parser.add_argument(
-        '--data_dir',
-        type=str,
-        default=None,
-        help='train dataset dir, default=None')
+        '--data_dir', type=str, default=None, help='train dataset dir, default=None'
+    )
     cmd_parser.add_argument(
-        '--data_idx', type=str, default=None, help='dataset idx, default=None')
+        '--data_idx', type=str, default=None, help='dataset idx, default=None'
+    )
     cmd_parser.add_argument(
-        '--data_rm_mask_prob', type=float, default=0.0, help='data_rm_mask')
+        '--data_rm_mask_prob', type=float, default=0.0, help='data_rm_mask'
+    )
     cmd_parser.add_argument(
-        '--msa_as_seq_prob', type=float, default=0.0, help='msa_as_mask')
+        '--msa_as_seq_prob', type=float, default=0.0, help='msa_as_mask'
+    )
     cmd_parser.add_argument(
-        '--pseudo_linker_prob',
-        type=float,
-        default=0.0,
-        help='pseudo_linker_prob')
-    cmd_parser.add_argument(
-        '-v', '--verbose', action='store_true', help='verbose')
+        '--pseudo_linker_prob', type=float, default=0.0, help='pseudo_linker_prob'
+    )
+    cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
     add_argument(cmd_parser)
 

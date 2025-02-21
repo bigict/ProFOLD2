@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Library to run Jackhmmer from Python."""
 
 from concurrent import futures
@@ -29,23 +28,24 @@ from profold2.data.tools import utils
 
 class Jackhmmer:
   """Python wrapper of the Jackhmmer binary."""
-
-  def __init__(self,
-               *,
-               binary_path: str,
-               database_path: str,
-               n_cpu: int = 4,
-               n_iter: int = 1,
-               e_value: float = 0.0001,
-               z_value: Optional[int] = None,
-               get_tblout: bool = False,
-               filter_f1: float = 0.0005,
-               filter_f2: float = 0.00005,
-               filter_f3: float = 0.0000005,
-               incdom_e: Optional[float] = None,
-               dom_e: Optional[float] = None,
-               num_streamed_chunks: Optional[int] = None,
-               streaming_callback: Optional[Callable[[int], None]] = None):
+  def __init__(
+      self,
+      *,
+      binary_path: str,
+      database_path: str,
+      n_cpu: int = 4,
+      n_iter: int = 1,
+      e_value: float = 0.0001,
+      z_value: Optional[int] = None,
+      get_tblout: bool = False,
+      filter_f1: float = 0.0005,
+      filter_f2: float = 0.00005,
+      filter_f3: float = 0.0000005,
+      incdom_e: Optional[float] = None,
+      dom_e: Optional[float] = None,
+      num_streamed_chunks: Optional[int] = None,
+      streaming_callback: Optional[Callable[[int], None]] = None
+  ):
     """Initializes the Python Jackhmmer wrapper.
 
     Args:
@@ -86,8 +86,8 @@ class Jackhmmer:
     self.get_tblout = get_tblout
     self.streaming_callback = streaming_callback
 
-  def _query_chunk(self, input_fasta_path: str, database_path: str
-                   ) -> Mapping[str, Any]:
+  def _query_chunk(self, input_fasta_path: str,
+                   database_path: str) -> Mapping[str, Any]:
     """Queries the database chunk using Jackhmmer."""
     with utils.tmpdir_manager(base_dir='./tmp') as query_tmp_dir:
       sto_path = os.path.join(query_tmp_dir, 'output.sto')
@@ -99,17 +99,26 @@ class Jackhmmer:
       # amount of time.
       cmd_flags = [
           # Don't pollute stdout with Jackhmmer output.
-          '-o', '/dev/null',
-          '-A', sto_path,
+          '-o',
+          '/dev/null',
+          '-A',
+          sto_path,
           '--noali',
-          '--F1', str(self.filter_f1),
-          '--F2', str(self.filter_f2),
-          '--F3', str(self.filter_f3),
-          '--incE', str(self.e_value),
+          '--F1',
+          str(self.filter_f1),
+          '--F2',
+          str(self.filter_f2),
+          '--F3',
+          str(self.filter_f3),
+          '--incE',
+          str(self.e_value),
           # Report only sequences with E-values <= x in per-sequence output.
-          '-E', str(self.e_value),
-          '--cpu', str(self.n_cpu),
-          '-N', str(self.n_iter)
+          '-E',
+          str(self.e_value),
+          '--cpu',
+          str(self.n_cpu),
+          '-N',
+          str(self.n_iter)
       ]
       if self.get_tblout:
         tblout_path = os.path.join(query_tmp_dir, 'tblout.txt')
@@ -124,21 +133,19 @@ class Jackhmmer:
       if self.incdom_e is not None:
         cmd_flags.extend(['--incdomE', str(self.incdom_e)])
 
-      cmd = [self.binary_path] + cmd_flags + [input_fasta_path,
-                                              database_path]
+      cmd = [self.binary_path] + cmd_flags + [input_fasta_path, database_path]
 
       logging.info('Launching subprocess "%s"', ' '.join(cmd))
-      process = subprocess.Popen(
-          cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-      with utils.timing(
-          f'Jackhmmer ({os.path.basename(database_path)}) query'):
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      with utils.timing(f'Jackhmmer ({os.path.basename(database_path)}) query'):
         _, stderr = process.communicate()
         retcode = process.wait()
 
       if retcode:
         raise RuntimeError(
-            'Jackhmmer failed\ninput_fasta_path: %s\nstderr:\n%s\n' % (
-                  input_fasta_path, stderr.decode('utf-8')))
+            'Jackhmmer failed\ninput_fasta_path: %s\nstderr:\n%s\n' %
+            (input_fasta_path, stderr.decode('utf-8'))
+        )
 
       # Get e-values for each target name
       tbl = ''
@@ -150,11 +157,8 @@ class Jackhmmer:
         sto = f.read()
 
     raw_output = dict(
-        sto=sto,
-        tbl=tbl,
-        stderr=stderr,
-        n_iter=self.n_iter,
-        e_value=self.e_value)
+        sto=sto, tbl=tbl, stderr=stderr, n_iter=self.n_iter, e_value=self.e_value
+    )
 
     return raw_output
 
@@ -181,15 +185,16 @@ class Jackhmmer:
         # Copy the chunk locally
         if i == 1:
           future = executor.submit(
-              request.urlretrieve, db_remote_chunk(i), db_local_chunk(i))
+              request.urlretrieve, db_remote_chunk(i), db_local_chunk(i)
+          )
         if i < self.num_streamed_chunks:
           next_future = executor.submit(
-              request.urlretrieve, db_remote_chunk(i+1), db_local_chunk(i+1))
+              request.urlretrieve, db_remote_chunk(i + 1), db_local_chunk(i + 1)
+          )
 
         # Run Jackhmmer with the chunk
         future.result()
-        chunked_output.append(
-            self._query_chunk(input_fasta_path, db_local_chunk(i)))
+        chunked_output.append(self._query_chunk(input_fasta_path, db_local_chunk(i)))
 
         # Remove the local copy of the chunk
         os.remove(db_local_chunk(i))
@@ -198,42 +203,39 @@ class Jackhmmer:
           self.streaming_callback(i)
     return chunked_output
 
+
 def main(args):
   fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
-  level=logging.DEBUG if args.verbose else logging.INFO
-  handlers = [
-      logging.StreamHandler()]
-  logging.basicConfig(
-      format=fmt,
-      level=level,
-      handlers=handlers)
+  level = logging.DEBUG if args.verbose else logging.INFO
+  handlers = [logging.StreamHandler()]
+  logging.basicConfig(format=fmt, level=level, handlers=handlers)
 
   for tool_name in (  # pylint: disable=redefined-outer-name
       'jackhmmer', 'hmmsearch', 'hmmbuild'):
     if not getattr(args, f'{tool_name}_binary_path'):
-      raise ValueError(f'Could not find path to the "{tool_name}" binary. Make '
-                       'sure it is installed on your system.')
+      raise ValueError(
+          f'Could not find path to the "{tool_name}" binary. Make '
+          'sure it is installed on your system.'
+      )
   # Check for duplicate FASTA file names.
   fasta_names = [pathlib.Path(p).stem for p in args.fasta_paths]
   if len(fasta_names) != len(set(fasta_names)):
     raise ValueError('All FASTA paths must have a unique basename.')
 
   jackhmmer_uniref90_runner = Jackhmmer(
-      binary_path=args.jackhmmer_binary_path,
-      database_path=args.uniref90_database_path)
+      binary_path=args.jackhmmer_binary_path, database_path=args.uniref90_database_path
+  )
   jackhmmer_mgnify_runner = Jackhmmer(
-      binary_path=args.jackhmmer_binary_path,
-      database_path=args.mgnify_database_path)
+      binary_path=args.jackhmmer_binary_path, database_path=args.mgnify_database_path
+  )
 
   for fasta_path, fasta_name in zip(args.fasta_paths, fasta_names):
     msa_output_dir = os.path.join(args.output_dir, fasta_name, 'msas')
     if not os.path.exists(msa_output_dir):
       os.makedirs(msa_output_dir, exist_ok=True)
 
-    jackhmmer_uniref90_result = jackhmmer_uniref90_runner.query(
-        fasta_path)[0]
-    jackhmmer_mgnify_result = jackhmmer_mgnify_runner.query(
-        fasta_path)[0]
+    jackhmmer_uniref90_result = jackhmmer_uniref90_runner.query(fasta_path)[0]
+    jackhmmer_mgnify_result = jackhmmer_mgnify_runner.query(fasta_path)[0]
 
     jackhmmer_uniref90_out_path = os.path.join(msa_output_dir, 'uniref90_hits.sto')
     with open(jackhmmer_uniref90_out_path, 'w') as f:
@@ -243,27 +245,35 @@ def main(args):
     with open(jackhmmer_mgnify_out_path, 'w') as f:
       f.write(jackhmmer_mgnify_result['sto'])
 
+
 if __name__ == '__main__':
   import argparse
   import shutil
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('-o', '--output_dir', type=str, default='.',
-      help='Output directory')
-  for tool_name in (
-      'jackhmmer', 'hmmsearch', 'hmmbuild'):
-    parser.add_argument(f'--{tool_name}_binary_path', type=str,
+  parser.add_argument(
+      '-o', '--output_dir', type=str, default='.', help='Output directory'
+  )
+  for tool_name in ('jackhmmer', 'hmmsearch', 'hmmbuild'):
+    parser.add_argument(
+        f'--{tool_name}_binary_path',
+        type=str,
         default=shutil.which(tool_name),
-        help=f'path to the `{tool_name}` executable.')
+        help=f'path to the `{tool_name}` executable.'
+    )
   for database_name in (
-      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'):
-    parser.add_argument(f'--{database_name}_database_path', type=str,
+      'uniref90', 'mgnify', 'bfd', 'small_bfd', 'uniclust30', 'pdb70'
+  ):
+    parser.add_argument(
+        f'--{database_name}_database_path',
+        type=str,
         default=None,
-        help=f'path to database {database_name}')
-  parser.add_argument('--fasta_paths', type=str, nargs='+',
-      help='list of fasta files')
-  parser.add_argument('--use_small_bfd', action='store_true',
-      help='use small bfd database or not')
+        help=f'path to database {database_name}'
+    )
+  parser.add_argument('--fasta_paths', type=str, nargs='+', help='list of fasta files')
+  parser.add_argument(
+      '--use_small_bfd', action='store_true', help='use small bfd database or not'
+  )
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()

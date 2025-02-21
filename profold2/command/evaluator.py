@@ -19,10 +19,11 @@ from profold2.utils import Kabsch, TMscore, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
+
 def preprocess(args):  # pylint: disable=redefined-outer-name
   if args.save_pdb:
-    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')),
-                exist_ok=True)
+    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')), exist_ok=True)
+
 
 def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   worker = WorkerModel(rank, args)
@@ -50,38 +51,49 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       msa_as_seq_topn=args.msa_as_seq_topn,
       msa_as_seq_clustering=args.msa_as_seq_clustering,
       msa_as_seq_min_alr=args.msa_as_seq_min_alr,
-      feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb
-                                    else dataset.FEAT_ALL),
+      feat_flags=(~dataset.FEAT_PDB if args.eval_without_pdb else dataset.FEAT_ALL),
       batch_size=args.batch_size,
-      num_workers=args.num_workers, **kwargs)
+      num_workers=args.num_workers,
+      **kwargs
+  )
 
   def data_cond(batch):
-    return (args.min_protein_len <= batch['seq'].shape[1] and
-        batch['seq'].shape[1] < args.max_protein_len)
+    return (
+        args.min_protein_len <= batch['seq'].shape[1] and
+        batch['seq'].shape[1] < args.max_protein_len
+    )
 
   def data_eval(idx, batch):
     fasta_name, fasta_len = ','.join(batch['pid']), batch['seq'].shape[1]
-    with timing(f'Building features for model on {fasta_name} {fasta_len}',
-        logging.debug):
+    with timing(
+        f'Building features for model on {fasta_name} {fasta_len}', logging.debug
+    ):
       batch = features(batch, is_training=False)
 
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
       with torch.no_grad():
         with autocast_ctx(args.amp_enabled):
-          r = ReturnValues(**model(batch=batch,  # pylint: disable=not-callable
-              num_recycle=args.model_recycles,
-              shard_size=args.model_shard_size))
+          r = ReturnValues(
+              **model(
+                  batch=batch,  # pylint: disable=not-callable
+                  num_recycle=args.model_recycles,
+                  shard_size=args.model_shard_size
+              )
+          )
 
     metric_dict = {}
     if 'confidence' in r.headers:
       metric_dict['confidence'] = r.headers['confidence']['loss'].item()
-      logging.debug('%d pid: %s Confidence: %s',
-            idx, fasta_name, r.headers['confidence']['loss'].item())
+      logging.debug(
+          '%d pid: %s Confidence: %s', idx, fasta_name,
+          r.headers['confidence']['loss'].item()
+      )
     if 'fitness' in r.headers:
       fitness = torch.sigmoid(r.headers['fitness']['variant_logit'])
-      logging.info('no: %d pid: %s, fitness: pred=%s', idx, fasta_name,
-                   fitness.tolist())
+      logging.info(
+          'no: %d pid: %s, fitness: pred=%s', idx, fasta_name, fitness.tolist()
+      )
       dump_pkl = {'variant_pred': fitness}
       if 'motifs' in r.headers['fitness']:
         dump_pkl['motifs'] = tensor_to_numpy(r.headers['fitness']['motifs'])
@@ -93,16 +105,21 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         #              batch['seq_color'].tolist())
       if 'variant_label' in batch:
         dump_pkl['label'] = tensor_to_numpy(batch['variant_label'])
-        logging.info('no: %d pid: %s, fitness: true=%s', idx, fasta_name,
-                     batch['variant_label'].tolist())
+        logging.info(
+            'no: %d pid: %s, fitness: true=%s', idx, fasta_name,
+            batch['variant_label'].tolist()
+        )
       if 'variant_label_mask' in batch:
         dump_pkl['label_mask'] = tensor_to_numpy(batch['variant_label_mask'])
-        logging.info('no: %d pid: %s, fitness: mask=%s', idx, fasta_name,
-                     batch['variant_label_mask'].tolist())
+        logging.info(
+            'no: %d pid: %s, fitness: mask=%s', idx, fasta_name,
+            batch['variant_label_mask'].tolist()
+        )
       if 'variant_pid' in batch:
         dump_pkl['pid'] = batch['variant_pid']
-        logging.info('no: %d pid: %s, fitness: desc=%s', idx, fasta_name,
-                     batch['variant_pid'])
+        logging.info(
+            'no: %d pid: %s, fitness: desc=%s', idx, fasta_name, batch['variant_pid']
+        )
       assert 'coevolution' in r.headers
       if 'wij' in r.headers['coevolution']:
         wij = tensor_to_numpy(r.headers['coevolution']['wij'])
@@ -125,32 +142,35 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         coords = r.headers['folding']['coords']  # (b l c d)
         _, _, num_atoms, _ = coords.shape
 
-        labels = batch['coord'][...,:num_atoms,:]
+        labels = batch['coord'][..., :num_atoms, :]
         flat_cloud_mask = rearrange(
-            batch['coord_mask'][...,:num_atoms], 'b l c -> b (l c)')
+            batch['coord_mask'][..., :num_atoms], 'b l c -> b (l c)'
+        )
 
         # rotate / align
         coords_aligned, labels_aligned = Kabsch(
             rearrange(
-                rearrange(coords,
-                          'b l c d -> b (l c) d')[flat_cloud_mask],
-                'c d -> d c'),
+                rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'
+            ),
             rearrange(
-                rearrange(labels,
-                          'b l c d -> b (l c) d')[flat_cloud_mask],
-                'c d -> d c'))
+                rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'
+            )
+        )
 
-        tms = TMscore(rearrange(coords_aligned, 'd l -> () d l'),
-                      rearrange(labels_aligned, 'd l -> () d l'),
-                      L=torch.sum(batch['mask'], dim=-1))
+        tms = TMscore(
+            rearrange(coords_aligned, 'd l -> () d l'),
+            rearrange(labels_aligned, 'd l -> () d l'),
+            L=torch.sum(batch['mask'], dim=-1)
+        )
         metric_dict['tmscore'] = tms.item()
-        logging.debug('%d pid: %s TM-score: %f',
-            idx, fasta_name, tms.item())
+        logging.debug('%d pid: %s TM-score: %f', idx, fasta_name, tms.item())
 
         # tmscore, n = tmscore + tms.item(), n + 1
 
-      logging.info('no: %d pid: %s, %s', idx, fasta_name,
-                   ', '.join(f'{k}: {v}' for k, v in metric_dict.items()))
+      logging.info(
+          'no: %d pid: %s, %s', idx, fasta_name,
+          ', '.join(f'{k}: {v}' for k, v in metric_dict.items())
+      )
       if args.save_pdb:
         pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=idx)
 
@@ -164,10 +184,11 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       enabled=args.enable_profiler,
       record_shapes=True,
       profile_memory=True,
-      with_stack=True) as prof:
+      with_stack=True
+  ) as prof:
     with snapshot.memory_snapshot(
-        enabled=args.enable_memory_snapshot,
-        device=rank.device):
+        enabled=args.enable_memory_snapshot, device=rank.device
+    ):
       # eval loop
       for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
         try:
@@ -184,70 +205,128 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   if n > 0:
     logging.info('%d TM-score: %f (average)', n, tmscore / n)
 
+
 setattr(evaluate, 'preprocess', preprocess)
 
+
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('--map_location', type=str, default=None,
-      help='remapped to an alternative set of devices.')
-  parser.add_argument('--model', type=str, default='model.pth',
-      help='model of profold2.')
+  parser.add_argument(
+      '--map_location',
+      type=str,
+      default=None,
+      help='remapped to an alternative set of devices.'
+  )
+  parser.add_argument(
+      '--model', type=str, default='model.pth', help='model of profold2.'
+  )
 
-  parser.add_argument('--eval_data', type=str, default=None,
-      help='eval dataset.')
-  parser.add_argument('--eval_idx', type=str, default=None,
-      help='eval dataset idx.')
-  parser.add_argument('--eval_attr', type=str, default=None,
-      help='eval dataset attr idx.')
-  parser.add_argument('--eval_without_pdb', action='store_true',
-      help='DO NOT load pdb data.')
-  parser.add_argument('--min_protein_len', type=int, default=0,
-      help='filter out proteins whose length<LEN.')
-  parser.add_argument('--max_protein_len', type=int, default=1024,
-      help='filter out proteins whose length>LEN.')
-  parser.add_argument('--max_msa_size', type=int, default=1024,
-      help='filter out MSAs whose size>SIZE.')
-  parser.add_argument('--max_var_size', type=int, default=None,
-      help='filter out VARs whose size>SIZE.')
-  parser.add_argument('--num_var_task', type=int, default=1,
-      help='number of tasks in VARs.')
-  parser.add_argument('--min_crop_len', type=int, default=None,
-      help='filter out proteins whose length<LEN.')
-  parser.add_argument('--max_crop_len', type=int, default=None,
-      help='filter out proteins whose length>LEN.')
-  parser.add_argument('--crop_algorithm', type=str, default='random',
+  parser.add_argument('--eval_data', type=str, default=None, help='eval dataset.')
+  parser.add_argument('--eval_idx', type=str, default=None, help='eval dataset idx.')
+  parser.add_argument(
+      '--eval_attr', type=str, default=None, help='eval dataset attr idx.'
+  )
+  parser.add_argument(
+      '--eval_without_pdb', action='store_true', help='DO NOT load pdb data.'
+  )
+  parser.add_argument(
+      '--min_protein_len',
+      type=int,
+      default=0,
+      help='filter out proteins whose length<LEN.'
+  )
+  parser.add_argument(
+      '--max_protein_len',
+      type=int,
+      default=1024,
+      help='filter out proteins whose length>LEN.'
+  )
+  parser.add_argument(
+      '--max_msa_size', type=int, default=1024, help='filter out MSAs whose size>SIZE.'
+  )
+  parser.add_argument(
+      '--max_var_size', type=int, default=None, help='filter out VARs whose size>SIZE.'
+  )
+  parser.add_argument(
+      '--num_var_task', type=int, default=1, help='number of tasks in VARs.'
+  )
+  parser.add_argument(
+      '--min_crop_len',
+      type=int,
+      default=None,
+      help='filter out proteins whose length<LEN.'
+  )
+  parser.add_argument(
+      '--max_crop_len',
+      type=int,
+      default=None,
+      help='filter out proteins whose length>LEN.'
+  )
+  parser.add_argument(
+      '--crop_algorithm',
+      type=str,
+      default='random',
       choices=['random', 'domain', 'knn'],
-      help='type of crop algorithm.')
-  parser.add_argument('--crop_probability', type=float, default=0.0,
+      help='type of crop algorithm.'
+  )
+  parser.add_argument(
+      '--crop_probability',
+      type=float,
+      default=0.0,
       help='crop protein with probability CROP_PROBABILITY when it\'s '
-          'length>MIN_CROP_LEN.')
-  parser.add_argument('--pseudo_linker_prob', type=float, default=0.0,
-      help='enable loading complex data.')
-  parser.add_argument('--msa_as_seq_prob', type=float, default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.')
-  parser.add_argument('--msa_as_seq_topn', type=int, default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.')
-  parser.add_argument('--msa_as_seq_clustering', action='store_true',
-      help='take msa_{i} as sequence sampling from clusters.')
-  parser.add_argument('--msa_as_seq_min_alr', type=float, default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.')
+      'length>MIN_CROP_LEN.'
+  )
+  parser.add_argument(
+      '--pseudo_linker_prob',
+      type=float,
+      default=0.0,
+      help='enable loading complex data.'
+  )
+  parser.add_argument(
+      '--msa_as_seq_prob',
+      type=float,
+      default=0.0,
+      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.'
+  )
+  parser.add_argument(
+      '--msa_as_seq_topn',
+      type=int,
+      default=None,
+      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.'
+  )
+  parser.add_argument(
+      '--msa_as_seq_clustering',
+      action='store_true',
+      help='take msa_{i} as sequence sampling from clusters.'
+  )
+  parser.add_argument(
+      '--msa_as_seq_min_alr',
+      type=float,
+      default=None,
+      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.'
+  )
 
-  parser.add_argument('-b', '--batch_size', type=int, default=1,
-      help='batch size.')
-  parser.add_argument('--num_workers', type=int, default=1,
-      help='number of workers.')
+  parser.add_argument('-b', '--batch_size', type=int, default=1, help='batch size.')
+  parser.add_argument('--num_workers', type=int, default=1, help='number of workers.')
 
-  parser.add_argument('--model_recycles', type=int, default=0,
-      help='number of recycles in profold2.')
-  parser.add_argument('--model_shard_size', type=int, default=None,
-      help='shard size in evoformer model.')
+  parser.add_argument(
+      '--model_recycles', type=int, default=0, help='number of recycles in profold2.'
+  )
+  parser.add_argument(
+      '--model_shard_size',
+      type=int,
+      default=None,
+      help='shard size in evoformer model.'
+  )
 
   parser.add_argument('--save_pdb', action='store_true', help='save pdb files.')
-  parser.add_argument('--amp_enabled', action='store_true',
-      help='enable automatic mixed precision.')
-  parser.add_argument('--enable_profiler', action='store_true',
-      help='enable profiler.')
-  parser.add_argument('--enable_memory_snapshot', action='store_true',
-      help='enable memory snapshot.')
+  parser.add_argument(
+      '--amp_enabled', action='store_true', help='enable automatic mixed precision.'
+  )
+  parser.add_argument('--enable_profiler', action='store_true', help='enable profiler.')
+  parser.add_argument(
+      '--enable_memory_snapshot', action='store_true', help='enable memory snapshot.'
+  )
+
 
 if __name__ == '__main__':
   import argparse
@@ -255,20 +334,27 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
   # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None,
-      help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0,
-      help='rank of the node.')
-  parser.add_argument('--local_rank', type=int, default=None,
-      help='local rank of xpu, default=None')
-  parser.add_argument('--init_method', type=str,
+  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
+  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
+  parser.add_argument(
+      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
+  )
+  parser.add_argument(
+      '--init_method',
+      type=str,
       default='file:///tmp/profold2.dist',
       help='method to initialize the process group, '
-           'default=\'file:///tmp/profold2.dist\'')
+      'default=\'file:///tmp/profold2.dist\''
+  )
 
   # output dir
-  parser.add_argument('-o', '--prefix', type=str, default='.',
-      help='prefix of out directory, default=\'.\'')
+  parser.add_argument(
+      '-o',
+      '--prefix',
+      type=str,
+      default='.',
+      help='prefix of out directory, default=\'.\''
+  )
   add_arguments(parser)
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 

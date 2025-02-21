@@ -11,6 +11,7 @@ from profold2.utils import default, exists, version_cmp
 
 logger = logging.getLogger(__name__)
 
+
 @contextlib.contextmanager
 def memory_snapshot(enabled, filename=None, max_entries=None, device=None):
   if enabled and not torch.cuda.is_available():
@@ -26,8 +27,7 @@ def memory_snapshot(enabled, filename=None, max_entries=None, device=None):
     # Start recording memory snapshot history, initialized with a buffer
     # capacity of 1,000,000 memory events, via the `max_entries` field.
     logger.info('Starting snapshot (device=%s) record_memory_history', device)
-    torch.cuda.memory._record_memory_history(max_entries=max_entries,
-                                             device=device)
+    torch.cuda.memory._record_memory_history(max_entries=max_entries, device=device)
 
     yield
 
@@ -42,8 +42,7 @@ def memory_snapshot(enabled, filename=None, max_entries=None, device=None):
           else:
             filename = f'{filename}_{device}'
         filename = f'{filename}.pkl'
-      logger.debug('Saving snapshot (device=%s) to local file: %s',
-                   device, filename)
+      logger.debug('Saving snapshot (device=%s) to local file: %s', device, filename)
 
       torch.cuda.memory._dump_snapshot(filename)
     except Exception as e:

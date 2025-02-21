@@ -1,3 +1,4 @@
 [style]
-based_on_style = google
+based_on_style = facebook
 indent_width = 2
+column_limit = 88

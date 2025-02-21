@@ -33,24 +33,16 @@ def autocast_ctx(cond):
   else:
     yield
 
+
 class _WorkerLogRecordFactory(object):
   """Preprocess tensor args before creating a LogRecord
   """
   def __init__(self, record_factory):
     self.record_factory = record_factory
 
-  def __call__(self,
-               name,
-               level,
-               fn,
-               lno,
-               msg,
-               args,
-               exc_info,
-               func=None,
-               sinfo=None,
-               **kwargs):
-
+  def __call__(
+      self, name, level, fn, lno, msg, args, exc_info, func=None, sinfo=None, **kwargs
+  ):
     def _tensor_to_list(x):
       if isinstance(x, torch.Tensor):
         if len(x.shape) > 1 or (len(x.shape) == 1 and x.shape[0] != 1):
@@ -60,16 +52,10 @@ class _WorkerLogRecordFactory(object):
 
     if exists(args):
       args = tuple(map(_tensor_to_list, args))
-    return self.record_factory(name,
-                               level,
-                               fn,
-                               lno,
-                               msg,
-                               args,
-                               exc_info,
-                               func=func,
-                               sinfo=sinfo,
-                               **kwargs)
+    return self.record_factory(
+        name, level, fn, lno, msg, args, exc_info, func=func, sinfo=sinfo, **kwargs
+    )
+
 
 class _WorkerLogFilter(logging.Filter):
   def __init__(self, rank=-1):
@@ -80,6 +66,7 @@ class _WorkerLogFilter(logging.Filter):
     if self._rank != -1:
       record.msg = f'Rank {self._rank} | {record.msg}'
     return True
+
 
 class _WorkerLogging(object):
   """Initialize distibuted logger
@@ -93,21 +80,19 @@ class _WorkerLogging(object):
         logging.StreamHandler(),
         logging.FileHandler(
             os.path.join(
-                args.prefix,
-                f'{work_fn.__name__}_{args.node_rank}{local_rank}.log'))]
+                args.prefix, f'{work_fn.__name__}_{args.node_rank}{local_rank}.log'
+            )
+        )
+    ]
 
     level = logging.DEBUG if args.verbose else logging.INFO
     fmt = '%(asctime)-15s [%(levelname)s] (%(filename)s:%(lineno)d) %(message)s'
 
-    logging.basicConfig(
-        format=fmt,
-        level=level,
-        handlers=handlers)
+    logging.basicConfig(format=fmt, level=level, handlers=handlers)
 
     if exists(args.nnodes):
       self.queue = mp.Queue(-1)
-      self.listener = QueueListener(self.queue, *handlers,
-          respect_handler_level=True)
+      self.listener = QueueListener(self.queue, *handlers, respect_handler_level=True)
     else:
       self.queue = None
       self.listener = None
@@ -119,6 +104,7 @@ class _WorkerLogging(object):
   def stop(self):
     if exists(self.listener):
       self.listener.stop()
+
 
 class WorkerXPU(object):
   """Wrap distibuted XPU(GPU,MLU etc)
@@ -170,25 +156,24 @@ class WorkerXPU(object):
       if 'NCCL_TIMEOUT' in os.environ:
         timeout = int(os.environ['NCCL_TIMEOUT'])
       logging.info(
-              'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
-              'init_method=%s, timeout=%s(s)',
-              self.device,
-              WorkerXPU.device_count(),
-              self.rank,
-              WorkerXPU.world_size(self.args.nnodes),
-              self.args.init_method,
-              timeout)
+          'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
+          'init_method=%s, timeout=%s(s)',
+          self.device, WorkerXPU.device_count(), self.rank,
+          WorkerXPU.world_size(self.args.nnodes), self.args.init_method, timeout
+      )
       torch.distributed.init_process_group(
-              backend='nccl',
-              init_method=self.args.init_method,
-              timeout=timedelta(seconds=timeout),
-              rank=self.rank,
-              world_size=WorkerXPU.world_size(self.args.nnodes))
+          backend='nccl',
+          init_method=self.args.init_method,
+          timeout=timedelta(seconds=timeout),
+          rank=self.rank,
+          world_size=WorkerXPU.world_size(self.args.nnodes)
+      )
       torch.cuda.set_device(self.local_rank)
 
   def destroy_process_group(self):
     if self.is_available():
       torch.distributed.destroy_process_group()
+
 
 class WorkerModel(object):
   """Wrap distibuted model
@@ -210,10 +195,12 @@ class WorkerModel(object):
       model.to(self.xpu.device)
 
       logging.info('wrap model with nn.parallel.DistributedDataParallel class')
-      model = nn.parallel.DistributedDataParallel(model,
-                                                  device_ids=[self.xpu.device],
-                                                  output_device=self.xpu.device,
-                                                  find_unused_parameters=False)
+      model = nn.parallel.DistributedDataParallel(
+          model,
+          device_ids=[self.xpu.device],
+          output_device=self.xpu.device,
+          find_unused_parameters=False
+      )
       model._set_static_graph()  # pylint: disable=protected-access
 
     return model
@@ -230,9 +217,9 @@ class WorkerModel(object):
         dim_head=checkpoint['evoformer_head_dim'],
         accept_msa_attn=checkpoint.get('evoformer_accept_msa_attn', True),
         accept_frame_attn=checkpoint.get('evoformer_accept_frame_attn', False),
-        accept_frame_update=checkpoint.get('evoformer_accept_frame_update',
-                                           False),
-        headers=checkpoint['headers'])
+        accept_frame_update=checkpoint.get('evoformer_accept_frame_update', False),
+        headers=checkpoint['headers']
+    )
 
     # optional args.
     for key in ('num_tokens', 'recycling_single_repr', 'recycling_pos'):
@@ -246,6 +233,7 @@ class WorkerModel(object):
     model.eval()
 
     return checkpoint['feats'], model
+
 
 class WorkerFunction(object):
   """Wrap the distibuted function
@@ -293,6 +281,7 @@ class WorkerFunction(object):
     #--------------
     xpu.destroy_process_group()
 
+
 def main(args, fn):  # pylint: disable=redefined-outer-name
   if exists(args.nnodes):
     mp.set_start_method('spawn', force=True)
@@ -316,9 +305,12 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
   work_fn = WorkerFunction(fn, work_log.queue)
   if exists(args.nnodes):
     #mp.set_start_method('spawn', force=True)
-    mp.spawn(work_fn, args=(args,),
+    mp.spawn(
+        work_fn,
+        args=(args, ),
         nprocs=WorkerXPU.device_count() if WorkerXPU.device_count() > 0 else 1,
-        join=True)
+        join=True
+    )
   else:
     work_fn(args.local_rank, args)
 
@@ -326,10 +318,8 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
     fn.postprocess(args)
 
   logging.info('-----------------')
-  logging.info('Resources(myself): %s',
-      resource.getrusage(resource.RUSAGE_SELF))
-  logging.info('Resources(children): %s',
-      resource.getrusage(resource.RUSAGE_CHILDREN))
+  logging.info('Resources(myself): %s', resource.getrusage(resource.RUSAGE_SELF))
+  logging.info('Resources(children): %s', resource.getrusage(resource.RUSAGE_CHILDREN))
   logging.info('-----------------')
 
   #--------------

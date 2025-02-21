@@ -16,13 +16,15 @@ import pandas as pd
 def parse_tmscore_output(src, terms: tuple):
   if src[:6] == ' There':
     # Case: There is no common residues in the input structures
-    result = dict(zip(terms, (float('nan'),) * len(terms)))
+    result = dict(zip(terms, (float('nan'), ) * len(terms)))
     return result
   result = {}
-  start_keyword = dict(tmscore='TM-score    = ',
-                       gdt='GDT-TS-score= ',
-                       length='Length=  ',
-                       rmsd='RMSD of  the common residues=')
+  start_keyword = dict(
+      tmscore='TM-score    = ',
+      gdt='GDT-TS-score= ',
+      length='Length=  ',
+      rmsd='RMSD of  the common residues='
+  )
   end_char = dict(tmscore=' ', gdt=' ', length='\n', rmsd='\n')
   for term in terms:
     assert term in end_char
@@ -48,25 +50,28 @@ def parse_deepscore_output(src, terms):
   all_scores['length'] = float(lines[length_line].split('length=')[-1].strip())
   return {k: all_scores[key_name[k]] for k in terms}
 
+
 def parse_tmalign_output(src, terms):
   del terms
   attr_parsers = {
       'length1':
-          (int,
-           re.compile('Length of Chain_1:\\s*(?P<value>(\\d+))\\s*residues')),
+          (int, re.compile('Length of Chain_1:\\s*(?P<value>(\\d+))\\s*residues')),
       'length2':
-          (int,
-           re.compile('Length of Chain_2:\\s*(?P<value>(\\d+))\\s*residues')),
-      'tmscore1': (
-          float,
-          re.compile(
-              'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
-          )),
-      'tmscore2': (
-          float,
-          re.compile(
-              'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
-          )),
+          (int, re.compile('Length of Chain_2:\\s*(?P<value>(\\d+))\\s*residues')),
+      'tmscore1':
+          (
+              float,
+              re.compile(
+                  'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
+              )
+          ),
+      'tmscore2':
+          (
+              float,
+              re.compile(
+                  'TM-score=\\s*(?P<value>(0\\.\\d+))\\s*\\(if normalized by length of Chain_1\\)'  # pylint: disable=line-too-long
+              )
+          ),
   }
   all_scores = {}
   for line in map(lambda x: x.strip(), src.splitlines()):
@@ -74,12 +79,14 @@ def parse_tmalign_output(src, terms):
       m = p.match(line)
       if m:
         all_scores[key] = trans(m.group('value'))
-  key_name = dict(tmscore=('tmscore1', 'tmscore2', max),
-                  length=('length1', 'length2', min))
+  key_name = dict(
+      tmscore=('tmscore1', 'tmscore2', max), length=('length1', 'length2', min)
+  )
   return {
       k: f(all_scores[v1], all_scores[v2])  # pylint: disable=not-callable
       for k, (v1, v2, f) in key_name.items()
   }
+
 
 def parse_lddt_output(src, terms):
   all_scores = {}
@@ -94,8 +101,9 @@ def parse_lddt_output(src, terms):
 
 
 def run_scorer(exe_path, predicted_path, gt_path, terms):
-  scorer_process = subprocess.run([exe_path, predicted_path, gt_path],
-                                  stdout=subprocess.PIPE, check=True)
+  scorer_process = subprocess.run(
+      [exe_path, predicted_path, gt_path], stdout=subprocess.PIPE, check=True
+  )
   f = io.TextIOWrapper(io.BytesIO(scorer_process.stdout))
   exe_name, _ = os.path.splitext(os.path.basename(exe_path))
   if exe_name == 'DeepScore':
@@ -144,11 +152,14 @@ def main(args):  # pylint: disable=redefined-outer-name
         protein_ids.append((protein_id, pdb_file, native_file))
   else:
     assert not os.path.isdir(args.native_dir)
-    protein_ids = [(f'{args.model_dir}->{args.native_dir}', args.model_dir,
-                    args.native_dir)]
-  df = pd.DataFrame(index=list(map(lambda x: x[0], protein_ids)),
-                    columns=name_map.values(),
-                    dtype='float')
+    protein_ids = [
+        (f'{args.model_dir}->{args.native_dir}', args.model_dir, args.native_dir)
+    ]
+  df = pd.DataFrame(
+      index=list(map(lambda x: x[0], protein_ids)),
+      columns=name_map.values(),
+      dtype='float'
+  )
   for i, (pid, model_f, native_f) in enumerate(protein_ids, start=1):
     if args.verbose:
       print(f'{i}/{len(protein_ids)}: {pid}')
@@ -169,37 +180,40 @@ if __name__ == '__main__':
 
   parser = argparse.ArgumentParser()
 
-  parser.add_argument('model_dir',
-                      nargs='?',
-                      help='The dir holding the predicted protein structures.')
-  parser.add_argument('native_dir',
-                      nargs='?',
-                      help='The dir holding the native protein structures.')
-  parser.add_argument('-l',
-                      '--pairwise_list',
-                      default=None,
-                      help='The dir holding the native protein structures.')
+  parser.add_argument(
+      'model_dir', nargs='?', help='The dir holding the predicted protein structures.'
+  )
+  parser.add_argument(
+      'native_dir', nargs='?', help='The dir holding the native protein structures.'
+  )
+  parser.add_argument(
+      '-l',
+      '--pairwise_list',
+      default=None,
+      help='The dir holding the native protein structures.'
+  )
   parser.add_argument(
       '-o',
       '--output',
       type=str,
-      help=
-      'The output file (.csv) of scores of each predicted protein structure.')
-  parser.add_argument('--gdt',
-                      action='store_true',
-                      help='Get GDT-TS score as long as TMscore.')
-  parser.add_argument('--rmsd',
-                      action='store_true',
-                      help='Get RMSD score as long as TMscore.')
-  parser.add_argument('-e',
-                      '--exe_path',
-                      type=str,
-                      default='TMscore',
-                      help='The path of binary `TMscore`')
-  parser.add_argument('-v',
-                      '--verbose',
-                      action='store_true',
-                      help='Get verbose information')
+      help='The output file (.csv) of scores of each predicted protein structure.'
+  )
+  parser.add_argument(
+      '--gdt', action='store_true', help='Get GDT-TS score as long as TMscore.'
+  )
+  parser.add_argument(
+      '--rmsd', action='store_true', help='Get RMSD score as long as TMscore.'
+  )
+  parser.add_argument(
+      '-e',
+      '--exe_path',
+      type=str,
+      default='TMscore',
+      help='The path of binary `TMscore`'
+  )
+  parser.add_argument(
+      '-v', '--verbose', action='store_true', help='Get verbose information'
+  )
 
   args = parser.parse_args()
 
