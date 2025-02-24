@@ -11,7 +11,7 @@ from torch.distributions import categorical
 import torch.nn.functional as F
 from einops import repeat
 
-from profold2.model import functional, potts
+from profold2.model import potts
 from profold2.utils import exists
 
 
@@ -44,7 +44,7 @@ def init_masks(
           `(num_batch, num_nodes)`.
   """
   if not exists(S) and exists(mask_sample):
-    raise Exception("To use masked sampling, please provide an initial S")
+    raise Exception('To use masked sampling, please provide an initial S')
 
   m = S.shape[-2] if exists(S) else 1
   logits_init = repeat(logits_init, 'b i d -> b m i d', m=m)
@@ -157,7 +157,7 @@ def from_potts(
       proposal=proposal
   )
 
-  for i, T_i in enumerate(tqdm(temperatures, desc="Potts Sampling")):
+  for T_i in tqdm(temperatures, desc='Potts Sampling'):
     # Cycle through Gibbs updates random sites to the update with fixed prob
     mask_update = torch.ones_like(S, dtype=torch.bool)
     if exists(mask_mutatable):
@@ -179,23 +179,3 @@ def from_potts(
     U, _ = potts.energy(S, h, J, mask)
 
   return S, U
-
-
-if __name__ == '__main__':
-  from profold2.common import residue_constants
-  from profold2.model import complexity
-
-  b, m, n = 2, 5, 50
-  S = torch.randint(0, len(residue_constants.restypes_with_x_and_gap), size=(b, m, n))
-  F.one_hot(
-      S.long(), num_classes=len(residue_constants.restypes_with_x_and_gap)
-  )
-  h = torch.rand(b, n, len(residue_constants.restypes_with_x_and_gap))
-  J = torch.rand(b, n, n, len(residue_constants.restypes_with_x_and_gap), len(residue_constants.restypes_with_x_and_gap))
-  C = torch.ones(b, n)
-  mask = torch.ones(b, 1, n)
-
-  penalty_func = lambda _S: complexity.complexity_lcp(_S, C, mask)
-  # compositions(S, C, mask)
-  S, U = from_potts(h, J, mask, S=S, penalty_func=penalty_func)
-  print(S)

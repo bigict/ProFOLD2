@@ -8,10 +8,6 @@ import torch.nn.functional as F
 
 from profold2.utils import exists
 
-def predict(
-    S: torch.Tensor,
-):
-  pass
 
 def energy(
     S: torch.Tensor, h: torch.Tensor, J: torch.Tensor, mask: torch.Tensor
@@ -29,9 +25,7 @@ def energy(
       U (torch.Tensor): Potts total energies with shape `(num_batch)`.
           Lower energies are more favorable.
   """
-  S = F.one_hot(
-      S.long(), num_classes=h.shape[-1]
-  ).float() * mask[..., None]
+  S = F.one_hot(S.long(), num_classes=h.shape[-1]).float() * mask[..., None]
 
   J_i = torch.einsum('b m j d,b i j c d -> b m i c', S, J)
   U_i = h[..., None, :, :] + J_i
@@ -81,7 +75,7 @@ def _proposal_dlmc(
     penalty_func=None,
     differentiable_penalty: bool = True,
     dt: float = 0.1,
-    balancing_func:str = 'sigmoid',
+    balancing_func: str = 'sigmoid',
 ) -> Tuple[torch.Tensor, torch.Tensor]:
   # Compute energy gap
   U, U_i = energy(S, h, J, mask)
@@ -120,7 +114,6 @@ def _proposal_dlmc(
   # Compute transition probability
   logP_ij = logP_j + torch.log(-(-dt * rate).expm1())
   p_flip = torch.sum((1.0 - O) * logP_ij.exp(), dim=-1, keepdim=True)
-
 
   # DEBUG:
   # flux = ((1. - O) * torch.exp(log_Q_ij)).mean([1,2], keepdim=True)
