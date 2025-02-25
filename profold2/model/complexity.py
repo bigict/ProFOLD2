@@ -48,7 +48,7 @@ def compositions(
       N (torch.Tensor): Local counts with shape
           `(num_batch, num_residues - w + 1, alphabet)`
   """
-  b, m, n, _ = S.shape
+  b, _, n, _ = S.shape
 
   # Build neighborhoods and masks
   kx = torch.arange(w, device=S.device) - w // 2
@@ -178,7 +178,7 @@ def estimate_entropy(
 
 if __name__ == '__main__':
   from profold2.common import residue_constants
-  
+
   b, m, n = 2, 5, 50
   S = torch.randint(0, len(residue_constants.restypes_with_x_and_gap), size=(b, m, n))
   S = F.one_hot(
