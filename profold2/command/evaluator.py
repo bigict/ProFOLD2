@@ -99,8 +99,9 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         dump_pkl['motifs'] = tensor_to_numpy(r.headers['fitness']['motifs'])
         # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
         #              r.headers['fitness']['motifs'].tolist())
-      if 'seq_color' in batch:
-        dump_pkl['color'] = tensor_to_numpy(batch['seq_color'])
+      for key in ('seq', 'mask', 'seq_color'):
+        if key in batch:
+          dump_pkl[key] = tensor_to_numpy(batch[key])
         # logging.info('no: %d pid: %s, fitness: color=%s', idx, fasta_name,
         #              batch['seq_color'].tolist())
       if 'variant_label' in batch:
@@ -125,6 +126,10 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         wij = tensor_to_numpy(r.headers['coevolution']['wij'])
         bi = tensor_to_numpy(r.headers['coevolution']['bi'])
         dump_pkl['coevolution'] = {'wij': wij, 'bi': bi}
+        if 'wab' in r.headers['coevolution']:
+          dump_pkl['coevolution']['wab'] = tensor_to_numpy(
+              r.headers['coevolution']['wab']
+          )
 
       with open(os.path.join(args.prefix, f'{fasta_name}_var.pkl'), 'wb') as f:
         pickle.dump(dump_pkl, f)

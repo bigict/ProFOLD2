@@ -1152,6 +1152,7 @@ class FitnessHead(nn.Module):
       task_model=None,
       task_num=1,
       task_weight=None,
+      task_dim_hidden=None,
       num_var_as_ref=0,
       label_threshold=0.,
       label_epsilon=0.,
@@ -1170,9 +1171,10 @@ class FitnessHead(nn.Module):
     self.register_buffer('task_weight', task_weight, persistent=False)
     if exists(task_model):
       assert task_model in ('MMoE', )
+      dim_hidden = default(task_dim_hidden, dim_single)
       self.task_gating = nn.Sequential(
-          nn.Linear(dim_single, dim_single), nn.GELU(), nn.LayerNorm(dim_single),
-          nn.Linear(dim_single, task_num, bias=False)
+          nn.Linear(dim_single, dim_hidden), nn.GELU(), nn.LayerNorm(dim_hidden),
+          nn.Linear(dim_hidden, task_num, bias=False)
       )
     else:
       self.task_gating = None
