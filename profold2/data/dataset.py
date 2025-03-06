@@ -139,15 +139,28 @@ def _make_var_pid(desc):
   return var_pid
 
 
+_weight_pattern = '^weight=(.+)'
+
+
 def _make_var_choice(var_list, attr_list, max_var_depth, defval=1.0):
   assert max_var_depth > 0
 
-  def _var_w(var_pid):
+  def _var_w(var_desc):
+    # 1. parse description
+    for s in var_desc.split():
+      r = re.match(_weight_pattern, s)
+      if r:
+        return float(r.group(1))
+
+    # 2.lookup dict
+    var_pid = _make_var_pid(var_desc)
     if exists(attr_list) and var_pid in attr_list:
       return attr_list[var_pid].get('weight', defval)
+
+    # 3. default value
     return defval
 
-  w = np.asarray([_var_w(var_pid) for var_pid, *_ in var_list])
+  w = np.asarray([_var_w(var_desc) for var_desc, *_ in var_list])
   w /= (np.sum(w) + 1e-8)
   new_order = np.random.choice(len(var_list), size=max_var_depth, replace=False, p=w)
   return new_order
@@ -189,7 +202,7 @@ def _make_var_features(sequences, descriptions, attr_dict=None, max_var_depth=No
   var_depth = len(sequences)
   if exists(max_var_depth) and len(sequences) > max_var_depth:
     if max_var_depth > 1:
-      var_list = [_make_var_pid(desc) for desc in descriptions[1:]]
+      var_list = [(desc, ) for desc in descriptions[1:]]  # FIXME: tuple or list
       new_order = _make_var_choice(var_list, attr_dict, max_var_depth - 1)
       sequences = sequences[:1] + [sequences[i + 1] for i in new_order]
       descriptions = descriptions[:1] + [descriptions[i + 1] for i in new_order]
