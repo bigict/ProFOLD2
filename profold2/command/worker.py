@@ -254,7 +254,7 @@ class WorkerFunction(object):
       root = logging.getLogger()
       ctx_handler = QueueHandler(self.log_queue)
       if xpu.is_available():
-        ctx_filter = _WorkerLogFilter(rank)
+        ctx_filter = _WorkerLogFilter(xpu.rank)
         ctx_handler.addFilter(ctx_filter)
       root.addHandler(ctx_handler)
 
