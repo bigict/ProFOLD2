@@ -232,6 +232,30 @@ def _make_var_features(sequences, descriptions, attr_dict=None, max_var_depth=No
   )
 
 
+def _make_task_mask(
+    mask, chain_name_list, chain_length_list, task_def=None, task_num=1
+):
+  variant_task_mask = [[] for _ in range(task_num)]
+  if exists(task_def):
+    task_idx = functools.reduce(lambda x, y: x + [x[-1] + y], chain_length_list, [0])
+    for i, chain in enumerate(chain_name_list):
+      chain, *_ = chain.split('@')
+      task_list = set(task_def.get(chain, []))
+      for j in range(task_num):
+        if j in task_list:
+          variant_task_mask[j].append(mask[task_idx[i]:task_idx[i + 1]])
+        else:
+          variant_task_mask[j].append(
+              torch.zeros(chain_length_list[i], dtype=torch.bool, device=mask.device)
+          )
+    for j in range(task_num):
+      variant_task_mask[j] = torch.cat(variant_task_mask[j], dim=0)
+  else:
+    for j in range(task_num):
+      variant_task_mask[j] = mask
+  return torch.stack(variant_task_mask, dim=-1)
+
+
 def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
   residue_index = torch.arange(len(sequence), dtype=torch.int)
   residue_index = parse_seq_index(description, sequence, residue_index)
@@ -1273,6 +1297,38 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['clip'] = _protein_crop_fmt(ret['clip'])
     return ret
 
+  def _multimer_yield_cluster(self, var_pid):
+    for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
+      var_pid, c = decompose_pid(var_pid)
+      if self.has_chain(var_pid, c):
+        yield var_pid, c
+
+  @functools.lru_cache(
+      maxsize=int(os.getenv('profold2_data_build_chain_lru_maxsize', 0))
+  )
+  def _multimer_build_chain_list(self, protein_id, var_list):
+    def _is_aligned(k, chain_list):
+      if k != protein_id and k in self.attr_list:
+        for c, *_ in chain_list:
+          x = self.get_chain_list(compose_pid(k, c))
+          # FIX: some chains may be removed from chain.idx
+          if exists(x) and len(set(x) & set(chain_list)) == len(x):
+            return True
+      return False
+
+    var_chain_list = defaultdict(list)
+    for var_pid in var_list:
+      for pid, c in self._multimer_yield_cluster(var_pid):
+        var_chain_list[pid].append(c)
+
+    with timing(
+        f'ProteinStructureDataset.filter_chain_list {protein_id}', logger.debug
+    ):
+      var_chain_list = [
+          (k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)
+      ]
+    return var_chain_list
+
   def get_multimer(self, protein_id, chains):
     assert len(chains) > 1
 
@@ -1428,17 +1484,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       with timing(
           f'ProteinStructureDataset.build_chain_list {protein_id}', logger.debug
       ):
-        var_chain_list = defaultdict(list)
-        for var_pid in var_dict:
-          for pid, c in _yield_cluster(var_pid):
-            var_chain_list[pid].append(c)
-
-      with timing(
-          f'ProteinStructureDataset.filter_chain_list {protein_id}', logger.debug
-      ):
-        var_chain_list = [
-            (k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)
-        ]
+        var_chain_list = self._multimer_build_chain_list(
+            pid, tuple(sorted(var_dict.keys()))
+        )
       logger.debug('# of variants: %s', len(var_chain_list))
 
       if exists(self.max_var_depth) and self.max_var_depth < len(var_chain_list) + 1:
@@ -1464,29 +1512,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['variant_pid'] = [ret['pid']]
-
-      def _make_task_mask(mask):
-        variant_task_mask = [[] for _ in range(self.var_task_num)]
-        if exists(task_def):
-          task_idx = functools.reduce(lambda x, y: x + [x[-1] + y], ret['length'], [0])
-          for i, chain in enumerate(chains):
-            chain, *_ = chain.split('@')
-            task_list = set(task_def.get(chain, []))
-            for j in range(self.var_task_num):
-              if j in task_list:
-                variant_task_mask[j].append(mask[task_idx[i]:task_idx[i + 1]])
-              else:
-                variant_task_mask[j].append(
-                    torch.zeros(ret['length'][i], dtype=torch.bool)
-                )
-          for j in range(self.var_task_num):
-            variant_task_mask[j] = torch.cat(variant_task_mask[j], dim=0)
-        else:
-          for j in range(self.var_task_num):
-            variant_task_mask[j] = mask
-        return torch.stack(variant_task_mask, dim=-1)
-
-      ret['variant_task_mask'] = [_make_task_mask(ret['mask'])]
+      ret['variant_task_mask'] = [
+          _make_task_mask(
+              ret['mask'],
+              chains,
+              ret['length'],
+              task_def=task_def,
+              task_num=self.var_task_num
+          )
+      ]
       for var_pid, chain_list in var_chain_list:
         variant, variant_mask = [None] * len(chains), [None] * len(chains)
         for idx, chain in enumerate(chains):
@@ -1508,7 +1542,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant'].append(torch.cat(variant, dim=-1))
         ret['variant_mask'].append(variant_mask)
         ret['variant_pid'].append(var_pid)
-        ret['variant_task_mask'].append(_make_task_mask(variant_mask))
+        ret['variant_task_mask'].append(
+            _make_task_mask(
+                variant_mask,
+                chains,
+                ret['length'],
+                task_def=task_def,
+                task_num=self.var_task_num
+            )
+        )
       for idx, field in enumerate(('variant', 'variant_mask', 'variant_task_mask')):
         ret[field] = torch.stack(ret[field], dim=0)
 

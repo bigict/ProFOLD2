@@ -16,14 +16,29 @@ from profold2.utils import *
 logger = logging.getLogger(__name__)
 
 
-def clipped_sigmoid_cross_entropy(logits, labels, alpha=1.0, gammar=0, epsilon=1e-7):
-  prob = torch.sigmoid(logits)
-  prob = torch.clamp(prob, min=epsilon, max=1. - epsilon)
+def binary_focal_loss_weight(probs, labels, gammar):
+  assert gammar > 0
+  p = probs * labels + (1. - probs) * (1. - labels)
+  return (1. - p) ** gammar
+
+
+def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0, epsilon=1e-7):
+  errors = F.binary_cross_entropy(probs, labels, reduction='none', pos_weight=alpha)
   if gammar > 0:  # focal loss enabled.
-    return -alpha * labels * (
-        (1. - prob)**gammar
-    ) * torch.log(prob) - (1. - labels) * (prob**gammar) * torch.log(1. - prob)
-  return -alpha * labels * torch.log(prob) - (1. - labels) * torch.log(1. - prob)
+    errors = errors * binary_focal_loss_weight(probs, labels, gammar)
+  return errors
+
+
+def sigmoid_cross_entropy_with_logits(
+    logits, labels, alpha=None, gammar=0, epsilon=1e-7
+):
+  errors = F.binary_cross_entropy_with_logits(
+      logits, labels, reduction='none', pos_weight=alpha
+  )
+  if gammar > 0:  # focal loss enabled.
+    probs = torch.clamp(torch.sigmoid(logits), min=epsilon, max=1. - epsilon)
+    errors = errors * binary_focal_loss_weight(probs, labels, gammar)
+  return errors
 
 
 def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
@@ -1144,6 +1159,7 @@ class FitnessHead(nn.Module):
       self,
       dim,
       mask='-',
+      log_softmax=False,
       softplus=False,
       prior_w=0.,
       prior_b=None,
@@ -1156,7 +1172,7 @@ class FitnessHead(nn.Module):
       num_var_as_ref=0,
       label_threshold=0.,
       label_epsilon=0.,
-      pos_weight=1.,
+      pos_weight=None,
       focal_loss=0.,
       shard_size=2048
   ):
@@ -1179,6 +1195,8 @@ class FitnessHead(nn.Module):
     else:
       self.task_gating = None
 
+    # log(\pi_{\theta}(s_w|s)/\pi_{\theat}(s_l|s)) strictly.
+    self.log_softmax = log_softmax
     if softplus:  # ensure that \sigma >= 0
       assert prior_w >= 0
       self.sigma = nn.Parameter(
@@ -1200,7 +1218,12 @@ class FitnessHead(nn.Module):
     self.num_var_as_ref = num_var_as_ref
     self.label_threshold = label_threshold
     self.label_epsilon = label_epsilon
-    self.pos_weight = pos_weight
+    if exists(pos_weight):
+      self.register_buffer(
+          'pos_weight', torch.full((task_num,), pos_weight), persistent=False
+      )
+    else:
+      self.pos_weight = None
     self.alpha = alpha
     self.focal_loss = focal_loss
     self.shard_size = shard_size
@@ -1250,8 +1273,12 @@ class FitnessHead(nn.Module):
             'b m j d,b i j c d,d -> b m i c', variant.float(), eij, self.mask
         )
       motifs = rearrange(ei, 'b i c -> b () i c') + hi
-      logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
-      # logits = torch.sum(self.sigma(logits[..., None]), dim=-1)
+      if self.log_softmax:
+        logits = torch.einsum(
+            'b m i c,b m i c -> b m i', F.log_softmax(motifs, dim=-1), variant.float()
+        )
+      else:
+        logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
       if self.return_motifs:
         return motifs, logits
       return None, logits
@@ -1282,6 +1309,7 @@ class FitnessHead(nn.Module):
       gating = F.sigmoid(self.task_gating(representations['single']))
     else:
       gating = None
+    r.update(gating=gating)
     if not self.training:
       if 'variant_task_mask' in batch:
         variant_mask = batch['variant_task_mask']
@@ -1291,8 +1319,6 @@ class FitnessHead(nn.Module):
       variant_logit = logits - logits[:, :1, ...]
       variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
       r.update(variant_logit=variant_logit)
-    else:
-      r.update(gating=gating)
 
     if exists(motifs):
       r.update(motifs=motifs)
@@ -1300,7 +1326,7 @@ class FitnessHead(nn.Module):
 
   def loss(self, value, batch):
     logits, logits_ref = value['logits'], None
-    gating = value['gating']
+    gating = value.get('gating')
     num_class = self.mask.shape[0]
     avg_error_motif = 0
 
@@ -1333,7 +1359,7 @@ class FitnessHead(nn.Module):
         num_var_as_ref = min(self.num_var_as_ref, label_num)
         if num_var_as_ref > 0:
           variant_weight = (
-              torch.sum(
+              torch.any(
                   (variant_label > self.label_threshold) * variant_label_mask, dim=-1
               )
           ) * label_mask
@@ -1403,7 +1429,7 @@ class FitnessHead(nn.Module):
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
     with autocast(enabled=False):
-      errors = clipped_sigmoid_cross_entropy(
+      errors = sigmoid_cross_entropy_with_logits(
           variant_logit.float(),
           variant_label.float(),
           alpha=self.pos_weight,
