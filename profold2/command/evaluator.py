@@ -15,7 +15,7 @@ from einops import rearrange
 from profold2.data import dataset
 from profold2.data.utils import pdb_save, tensor_to_numpy
 from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
-from profold2.utils import Kabsch, TMscore, timing
+from profold2.utils import Kabsch, TMscore, exists, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
@@ -99,6 +99,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         dump_pkl['motifs'] = tensor_to_numpy(r.headers['fitness']['motifs'])
         # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
         #              r.headers['fitness']['motifs'].tolist())
+      if 'gating' in r.headers['fitness'] and exists(r.headers['fitness']['gating']):
+        dump_pkl['gating'] = tensor_to_numpy(r.headers['fitness']['gating'])
       for key in ('seq', 'mask', 'seq_color'):
         if key in batch:
           dump_pkl[key] = tensor_to_numpy(batch[key])
