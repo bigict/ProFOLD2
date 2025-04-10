@@ -95,8 +95,8 @@ class DataPipeline:
       pdb70_database_path: str,
       template_featurizer: templates.TemplateHitFeaturizer,
       use_small_bfd: bool,
-      mgnify_max_hits: int = int(os.environ.get('PIPELINE_MGNIFY_MAX_HITS', 501)),
-      uniref_max_hits: int = int(os.environ.get('PIPELINE_UNIREF_MAX_HITS', 10000))
+      mgnify_max_hits: int = int(os.getenv('PIPELINE_MGNIFY_MAX_HITS', 501)),
+      uniref_max_hits: int = int(os.getenv('PIPELINE_UNIREF_MAX_HITS', 10000))
   ):
     """Constructs a feature dict for a given FASTA file."""
     self._use_small_bfd = use_small_bfd
@@ -243,6 +243,7 @@ class DataPipeline:
 
     seq_msa = []
     seen_sequences = set()
+    deduplicate = bool(os.getenv('PIPELINE_DEDUPLICATE', 1))
     for msa_index, (msa, name_list) in enumerate(
         [
             (uniref90_msa, uniref90_name_list), (mgnify_msa, mgnify_name_list),
@@ -252,7 +253,7 @@ class DataPipeline:
       # if not msa:
       #   raise ValueError(f'MSA {msa_index} must contain at least one sequence.')
       for sequence_index, (sequence, name) in enumerate(zip(msa, name_list)):
-        if sequence in seen_sequences:
+        if deduplicate and sequence in seen_sequences:
           continue
         seen_sequences.add(sequence)
         seq_msa.append((sequence, name))
