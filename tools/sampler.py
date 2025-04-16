@@ -11,6 +11,8 @@ import pickle
 from tqdm.auto import tqdm
 
 import torch
+import torch.nn.functional as F
+from einops import repeat
 
 from profold2.common import residue_constants
 from profold2.data.utils import decompose_pid
@@ -78,18 +80,37 @@ def main(args):  # pylint: disable=redefined-outer-name
     mask = torch.ones(b, n, device=device)
     penalty_func = lambda _S: complexity.complexity_lcp(_S, C, mask)  # pylint: disable=cell-var-from-loop
 
+    mask_sample, S_init = None, None
+    if exists(args.seq_init):
+      assert len(args.seq_init) == n
+      S_init = torch.as_tensor(
+          [
+              residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
+                residue_constants.HHBLITS_AA_TO_ID[res]] for res in args.seq_init
+          ],
+          dtype=torch.int,
+          device=device
+      )
+      S_init = repeat(S_init, "i -> b () i", b=b)
+      mask_sample = torch.sum(
+          m * F.one_hot(S_init.long(), num_classes=bi.shape[-1]).float(), dim=-1
+      ) == 0
+
     for cidx, _ in enumerate(
         tqdm(range(0, args.num_seqs, args.chunksize), desc='Chunked Sampling')
     ):
       num_seqs = min(args.chunksize, args.num_seqs - cidx * args.chunksize)
 
       S = torch.randint(0, c, size=(b, num_seqs, n), device=device)  # pylint: disable=invalid-name
+      if exists(mask_sample):
+        S = torch.where(mask_sample, S, S_init)
 
       X, U = sampler.from_potts(  # pylint: disable=invalid-name
           -bi,
           -wij,
           mask,
           S=S,
+          mask_sample=mask_sample,
           mask_ban=ban_S,
           num_sweeps=args.num_sweeps,
           temperature=args.temperature,
@@ -147,6 +168,9 @@ if __name__ == '__main__':
   )
   parser.add_argument(
       '-m', '--mask', type=str, default=None, help='list of amino acides to be masked.'
+  )
+  parser.add_argument(
+      '-s', '--seq_init', type=str, default=None, help='initial sequence.'
   )
   parser.add_argument(
       '--num_sweeps',

@@ -50,14 +50,14 @@ def init_masks(
   logits_init = repeat(logits_init, 'b i d -> b m i d', m=m)
 
   if exists(mask_sample):
-    O_init = F.one_hot(S.long(), num_class=logits_init.shape[-1]).float()
+    O_init = F.one_hot(S.long(), num_classes=logits_init.shape[-1]).float()
     if mask_sample.dim() == logits_init.dim():
       # Mutation-restricted sampling
       mask_zero = (torch.sum(mask_sample, dim=-1, keepdim=True) == 0)
       mask_S = ((mask_zero * O_init + mask_sample) > 0)
     elif mask_sample.dim() == logits_init.dim() - 1:
       # Position-restricted sampling
-      mask_S = mask_sample[..., None] + (1 - mask_sample[..., None]) * O_init
+      mask_S = mask_sample[..., None] + (~mask_sample[..., None]) * O_init
     else:
       raise NotImplementedError
   else:
