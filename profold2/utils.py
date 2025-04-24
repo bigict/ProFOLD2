@@ -23,6 +23,14 @@ def default(val, d):
   return d() if isfunction(d) else d
 
 
+def env(*keys, defval=None, func=None):
+  for key in keys:
+    value = os.getenv(key)
+    if exists(value):
+      return func(value) if exists(value) else value
+  return defval
+
+
 def version_cmp(x, y):
   for a, b in zip(x.split('.'), y.split('.')):
     if int(a) > int(b):

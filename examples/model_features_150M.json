@@ -1,0 +1,14 @@
+[
+  ["make_to_device", {
+      "fields":["seq", "seq_index", "mask", "coord", "coord_mask", "coord_plddt", "msa", "msa_mask", "num_msa", "msa_idx", "resolution", "variant", "variant_mask", "variant_task_mask", "variant_label", "variant_label_mask"],
+      "device":"%(device)s"}],
+  ["make_pseudo_beta", {}],
+  ["make_loss_weight", {"distogram_w": 0.5, "folding_w": 0.1}],
+  ["make_seq_profile", {"mask":"-", "density":true}],
+  ["make_backbone_affine", {}],
+  ["make_coord_plddt", {"threshold":0.5, "use_weighted_mask": true}],
+  ["make_coord_alt", {}],
+  ["make_coord_mask", {}],
+  ["make_affine", {}],
+  ["make_torsion_angles", {}]
+]

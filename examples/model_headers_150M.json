@@ -1,0 +1,24 @@
+[
+  ["coevolution", {"gating":true, "mask":"-", "num_states":8, "apc":true, "num_pivot":256.0, "focal_loss":2.0, "loss_max":512.0}, {"weight":1.0}],
+  ["profile", {"single_repr":"struct_module", "num_pivot":1024.0}, {"weight":1.0}],
+  ["distogram", {
+    "buckets_first_break": 2.3125,
+    "buckets_last_break": 21.6875,
+    "buckets_num":64,
+    "focal_loss":2.0}, {"weight":1.0}],
+  ["folding", {
+    "structure_module_depth":8,
+    "structure_module_heads":12,
+    "point_value_dim":8,
+    "qkv_use_bias":true,
+    "position_scale":10.0,
+    "fape_min":1e-4,
+    "fape_max":15.0,
+    "fape_z":10.0,
+    "dropout":0.1}, {"weight":0.4}],
+  ["lddt", {"num_channels":128, "max_resolution":5.0}, {"weight":0.01}],
+  ["violation", {}, {"weight":0.0}],
+  ["metric", {"cutoff":8}, {}],
+  ["tmscore", {}, {}],
+  ["confidence", {}, {}]
+]
