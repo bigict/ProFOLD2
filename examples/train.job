@@ -9,18 +9,45 @@
 #SBATCH --gpus-per-task=2                 # every process wants one GPU!
 #SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
 
-## current directory
-cwd=`readlink -f $0`
-cwd=`dirname ${cwd}`
+help() {
+  echo "usage: `basename $0` [-h] -p {slurm,local} -- [train_opt ...]"
+  echo "positional arguments:"
+  echo "    train_opt  train option."
+  echo "options:"
+  echo "    -h, --help show this help message and exit"
+  echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
+  echo "               type of platform. (default: slurm)"
+  exit $1
+}
+
+platform="slurm"
+
+ARGS=$(getopt -o "p:h" -l "--platform:help" -- "$@") || help 1
+eval "set -- ${ARGS}"
+while true; do
+  case "$1" in
+    (-p | --platform) platform="$2"; shift 2;;
+    (-h | --help) help 0 ;;
+    (--) shift 1; break;;
+    (*) help 1;
+  esac
+done
 
 ## get the first node name as master address - customized for vgg slurm
 ## e.g. master(gnodee[2-5],gnoded1) == gnodee2
 echo "==================================="
-echo "CWD=`pwd`"
-echo "NODELIST=${SLURM_NODELIST}"
-master_addr=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+echo "CurrentWorkDir=`pwd`"
+echo "Platform=${platform}"
+if [ x"${platform}" = x"slurm" ]; then
+  echo "NodeList=${SLURM_NODELIST}"
+  master_addr=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+  node_opts=""
+else
+  master_addr=${master_addr:-"127.0.0.1"}
+  node_opts="--nnodes=${nnodes:-1} --node_rank=${node_rank:-0}"
+fi
 master_port=${MASTER_PORT:-23456}
-echo "MASTER_ADDR=${master_addr}:${master_port}"
+echo "MasterAddr=${master_addr}:${master_port}"
 echo "==================================="
 
 ## init virtual environment if needed
@@ -37,7 +64,7 @@ train_data_opts="--train_data=${train_data} --train_idx=${train_idx} --train_dat
 eval_data="--eval_data=${data_home}/casp14/test-msa.zip"
 eval_data_opts="${eval_data} --eval_every=10"
 
-exp=${exp:-"150M"}
+exp=${exp:-"150m"}
 
 export AxialAttention_accept_edge_norm=0
 export AxialAttention_accept_kernel_fn=1
@@ -46,7 +73,11 @@ export AxialAttention_accept_kernel_fn=1
 export NCCL_SOCKET_FAMILY=AF_INET
 export NCCL_TIMEOUT=3600
 
-srun python ../main.py --init_method=tcp://${master_addr}:${master_port} train \
+runner=""
+if [ x"${platform}" = x"slurm" ]; then
+  runner="srun"
+fi
+${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} train \
     --prefix=${exp}.folding \
     --checkpoint_max_to_keep=10 \
     --num_batches=${num_batches:-10000} \

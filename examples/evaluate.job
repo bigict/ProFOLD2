@@ -1,0 +1,97 @@
+#!/bin/bash
+#SBATCH --job-name=profold2_evaluate      # identifier for the job listings
+#SBATCH --output=evaluate.log             # outputfile
+
+#SBATCH --nodes=2                         # number of nodes you want to use
+#SBATCH --gpus=4                          # count of GPUs required for the job
+#SBATCH --qos=gpugpu                      # quality of service
+#SBATCH --ntasks-per-node=1               # number of tasks to invoke on each node
+#SBATCH --gpus-per-task=2                 # every process wants one GPU!
+#SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
+
+help() {
+  echo "usage: `basename $0` [-h] -p {slurm,local} -- [eval_opt ...]"
+  echo "positional arguments:"
+  echo "    eval_opt   evaluate option."
+  echo "options:"
+  echo "    -h, --help show this help message and exit"
+  echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
+  echo "               type of platform. (default: slurm)"
+  exit $1
+}
+
+platform="slurm"
+
+ARGS=$(getopt -o "p:h" -l "--platform:help" -- "$@") || help 1
+eval "set -- ${ARGS}"
+while true; do
+  case "$1" in
+    (-p | --platform) platform="$2"; shift 2;;
+    (-h | --help) help 0 ;;
+    (--) shift 1; break;;
+    (*) help 1;
+  esac
+done
+
+## get the first node name as master address - customized for vgg slurm
+## e.g. master(gnodee[2-5],gnoded1) == gnodee2
+echo "==================================="
+echo "CurrentWorkDir=`pwd`"
+echo "Platform=${platform}"
+if [ x"${platform}" = x"slurm" ]; then
+  echo "NodeList=${SLURM_NODELIST}"
+  master_addr=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+  node_opts=""
+else
+  master_addr=${master_addr:-"127.0.0.1"}
+  node_opts="--nnodes=${nnodes:-1} --node_rank=${node_rank:-0}"
+fi
+master_port=${MASTER_PORT:-23456}
+echo "MasterAddr=${master_addr}:${master_port}"
+echo "==================================="
+
+## init virtual environment if needed
+conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
+. ${conda_home}/bin/activate profold2
+
+data_home="${HOME}/shared_hosts"
+
+eval_data="${data_home}/casp14/test-msa.zip"
+eval_idx=""
+eval_attr=""
+eval_opts="--eval_data=${eval_data} ${eval_idx} ${eval_attr}"
+
+exp=${exp:-"150m"}
+model_suffix=${model_suffix:-""}
+
+export AxialAttention_accept_edge_norm=0
+export AxialAttention_accept_kernel_fn=1
+# export AxialAttention_accept_kernel_dtype="float16"
+
+export NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_TIMEOUT=3600
+
+runner=""
+if [ x"${platform}" = x"slurm" ]; then
+  runner="srun"
+fi
+${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} evaluate \
+    --prefix=${exp}.eval${model_suffix} \
+    \
+    --model=${exp}.folding/model.pth${model_suffix} \
+    --model_recycles=2 \
+    --model_shard_size=256 \
+    \
+    --crop_probability=0 \
+    --min_protein_len=0 \
+    --max_protein_len=2048 \
+    --min_crop_len=716 \
+    --max_crop_len=716 \
+    --max_msa_size=1024 \
+    \
+    --num_workers=1 \
+    --batch_size=1 \
+    --prefetch_factor=4 \
+    \
+    ${eval_opts} \
+    $*
