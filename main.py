@@ -4,10 +4,10 @@
      ```
      for further help.
 """
-import os
 import argparse
 
 from profold2.command import (evaluator, predictor, trainer, worker)
+from profold2.utils import env
 
 _COMMANDS = [
     ('train', trainer.train, trainer.add_arguments),
@@ -21,12 +21,22 @@ def create_args():
   parser = argparse.ArgumentParser(formatter_class=formatter_class)
 
   # distributed args
-  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
+  parser.add_argument(
+      '--nnodes',
+      type=int,
+      default=env('SLURM_NNODES', defval=None, func=int),
+      help='number of nodes.'
+  )
+  parser.add_argument(
+      '--node_rank',
+      type=int,
+      default=env('SLURM_NODEID', defval=0, func=int),
+      help='rank of the node.'
+  )
   parser.add_argument(
       '--local_rank',
       type=int,
-      default=int(os.environ.get('LOCAL_RANK', 0)),
+      default=int(env('LOCAL_RANK', defval=0, func=int)),
       help='local rank of xpu.'
   )
   parser.add_argument(

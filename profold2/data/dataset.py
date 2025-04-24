@@ -28,7 +28,7 @@ from profold2.data.utils import (
     compose_pid, decompose_pid, domain_parser, parse_seq_index, seq_index_join,
     seq_index_split, str_seq_index
 )
-from profold2.utils import default, exists, timing
+from profold2.utils import default, env, exists, timing
 
 logger = logging.getLogger(__file__)
 
@@ -1304,7 +1304,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         yield var_pid, c
 
   @functools.lru_cache(
-      maxsize=int(os.getenv('profold2_data_build_chain_lru_maxsize', 0))
+      maxsize=int(env('profold2_data_build_chain_lru_maxsize', defval=0, func=int))
   )
   def _multimer_build_chain_list(self, protein_id, var_list):
     def _is_aligned(k, chain_list):

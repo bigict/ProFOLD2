@@ -1,0 +1,88 @@
+#!/bin/bash
+#SBATCH --job-name=profold2_train         # identifier for the job listings
+#SBATCH --output=train.log                # outputfile
+
+#SBATCH --nodes=2                         # number of nodes you want to use
+#SBATCH --gpus=4                          # count of GPUs required for the job
+#SBATCH --qos=gpugpu                      # quality of service
+#SBATCH --ntasks-per-node=1               # number of tasks to invoke on each node
+#SBATCH --gpus-per-task=2                 # every process wants one GPU!
+#SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
+
+## current directory
+cwd=`readlink -f $0`
+cwd=`dirname ${cwd}`
+
+## get the first node name as master address - customized for vgg slurm
+## e.g. master(gnodee[2-5],gnoded1) == gnodee2
+echo "==================================="
+echo "CWD=`pwd`"
+echo "NODELIST=${SLURM_NODELIST}"
+master_addr=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+master_port=${MASTER_PORT:-23456}
+echo "MASTER_ADDR=${master_addr}:${master_port}"
+echo "==================================="
+
+## init virtual environment if needed
+conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
+. ${conda_home}/bin/activate profold2
+
+data_home="${HOME}/shared_hosts"
+
+train_data="${data_home}/train.zip"
+train_idx="${data_home}/train_name.idx_100_casp"
+train_data_weights="./model_weights_2022111102_casp_contact_length_cluster"
+train_data_opts="--train_data=${train_data} --train_idx=${train_idx} --train_data_weights=${train_data_weights} --train_msa_as_seq_prob=0.25 --train_msa_as_seq_topn=256 --train_msa_as_seq_min_alr=0.85"
+
+eval_data="--eval_data=${data_home}/casp14/test-msa.zip"
+eval_data_opts="${eval_data} --eval_every=10"
+
+exp=${exp:-"150M"}
+
+export AxialAttention_accept_edge_norm=0
+export AxialAttention_accept_kernel_fn=1
+# export AxialAttention_accept_kernel_dtype="float16"
+
+export NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_TIMEOUT=3600
+
+srun python ../main.py --init_method=tcp://${master_addr}:${master_port} train \
+    --prefix=${exp}.folding \
+    --checkpoint_max_to_keep=10 \
+    --num_batches=${num_batches:-10000} \
+    --batch_size=1 \
+    \
+    --model_evoformer_depth=64 \
+    --model_evoformer_head_num=8 \
+    --model_evoformer_head_dim=32 \
+    --model_dim 384 256 128 \
+    --model_dropout 0.15 0.25 \
+    --model_evoformer_accept_msa \
+    --model_recycles=2 \
+    \
+    --min_protein_len=0 \
+    --max_protein_len=1024 \
+    --min_crop_len=192 \
+    --max_crop_len=384 \
+    --crop_algorithm=auto \
+    --train_crop_probability=0.25 \
+    --max_msa_size=1024 \
+    --max_var_size=4096 \
+    \
+    --learning_rate=0.0001 \
+    --gradient_accumulate_every=24 \
+    \
+    --num_workers=1 \
+    --prefetch_factor=4 \
+    \
+    --wandb_enabled \
+    --wandb_mode=offline \
+    --wandb_dir=./wandb-${exp} \
+    --wandb_name=profold2_${exp} \
+    \
+    --model_features=./model_features_${exp}.json \
+    --model_headers=./model_headers_${exp}.json \
+    \
+    ${train_data_opts} \
+    ${eval_data_opts} \
+    $*
