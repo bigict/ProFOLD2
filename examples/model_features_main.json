@@ -1,9 +1,0 @@
-[
-  ["make_pseudo_beta", {}],
-  ["make_backbone_affine", {}],
-  ["make_bert_mask", {}],
-  ["make_seq_profile", {"mask":"-", "density": true}],
-  ["make_to_device", {
-    "fields":["seq", "mask", "coord", "coord_mask", "pseudo_beta", "pseudo_beta_mask"],
-    "device":"%(device)s"}]
-]

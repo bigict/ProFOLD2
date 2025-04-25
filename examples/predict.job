@@ -1,0 +1,81 @@
+#!/bin/bash
+#SBATCH --job-name=profold2_predict       # identifier for the job listings
+#SBATCH --output=predict.log              # outputfile
+
+#SBATCH --nodes=2                         # number of nodes you want to use
+#SBATCH --gpus=4                          # count of GPUs required for the job
+#SBATCH --qos=gpugpu                      # quality of service
+#SBATCH --ntasks-per-node=1               # number of tasks to invoke on each node
+#SBATCH --gpus-per-task=2                 # every process wants one GPU!
+#SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
+
+help() {
+  echo "usage: `basename $0` [-h] -p {slurm,local} -- [pred_opt ...] fasta_file [fasta_file ...]"
+  echo "positional arguments:"
+  echo "    pred_opt   predict option."
+  echo "    fasta_file fasta format protein sequence file."
+  echo "options:"
+  echo "    -h, --help show this help message and exit"
+  echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
+  echo "               type of platform. (default: slurm)"
+  exit $1
+}
+
+platform="slurm"
+
+ARGS=$(getopt -o "p:h" -l "--platform:help" -- "$@") || help 1
+eval "set -- ${ARGS}"
+while true; do
+  case "$1" in
+    (-p | --platform) platform="$2"; shift 2;;
+    (-h | --help) help 0 ;;
+    (--) shift 1; break;;
+    (*) help 1;
+  esac
+done
+
+## get the first node name as master address - customized for vgg slurm
+## e.g. master(gnodee[2-5],gnoded1) == gnodee2
+echo "==================================="
+echo "CurrentWorkDir=`pwd`"
+echo "Platform=${platform}"
+if [ x"${platform}" = x"slurm" ]; then
+  echo "NodeList=${SLURM_NODELIST}"
+  master_addr=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+  node_opts=""
+else
+  master_addr=${master_addr:-"127.0.0.1"}
+  node_opts="--nnodes=${nnodes:-1} --node_rank=${node_rank:-0}"
+fi
+master_port=${MASTER_PORT:-23456}
+echo "MasterAddr=${master_addr}:${master_port}"
+echo "==================================="
+
+## init virtual environment if needed
+conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
+. ${conda_home}/bin/activate profold2
+
+exp=${exp:-"150m"}
+model_suffix=${model_suffix:-""}
+
+export AxialAttention_accept_edge_norm=0
+export AxialAttention_accept_kernel_fn=1
+# export AxialAttention_accept_kernel_dtype="float16"
+
+export NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_TIMEOUT=3600
+
+runner=""
+if [ x"${platform}" = x"slurm" ]; then
+  runner="srun"
+fi
+${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} predict \
+    --prefix=${exp}.pred${model_suffix} \
+    \
+    --models ${exp}.folding/model.pth${model_suffix} \
+    --map_location=cpu \
+    --model_recycles=2 \
+    --model_shard_size=256 \
+    \
+    --fasta_fmt=single \
+    $*
