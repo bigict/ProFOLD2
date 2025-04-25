@@ -1304,7 +1304,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         yield var_pid, c
 
   @functools.lru_cache(
-      maxsize=int(env('profold2_data_build_chain_lru_maxsize', defval=0, func=int))
+      maxsize=env('profold2_data_build_chain_lru_maxsize', defval=0, func=int)
   )
   def _multimer_build_chain_list(self, protein_id, var_list):
     def _is_aligned(k, chain_list):
