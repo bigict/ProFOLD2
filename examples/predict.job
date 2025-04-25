@@ -12,7 +12,7 @@
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [pred_opt ...] fasta_file [fasta_file ...]"
   echo "positional arguments:"
-  echo "    pred_opt   predict option."
+  echo "    pred_opt   predict option. \`python ../main.py predict -h\` for further help."
   echo "    fasta_file fasta format protein sequence file."
   echo "options:"
   echo "    -h, --help show this help message and exit"

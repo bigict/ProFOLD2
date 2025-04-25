@@ -12,7 +12,7 @@
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [eval_opt ...]"
   echo "positional arguments:"
-  echo "    eval_opt   evaluate option."
+  echo "    eval_opt   evaluate option. \`python ../main.py evaluate -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"

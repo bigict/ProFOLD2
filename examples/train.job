@@ -12,7 +12,7 @@
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [train_opt ...]"
   echo "positional arguments:"
-  echo "    train_opt  train option."
+  echo "    train_opt  train option. \`python ../main.py train -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
