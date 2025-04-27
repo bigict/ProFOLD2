@@ -1038,18 +1038,15 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             k, v = line.split()
             self.resolu[k] = float(v)
 
-      self.chain_list = {}
+      self.chain_list = defaultdict(list)
       chain_idx = default(chain_idx, 'chain.idx')
       if fs.exists(chain_idx):
         with fs.open(chain_idx) as f:
           for line in filter(
               lambda x: len(x) > 0, map(lambda x: fs.textise(x).strip(), f)
           ):
-            chains = line.split()
-            if chains[0] in self.chain_list:
-              self.chain_list[chains[0]].append(chains[1:])
-            else:
-              self.chain_list[chains[0]] = [chains[1:]]
+            pid, *chains = line.split()
+            self.chain_list[pid].append(chains)
 
       self.attr_list = {}
       attr_idx = default(attr_idx, 'attr.idx')
@@ -1569,7 +1566,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid, chain = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
     if pid in self.chain_list:
       chain_group = self.chain_list[pid]
-      for g in chain_group:
+      # for g in chain_group:
+      for idx in np.random.permutation(len(chain_group)):
+        g = chain_group[idx]
         if chain in g:
           return list(g)  # shallow copy
       logger.warning('get_chain_list: %s not found.', protein_id)
