@@ -93,8 +93,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   def create_cycling_data(
       data_dir,
       weights=None,
-      data_idx='name.idx',
-      attr_idx='attr.idx',
+      data_idx=None,
+      chain_idx=None,
+      attr_idx=None,
       pseudo_linker_prob=0.0,
       crop_probability=0.0,
       data_msa_as_seq_prob=0.0,
@@ -107,6 +108,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
+        chain_idx=chain_idx,
         attr_idx=attr_idx,
         pseudo_linker_prob=pseudo_linker_prob,
         data_rm_mask_prob=args.data_rm_mask_prob,
@@ -138,6 +140,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   train_data = create_cycling_data(
       args.train_data,
       data_idx=args.train_idx,
+      chain_idx=args.train_chain,
       attr_idx=args.train_attr,
       weights=args.train_data_weights,
       pseudo_linker_prob=args.train_pseudo_linker_prob,
@@ -152,6 +155,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     tuning_data = create_cycling_data(
         args.tuning_data,
         data_idx=args.tuning_idx,
+        chain_idx=args.tuning_chain,
         attr_idx=args.tuning_attr,
         weights=args.tuning_data_weights,
         pseudo_linker_prob=args.tuning_pseudo_linker_prob,
@@ -167,6 +171,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     eval_loader = dataset.load(
         data_dir=args.eval_data,
         data_idx=args.eval_idx,
+        chain_idx=args.eval_chain,
         attr_idx=args.eval_attr,
         max_msa_depth=args.max_msa_size,
         min_crop_len=args.min_crop_len,
@@ -473,6 +478,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   )
   parser.add_argument('--train_idx', type=str, default=None, help='train dataset idx.')
   parser.add_argument(
+      '--train_chain', type=str, default=None, help='train dataset chain idx.'
+  )
+  parser.add_argument(
       '--train_attr', type=str, default=None, help='train dataset attr idx.'
   )
   parser.add_argument(
@@ -489,11 +497,17 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   )
   parser.add_argument('--eval_idx', type=str, default=None, help='eval dataset idx.')
   parser.add_argument(
+      '--eval_chain', type=str, default=None, help='eval dataset chain idx.'
+  )
+  parser.add_argument(
       '--eval_attr', type=str, default=None, help='eval dataset attr idx.'
   )
   parser.add_argument('--tuning_data', type=str, default=None, help='eval dataset dir.')
   parser.add_argument(
       '--tuning_idx', type=str, default=None, help='tuning dataset idx.'
+  )
+  parser.add_argument(
+      '--tuning_chain', type=str, default=None, help='tuning dataset chain idx.'
   )
   parser.add_argument(
       '--tuning_attr', type=str, default=None, help='tuning dataset attr idx.'

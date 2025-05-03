@@ -1,6 +1,5 @@
 """A lot of modules in AlphaFold2
   """
-import os
 import functools
 import logging
 
@@ -12,11 +11,11 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 from profold2.model import functional, kernel, profiler
-from profold2.utils import default, exists, torch_allow_tf32, version_cmp
+from profold2.utils import default, env, exists, torch_allow_tf32, version_cmp
 
 logger = logging.getLogger(__name__)
 
-_tensor_inplace_op = int(os.environ.get('profold2_tensor_inplace_op', 0))
+_tensor_inplace_op = env('profold2_tensor_inplace_op', defval=0, type=int)
 
 
 # helpers
@@ -331,17 +330,17 @@ class AxialAttention(nn.Module):
     self.norm = nn.LayerNorm(dim_node)
     self.attn = Attention(dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     # FIX: to be backward compatible
-    accept_edge_norm = int(os.environ.get('AxialAttention_accept_edge_norm', 1))
+    accept_edge_norm = env('AxialAttention_accept_edge_norm', defval=1, type=int)
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
         nn.Linear(dim_edge, heads, bias=not accept_edge_norm),
         Rearrange('... i j h -> ... h i j')
     ) if accept_edges else None
-    accept_kernel_fn = int(os.environ.get('AxialAttention_accept_kernel_fn', 0))
+    accept_kernel_fn = env('AxialAttention_accept_kernel_fn', defval=0, type=int)
     if not kernel.is_available() and accept_kernel_fn:
       logger.warning('kernel is not available! disabled it.')
       accept_kernel_fn = 0
-    accept_kernel_dtype = os.environ.get('AxialAttention_accept_kernel_dtype')
+    accept_kernel_dtype = env('AxialAttention_accept_kernel_dtype')
     if accept_kernel_dtype in ('float16', 'f16'):
       accept_kernel_dtype = torch.float16
     elif accept_kernel_dtype in ('bfloat16', 'bf16'):
