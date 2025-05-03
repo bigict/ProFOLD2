@@ -5,7 +5,9 @@
      for further help.
 """
 import os
+from collections import defaultdict
 import functools
+import itertools
 import logging
 import multiprocessing as mp
 
@@ -22,6 +24,148 @@ from profold2.model.functional import sharded_apply, squared_cdist
 from profold2.utils import exists, timing
 
 logger = logging.getLogger(__file__)
+
+
+def _to_chain_group(data, args, idx):
+  def _monomer_contact_num(datum, cx, cy):
+    ca_idx = residue_constants.atom_order['CA']
+
+    squared_mask = rearrange(
+        datum[cx]['coord_mask'][..., ca_idx], '... i -> ... i ()'
+    ) * rearrange(datum[cy]['coord_mask'][..., ca_idx], '... j -> ... () j')
+
+    dist2 = squared_cdist(
+        datum[cx]['coord'][..., ca_idx, :], datum[cy]['coord'][..., ca_idx, :]
+    )
+
+    return torch.sum((dist2 <= args.contact_cutoff**2) * squared_mask).item()
+
+  def _multimer_contact_num(contacts, cx_group, cy_group):
+    return sum(
+        contacts[cx][cy] for cx, cy in itertools.product(
+            cx_group, cy_group
+        ) if cy not in cx_group
+    )
+
+  def _new_chain_group(datum, chain_group):
+    contacts = defaultdict(dict)
+
+    # compute contacts for each chain pair.
+    for cx in chain_group:
+      for cy in chain_group:
+        if cx != cy:
+          c = _monomer_contact_num(datum, cx, cy)
+          contacts[cx][cy] = c
+          contacts[cy][cx] = c
+        else:
+          contacts[cx][cy] = 0
+
+    chain_seen = set()
+    for c in chain_group:
+      new_group, new_len, new_added = [c], datum[c]['seq'].shape[0], True
+      while new_added and new_len < args.max_sequence_length:
+        weights = [
+            (i, _multimer_contact_num(contacts, new_group, [x]))
+            for i, x in enumerate(chain_group)
+        ]
+
+        new_added = False
+        for i, w in sorted(
+            filter(lambda x: x[1] > 0, weights), key=lambda x: x[1], reverse=True
+        ):
+          if new_len + datum[chain_group[i]]['seq'].shape[0] < args.max_sequence_length:
+            new_len += datum[chain_group[i]]['seq'].shape[0]
+            new_group += [chain_group[i]]
+            new_added = True
+      new_group_str = ','.join(sorted(new_group))
+      if new_group_str not in chain_seen:
+        yield new_group
+        chain_seen.add(new_group_str)
+
+  chain_dict = defaultdict(list)
+
+  for pid in data.pids[idx]:
+    pid, chain = decompose_pid(pid)  # pylint: disable=unbalanced-tuple-unpacking
+    if pid in data.chain_list:
+      for chain_group in data.chain_list[pid]:
+        if chain in chain_group:
+          if len(chain_group) > 1:  # more than 1 chain
+            chain_group_length = 0
+
+            datum = {}
+            for c in chain_group:
+              datum[c] = data.get_monomer(compose_pid(pid, c), crop_fn=None)
+              assert 'seq' in datum[c]
+              assert 'coord' in datum[c] and 'coord_mask' in datum[c]
+
+              chain_group_length += datum[c]['seq'].shape[0]
+            if chain_group_length > args.max_sequence_length:  # sequence is too long
+              logger.debug(
+                  'NOTE: %s length: %d chains: %s', pid, chain_group_length, ','.join(chain_group)
+              )
+              for g in _new_chain_group(datum, chain_group):
+                chain_dict[pid].append(g)
+            else:
+              chain_dict[pid].append(chain_group)
+          else:
+            chain_dict[pid].append(chain_group)
+
+  return chain_dict
+
+
+def to_chain_group(data, args):  # pylint: disable=redefined-outer-name
+  work_fn = functools.partial(_to_chain_group, data, args)
+
+  range_start, range_stop = args.range_start, args.range_stop
+  if not exists(range_stop):
+    range_stop = len(data)
+  range_stop = min(range_stop, len(data))
+  with open(args.output, 'w') as f:
+    if args.num_workers == 1:
+      for i in range(range_start, range_stop):
+        chain_dict = work_fn(i)
+        for pid, chain_group in chain_dict.items():
+          for g in chain_group:
+            g = ' '.join(g)
+            f.write(f'{pid}\t{g}\n')
+    else:
+      with mp.Pool(args.num_workers) as p:
+        for chain_dict in p.imap_unordered(
+            work_fn, range(range_start, range_stop), chunksize=args.chunksize
+        ):
+          for pid, chain_group in chain_dict.items():
+            for g in chain_group:
+              g = ' '.join(g)
+              f.write(f'{pid}\t{g}\n')
+
+
+def to_chain_group_add_argument(parser):  # pylint: disable=redefined-outer-name
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
+  parser.add_argument(
+      '--max_sequence_length',
+      type=int,
+      default=2048,
+      help='maximum sequence length for each chain group'
+  )
+  parser.add_argument(
+      '--contact_cutoff',
+      type=float,
+      default=8,
+      help='maximum residue distance for each contact'
+  )
+  parser.add_argument(
+      '--num_workers', type=int, default=None, help='num of workers.'
+  )
+  parser.add_argument(
+      '--chunksize', type=int, default=10, help='chunk size of each worker.'
+  )
+  parser.add_argument(
+      '--range_start', type=int, default=0, help='data index start.'
+  )
+  parser.add_argument(
+      '--range_stop', type=int, default=None, help='data index stop.'
+  )
+  return parser
 
 
 def to_fasta(data, args):  # pylint: disable=redefined-outer-name
@@ -73,8 +217,8 @@ def to_pdb(data, args):  # pylint: disable=redefined-outer-name
 
 
 def to_pdb_add_argument(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
-  parser.add_argument('--coord_pad', action='store_true', help='coord padded')
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file.')
+  parser.add_argument('--coord_pad', action='store_true', help='coord padded.')
   return parser
 
 
@@ -148,20 +292,20 @@ def plddt(data, args):  # pylint: disable=redefined-outer-name
 
 
 def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file.')
   parser.add_argument(
-      '--num_workers', type=int, default=None, help='num of workers, default=#cpus'
+      '--num_workers', type=int, default=None, help='num of workers.'
   )
   parser.add_argument(
-      '--chunksize', type=int, default=10, help='chunk size of each worker, default=1'
+      '--chunksize', type=int, default=10, help='chunk size of each worker.'
   )
   parser.add_argument('--msa_required', action='store_true', help='MSA required')
   parser.add_argument('--coord_required', action='store_true', help='coord required')
   parser.add_argument(
-      '--range_start', type=int, default=0, help='num of workers, default=#cpus'
+      '--range_start', type=int, default=0, help='data index start.'
   )
   parser.add_argument(
-      '--range_stop', type=int, default=None, help='num of workers, default=#cpus'
+      '--range_stop', type=int, default=None, help='data index stop.'
   )
   return parser
 
@@ -257,31 +401,31 @@ def contacts(data, args):  # pylint: disable=redefined-outer-name
 
 
 def contacts_add_argument(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument('-o', '--output', type=str, default=None, help='output file')
+  parser.add_argument('-o', '--output', type=str, default=None, help='output file.')
   parser.add_argument(
-      '--num_workers', type=int, default=None, help='num of workers, default=#cpus'
+      '--num_workers', type=int, default=None, help='num of workers.'
   )
   parser.add_argument(
-      '--chunksize', type=int, default=10, help='chunk size of each worker, default=1'
+      '--chunksize', type=int, default=10, help='chunk size of each worker.'
   )
   parser.add_argument(
       '--shard_size',
       type=int,
       default=None,
-      help='shard size of each protein, default=None'
+      help='shard size of each protein.'
   )
   parser.add_argument('--msa_required', action='store_true', help='MSA required')
   parser.add_argument(
-      '--contact_cutoff', type=float, default=8, help='Contact cutoff, default=8'
+      '--contact_cutoff', type=float, default=8, help='Contact cutoff.'
   )
   parser.add_argument(
-      '--contact_range_min', type=int, default=6, help='Contact range start, default=6'
+      '--contact_range_min', type=int, default=6, help='Contact range start.'
   )
   parser.add_argument(
       '--contact_range_max',
       type=int,
       default=-1,
-      help='Contact range start, default=-1'
+      help='Contact range stop.'
   )
   return parser
 
@@ -311,21 +455,26 @@ if __name__ == '__main__':
       'checksum': (checksum, checksum_add_argument),
       'contacts': (contacts, contacts_add_argument),
       'plddt': (plddt, plddt_add_argument),
+      'to_chain_group': (to_chain_group, to_chain_group_add_argument),
       'to_fasta': (to_fasta, to_fasta_add_argument),
       'to_pdb': (to_pdb, to_pdb_add_argument),
   }
 
-  parser = argparse.ArgumentParser()
+  parser = argparse.ArgumentParser(
+      formatter_class=argparse.ArgumentDefaultsHelpFormatter
+  )
 
   sub_parsers = parser.add_subparsers(dest='command', required=True)
   for cmd, (_, add_argument) in commands.items():
-    cmd_parser = sub_parsers.add_parser(cmd)
+    cmd_parser = sub_parsers.add_parser(
+        cmd, formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
     cmd_parser.add_argument(
-        '--data_dir', type=str, default=None, help='train dataset dir, default=None'
+        '--data_dir', type=str, default=None, help='train dataset dir.'
     )
     cmd_parser.add_argument(
-        '--data_idx', type=str, default=None, help='dataset idx, default=None'
+        '--data_idx', type=str, default=None, help='dataset idx.'
     )
     cmd_parser.add_argument(
         '--data_rm_mask_prob', type=float, default=0.0, help='data_rm_mask'
