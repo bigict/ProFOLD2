@@ -618,14 +618,10 @@ def _protein_clips_fn(
     return dict(d=new_order, c=cidx, l=n)
 
   def _auto_sampler(protein, n):
-    if (
-        (
-            (min_crop_pae and 'coord_pae' in protein) or (
-                max_crop_plddt and 'coord_plddt' in protein and
-                torch.any(protein['coord_plddt'] < 1.0)
-            )
-        ) and n > env('profold2_data_knn_sampler_max_length', defval=65536, type=int)
-    ):
+    if (min_crop_pae and 'coord_pae' in protein) or (
+        max_crop_plddt and 'coord_plddt' in protein and
+        torch.any(protein['coord_plddt'] < 1.0)
+    ) or n > env('profold2_data_knn_sampler_max_length', defval=65536, type=int):
       return _random_sampler(protein, n)
     return _knn_sampler(protein, n)
 
@@ -1329,9 +1325,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     with timing(
         f'ProteinStructureDataset.filter_chain_list {protein_id}', logger.debug
     ):
-      var_chain_list = [
-          (k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)
-      ]
+      var_chain_list = [(k, v) for k, v in var_chain_list.items() if _is_aligned(k, v)]
     return var_chain_list
 
   def get_multimer(self, protein_id, chains):
