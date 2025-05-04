@@ -1048,6 +1048,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       self.chain_list = defaultdict(list)
       chain_idx = default(chain_idx, 'chain.idx')
       if fs.exists(chain_idx):
+        logger.info('load chian data from: %s', chain_idx)
         with fs.open(chain_idx) as f:
           for line in filter(
               lambda x: len(x) > 0, map(lambda x: fs.textise(x).strip(), f)
@@ -1308,7 +1309,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         yield var_pid, c
 
   @functools.lru_cache(
-      maxsize=env('profold2_data_build_chain_lru_maxsize', defval=0, func=int)
+      maxsize=env('profold2_data_build_chain_lru_maxsize', defval=0, type=int)
   )
   def _multimer_build_chain_list(self, protein_id, var_list):
     def _is_aligned(k, chain_list):
@@ -2044,7 +2045,7 @@ def load(
       args = list(map(lambda x: x if x else None, args.split(',')))
     else:
       args = [None] * len(data_dir)
-    assert len(data_dir) == len(args)
+    assert len(data_dir) == len(args), (len(data_dir), args)
     return args
 
   data_idx, mapping_idx, chain_idx, attr_idx, var_dir = map(

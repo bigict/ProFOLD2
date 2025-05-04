@@ -14,7 +14,7 @@ import torch.multiprocessing as mp
 from torch import nn
 
 from profold2.model import AlphaFold2
-from profold2.utils import default, exists, torch_allow_tf32, version_cmp
+from profold2.utils import default, env, exists, torch_allow_tf32, version_cmp
 
 
 @contextlib.contextmanager
@@ -135,15 +135,17 @@ class WorkerXPU(object):
 
   @property
   def rank(self):
-    if 'RANK' in os.environ:
-      return int(os.environ['RANK'])
-    return WorkerXPU.device_count() * self.args.node_rank + self.local_rank
+    return env(
+        'RANK',
+        defval=WorkerXPU.device_count() * self.args.node_rank + self.local_rank,
+        type=int
+    )
 
   @staticmethod
   def world_size(nnodes=None):
-    if 'WORLD_SIZE' in os.environ:
-      return int(os.environ['WORLD_SIZE'])
-    return WorkerXPU.device_count() * default(nnodes, 1)
+    return env(
+        'WORLD_SIZE', defval=WorkerXPU.device_count() * default(nnodes, 1), type=int
+    )
 
   def memory_summary(self):
     if self.is_available() and hasattr(torch.cuda, 'memory_summary'):
@@ -152,9 +154,7 @@ class WorkerXPU(object):
 
   def init_process_group(self):
     if self.is_available():
-      timeout = 1800
-      if 'NCCL_TIMEOUT' in os.environ:
-        timeout = int(os.environ['NCCL_TIMEOUT'])
+      timeout = env('NCCL_TIMEOUT', defval=1800, type=int)
       logging.info(
           'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
           'init_method=%s, timeout=%s(s)',

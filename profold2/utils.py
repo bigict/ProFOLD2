@@ -23,11 +23,11 @@ def default(val, d):
   return d() if isfunction(d) else d
 
 
-def env(*keys, defval=None, func=None):
+def env(*keys, defval=None, type=None):
   for key in keys:
     value = os.getenv(key)
     if exists(value):
-      return func(value) if exists(value) else value
+      return type(value) if exists(type) else value
   return defval
 
 
