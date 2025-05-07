@@ -5,6 +5,7 @@ from collections import defaultdict
 import contextlib
 import functools
 import io
+import itertools
 import json
 import logging
 from io import BytesIO
@@ -24,9 +25,10 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
+from profold2.data.padding import pad_sequential, pad_rectangle
 from profold2.data.utils import (
-    compose_pid, decompose_pid, domain_parser, parse_seq_index, seq_index_join,
-    seq_index_split, str_seq_index
+    compose_pid, decompose_pid, parse_seq_index, seq_index_join, seq_index_split,
+    str_seq_index
 )
 from profold2.utils import default, env, exists, timing
 
@@ -256,12 +258,17 @@ def _make_task_mask(
   return torch.stack(variant_task_mask, dim=-1)
 
 
-def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
+def _make_seq_features(
+    sequence, description, seq_color=1, seq_entity=None, max_seq_len=None
+):
   residue_index = torch.arange(len(sequence), dtype=torch.int)
   residue_index = parse_seq_index(description, sequence, residue_index)
 
   sequence = sequence[:max_seq_len]
   residue_index = residue_index[:max_seq_len]
+  seq_entity = torch.full(
+      (len(sequence), ), default(seq_entity, seq_color), dtype=torch.int
+  )
   seq_color = torch.full((len(sequence), ), seq_color, dtype=torch.int)
 
   seq = torch.as_tensor(
@@ -282,12 +289,17 @@ def _make_seq_features(sequence, description, seq_color=1, max_seq_len=None):
   mask = torch.ones(len(sequence), dtype=torch.bool)
 
   return dict(
-      seq=seq, seq_index=residue_index, seq_color=seq_color, str_seq=str_seq, mask=mask
+      seq=seq,
+      seq_index=residue_index,
+      seq_color=seq_color,
+      seq_entity=seq_entity,
+      str_seq=str_seq,
+      mask=mask
   )
 
 
 def _make_pdb_features(
-    pdb_id, pdb_string, pdb_type='pdb', seq_color=1, max_seq_len=None
+    pdb_id, pdb_string, pdb_type='pdb', seq_color=1, seq_entity=None, max_seq_len=None
 ):
   assert pdb_type in ('pdb', 'cif')
   if pdb_type == 'pdb':
@@ -370,7 +382,11 @@ def _make_pdb_features(
   description = f'{pdb_id} domains:{domain_str} length={l}'
 
   ret = _make_seq_features(
-      sequence, description, seq_color=seq_color, max_seq_len=max_seq_len
+      sequence,
+      description,
+      seq_color=seq_color,
+      seq_entity=seq_entity,
+      max_seq_len=max_seq_len
   )
 
   # make npz
@@ -385,6 +401,57 @@ def _make_pdb_features(
       coord_mask=torch.from_numpy(coord_mask),
       coord_plddt=torch.from_numpy(bfactor)
   )
+  return ret
+
+
+def _make_anchor_features(fgt_color, fgt_entity, feat):
+  ret = {}
+
+  entity_color_cnt, entity_length = {}, {}
+  for entity_id in filter(lambda x: x > 0, torch.unique(fgt_entity)):
+    input_color = torch.unique(fgt_color[fgt_entity == entity_id])
+    if any(c in feat['seq_color'] for c in input_color):
+      entity_color_cnt[int(entity_id)] = len(input_color)
+      entity_length[int(entity_id)] = int(torch.sum(feat['seq_entity'] == entity_id))
+
+  # filter entities by count
+  if entity_color_cnt:
+    group_by_cnt = lambda x: x[1]
+    _, entity_color_cnt = next(
+        itertools.groupby(
+            sorted(entity_color_cnt.items(), key=group_by_cnt), key=group_by_cnt
+        )
+    )
+    entity_color_cnt = dict(entity_color_cnt)
+
+  # filter entities by length
+  if len(entity_color_cnt) > 1:
+    max_length = max(entity_length[entity_id] for entity_id in entity_color_cnt)
+    entity_color_cnt = {
+        entity_id: cnt
+        for entity_id, cnt in entity_color_cnt.items()
+        if entity_length[entity_id] == max_length
+    }
+
+  # random select one
+  if len(entity_color_cnt) > 1:
+    entity_color_cnt = dict(np.random.choice(entity_color_cnt.items()))
+
+  if entity_color_cnt:
+    assert len(entity_color_cnt) == 1
+    entity_id = next(iter(entity_color_cnt))
+    color_list = torch.unique(feat['seq_color'][feat['seq_entity'] == entity_id])
+
+    if len(color_list) > 1:
+      color_length = {}
+      for c in color_list:
+        color_length[int(c)] = int(torch.sum(feat['seq_color'] == c))
+      max_length = max(color_length.values())
+      color_list = [c for c in color_list if color_length[int(c)] == max_length]
+
+    # random select one
+    ret.update(seq_anchor=np.random.choice(color_list))
+
   return ret
 
 
@@ -489,72 +556,6 @@ def _protein_clips_fn(
           break
     return dict(i=i, j=j, d=list(range(i, j)), l=n)
 
-  def _domain_sampler(protein, n):
-    def _cascade_sampler(weights, width=4):
-      if len(weights) <= width:
-        i = torch.multinomial(weights, 1)
-        return i.item()
-
-      p = torch.zeros((width, ))
-      l, k = len(weights) // width, len(weights) % width
-      for i in range(width):
-        v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
-        p[i] = torch.amax(weights[v:w])
-      i = _cascade_sampler(p, width=width)
-      v, w = l * i + min(i, k), l * (i + 1) + min(i + 1, k)
-      return v + _cascade_sampler(weights[v:w], width=width)
-
-    def _domain_next(weights, i, min_len=None, max_len=None):
-      min_len, max_len = default(min_len, 80), default(max_len, 255)
-
-      direction = np.random.randint(2)
-      for _ in range(2):
-        #if direction % 2 == 0 and torch.sum(ca_mask[i:]) >= min_len:
-        if direction % 2 == 0 and i + min_len < n:
-          j = min(len(weights), i + max_len)
-          return j if i + min_len >= j else i + min_len + _cascade_sampler(
-              weights[i + min_len:j]
-          )
-        #if direction % 2 == 1 and torch.sum(ca_mask[:i]) >= min_len:
-        if direction % 2 == 1 and i > min_len:
-          j = max(0, i - max_len)
-          return j + _cascade_sampler(weights[j:i - min_len]) if i - min_len > j else j
-        direction += 1
-      return None
-
-    assert exists(min_crop_len) or exists(max_crop_len)
-    assert 'coord' in protein and 'coord_mask' in protein
-
-    if exists(max_crop_len
-             ) and n <= max_crop_len and crop_probability < np.random.random():
-      assert not exists(min_crop_len) or min_crop_len < n
-      return None
-
-    ca_idx = residue_constants.atom_order['CA']
-    ca_coord, ca_coord_mask = protein['coord'][...,
-                                               ca_idx, :], protein['coord_mask'][...,
-                                                                                 ca_idx]
-    logger.debug('domain_sampler: seq_len=%d', n)
-    weights = domain_parser(ca_coord, ca_coord_mask, max_len=max_crop_len)
-    intra_domain_probability = kwargs.get('intra_domain_probability', 0)
-    while True:
-      i = _cascade_sampler(weights)
-      if np.random.random() < intra_domain_probability:
-        logger.debug('domain_intra: seq_len=%d, i=%d', n, i)
-        half = max_crop_len // 2 + max_crop_len % 2
-        if i + 1 < n - i:  # i <= n // 2
-          i = max(0, i - half)
-          j = min(i + max_crop_len, n)
-        else:
-          i = min(n, i + half)
-          j = max(0, i - max_crop_len)
-      else:
-        j = _domain_next(weights, i, min_len=min_crop_len, max_len=max_crop_len)
-        logger.debug('domain_next: seq_len=%d, i=%d, j=%s', n, i, str(j))
-      if j is not None and torch.any(ca_coord_mask[min(i, j):max(i, j)]):
-        break
-    return dict(i=min(i, j), j=max(i, j), d=list(range(i, j)), l=n)
-
   def _knn_sampler(protein, n):
 
     assert exists(min_crop_len) or exists(max_crop_len)
@@ -626,12 +627,7 @@ def _protein_clips_fn(
     return _knn_sampler(protein, n)
 
   logger.debug('protein_clips_fn: crop_algorithm=%s', crop_algorithm)
-  sampler_list = dict(
-      random=_random_sampler,
-      auto=_auto_sampler,
-      domain=_domain_sampler,
-      knn=_knn_sampler
-  )
+  sampler_list = dict(auto=_auto_sampler, knn=_knn_sampler, random=_random_sampler)
 
   assert crop_algorithm in sampler_list
 
@@ -660,14 +656,15 @@ def _protein_crop_fn(protein, clip):
         clip['d'],
         seq_feats=(
             'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
-            'seq_color'
+            'seq_color', 'seq_entity'
         )
     )
 
   i, j = clip['i'], clip['j']
   protein['str_seq'] = protein['str_seq'][i:j]
   for field in (
-      'seq', 'seq_index', 'seq_color', 'mask', 'coord', 'coord_mask', 'coord_plddt'
+      'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt', 'seq_color',
+      'seq_entity'
   ):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
@@ -912,6 +909,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
               item['str_seq'],
               item['pid'],
               seq_color=item['seq_color'][0],
+              seq_entity=item['seq_entity'][0],
               max_seq_len=None
           )
       )
@@ -924,43 +922,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 
   @staticmethod
   def collate_fn(batch):
-    fields = ('pid', 'seq', 'seq_index', 'seq_color', 'mask', 'str_seq')
-    pids, seqs, seqs_idx, seqs_clr, masks, str_seqs = list(
-        zip(*[[b[k] for k in fields] for b in batch])
-    )
-    lengths = tuple(len(s) for s in str_seqs)
-    max_batch_len = max(lengths)
-
-    padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
-    padded_seqs_idx = pad_for_batch(seqs_idx, max_batch_len, 'seq_index')
-    padded_seqs_clr = pad_for_batch(seqs_clr, max_batch_len, 'seq_index')
-    padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
-
-    ret = dict(
-        pid=pids,
-        seq=padded_seqs,
-        seq_index=padded_seqs_idx,
-        seq_color=padded_seqs_clr,
-        mask=padded_masks,
-        str_seq=str_seqs
-    )
-
-    fields = ('msa', 'str_msa', 'del_msa', 'num_msa')
-    if all(all(field in b for field in fields) for b in batch):
-      msas, str_msas, del_msas, num_msa = list(
-          zip(*[[b[k] for k in fields] for b in batch])
-      )
-
-      msas = pad_for_batch(msas, max_batch_len, 'msa')
-      del_msas = pad_for_batch(del_msas, max_batch_len, 'del_msa')
-      ret.update(
-          msa=msas,
-          str_msa=str_msas,
-          del_msa=del_msas,
-          num_msa=torch.as_tensor(num_msa)
-      )
-
-    return ret
+    return _collate_fn(batch, feat_flags=FEAT_ALL & (~FEAT_PDB))
 
 
 class ProteinStructureDataset(torch.utils.data.Dataset):
@@ -1134,7 +1096,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           new_order,
           seq_feats=(
               'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
-              'seq_color'
+              'seq_color', 'seq_entity'
           )
       )
     return item
@@ -1155,7 +1117,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             item,
             new_order,
             seq_feats=(
-                'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt'
+                'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
+                'seq_color', 'seq_entity'
             )
         )
     return item
@@ -1204,6 +1167,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               item['str_seq'],
               item['pid'],
               seq_color=item['seq_color'][0],
+              seq_entity=item['seq_entity'][0],
               max_seq_len=None
           )
       )
@@ -1253,7 +1217,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     for name, value in kwargs_old.items():
       setattr(self, name, value)
 
-  def get_monomer(self, pid, seq_color=1, crop_fn=None):
+  def get_monomer(self, pid, seq_color=1, seq_entity=None, crop_fn=None):
     # CATH format pid
     pid, chain, domains = decompose_pid(pid, return_domain=True)
     if exists(domains):
@@ -1262,8 +1226,14 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     pkey = self.mapping[pid] if pid in self.mapping else pid
     with FileSystem(self.data_dir) as fs:
-      ret = dict(pid=pid, msa_idx=0, clip=None, resolu=self.get_resolution(pid))
-      ret.update(self.get_structure_label_npz(fs, pkey, pid, seq_color=seq_color))
+      ret = dict(
+          pid=pid, msa_idx=0, clip=None, resolu=self.get_resolution(pid), seq_anchor=0
+      )
+      ret.update(
+          self.get_structure_label_npz(
+              fs, pkey, pid, seq_color=seq_color, seq_entity=seq_entity
+          )
+      )
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey))
@@ -1341,8 +1311,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       np.random.shuffle(chains)
 
     seq_index_offset, seq_index_gap = 0, 128
+    seq_entity_map = defaultdict(int)
+
     # Concat all the feats
-    ret = {'clip': None}
+    ret = {'seq_anchor': 0, 'clip': None}
     for idx, chain in enumerate(chains):
       with self._setattr(
           msa_as_seq_prob=self.msa_as_seq_prob if chain == selected_chain else 0,
@@ -1350,11 +1322,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           attr_list=None
       ):
         feat = self.get_monomer(compose_pid(pid, chain), seq_color=idx + 1)
+        # fix seq_entity
+        assert 'str_seq' in feat
+        if feat['str_seq'] not in seq_entity_map:
+          seq_entity_map[feat['str_seq']] = len(seq_entity_map) + 1
+        feat['seq_entity'] = torch.ones_like(feat['seq_entity']
+                                            ) * seq_entity_map[feat['str_seq']]
       # Sequence related
       for field in ('str_seq', ):
         ret[field] = ret.get(field, '') + feat[field]
       assert 'seq' in feat
-      for field in ('seq', 'seq_color', 'mask', 'coord', 'coord_mask'):
+      for field in ('seq', 'seq_color', 'seq_entity', 'mask', 'coord', 'coord_mask'):
         assert field in feat, (field, pid, chain)
         if field not in ret:
           ret[field] = feat[field]
@@ -1537,12 +1515,20 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       ret['num_var'] = len(ret['variant'])
 
+    # for homomer: full ground truth
+    for field in ('seq_index', 'seq_color', 'seq_entity', 'coord', 'coord_mask'):
+      if field in ret:
+        ret[f'{field}_fgt'] = ret[field]
+
     if exists(self.data_crop_fn):
       clip = self.data_crop_fn(ret)
       if exists(clip):
         ret = _protein_crop_fn(ret, clip)
         clip = _protein_crop_fmt(clip)
       ret['clip'] = clip
+
+    # for homomer: select an anchor
+    ret.update(_make_anchor_features(ret['seq_color_fgt'], ret['seq_entity_fgt'], ret))
 
     return ret
 
@@ -1717,7 +1703,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       return ret
     return {}
 
-  def get_structure_label_npz(self, fs, protein_key, protein_id, seq_color=1):
+  def get_structure_label_npz(
+      self, fs, protein_key, protein_id, seq_color=1, seq_entity=None
+  ):
     ret = {}
 
     fasta_file = f'{self.fasta_dir}/{protein_key}.fasta'
@@ -1732,7 +1720,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       ret.update(
           _make_seq_features(
-              input_sequence, input_description, seq_color=seq_color, max_seq_len=None
+              input_sequence,
+              input_description,
+              seq_color=seq_color,
+              seq_entity=seq_entity,
+              max_seq_len=None
           )
       )
 
@@ -1767,6 +1759,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               pdb_string,
               pdb_type=pdb_type,
               seq_color=seq_color,
+              seq_entity=seq_entity,
               max_seq_len=None
           )
       )
@@ -1788,193 +1781,83 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   @staticmethod
   def collate_fn(batch, feat_flags=None):
-    fields = (
-        'pid', 'resolu', 'seq', 'seq_index', 'seq_color', 'mask', 'str_seq', 'clip'
+    return _collate_fn(batch, feat_flags=feat_flags)
+
+
+def _collate_fn(batch, feat_flags=None):
+  def _any(field):
+    return any(exists(b.get(field)) for b in batch)
+
+  def _to_list(field, defval=None):
+    return [b.get(field, defval) for b in batch]
+
+  def _to_tensor(field, defval=0, dtype=None):
+    return torch.as_tensor(_to_list(field, defval=defval), dtype=dtype)
+
+  ret = {}
+
+  for field in ('pid', 'str_seq', 'clip'):
+    ret[field] = _to_list(field)
+
+  max_batch_len = max(len(s) for s in ret['str_seq'])
+
+  ret['seq'] = pad_sequential(
+      _to_list('seq'), max_batch_len, padval=residue_constants.unk_restype_index
+  )
+  for field in ('seq_index', 'mask'):
+    ret[field] = pad_sequential(_to_list(field), max_batch_len)
+
+  for field in ('seq_color', 'seq_entity'):
+    if _any(field):
+      ret[field] = pad_sequential(_to_list(field), max_batch_len)
+
+  if _any('resolu'):
+    ret['resolution'] = _to_tensor('resolu', -1.0)
+
+  feat_flags = default(feat_flags, FEAT_ALL)
+  if feat_flags & FEAT_PDB and _any('coord'):
+    # required
+    for field in ('coord', 'coord_mask'):
+      ret[field] = pad_sequential(_to_list(field), max_batch_len)
+    # optional
+    if _any('coord_plddt'):
+      ret['coord_plddt'] = pad_sequential(
+          _to_list('coord_plddt'), max_batch_len, padval=1.0
+      )
+
+  # for homomer
+  if _any('seq_anchor'):
+    ret['seq_anchor'] = _to_tensor('seq_anchor', dtype=torch.int)
+    for field in ('seq_index', 'seq_color', 'seq_entity', 'coord', 'coord_mask'):
+      field = f'{field}_fgt'
+      ret[field] = _to_list(field)
+
+  if feat_flags & FEAT_MSA and _any('msa'):
+    ret['str_msa'] = _to_list('str_msa')
+    for field in ('msa_idx', 'num_msa'):
+      ret[field] = _to_tensor(field, dtype=torch.int)
+    ret['msa'] = pad_rectangle(
+        _to_list('msa'), max_batch_len, padval=residue_constants.HHBLITS_AA_TO_ID['-']
     )
-    pids, resolutions, seqs, seqs_idx, seqs_color, masks, str_seqs, clips = list(  # pylint: disable=line-too-long
-        zip(*[[b[k] for k in fields] for b in batch]))
-    lengths = tuple(len(s) for s in str_seqs)
-    max_batch_len = max(lengths)
+    for field in ('msa_mask', 'del_msa'):
+      ret[field] = pad_rectangle(_to_list(field), max_batch_len)
 
-    padded_seqs = pad_for_batch(seqs, max_batch_len, 'seq')
-    padded_seqs_idx = pad_for_batch(seqs_idx, max_batch_len, 'seq_index')
-    padded_seqs_clr = pad_for_batch(seqs_color, max_batch_len, 'seq_index')
-    padded_masks = pad_for_batch(masks, max_batch_len, 'msk')
-
-    ret = dict(
-        pid=pids,
-        resolution=torch.as_tensor(resolutions),
-        seq=padded_seqs,
-        seq_index=padded_seqs_idx,
-        seq_color=padded_seqs_clr,
-        mask=padded_masks,
-        str_seq=str_seqs
+  if feat_flags & FEAT_VAR and _any('variant'):
+    ret['variant_pid'] = _to_list('variant_pid')
+    ret['num_var'] = _to_tensor('num_var', dtype=torch.int)
+    ret['variant'] = pad_rectangle(
+        _to_list('variant'),
+        max_batch_len,
+        padval=residue_constants.HHBLITS_AA_TO_ID['-']
     )
+    for field in ('variant_mask', 'variant_task_mask'):
+      ret[field] = pad_rectangle(_to_list(field), max_batch_len)
+    for field in ('variant_label', 'variant_label_mask'):
+      items = _to_list(field)
+      max_depth = max(item.shape[0] for item in items if exists(item))
+      ret[field] = pad_sequential(items, max_depth)
 
-    feat_flags = default(feat_flags, FEAT_ALL)
-    if feat_flags & FEAT_PDB and 'coord' in batch[0]:
-      # required
-      fields = ('coord', 'coord_mask')
-      coords, coord_masks = list(zip(*[[b[k] for k in fields] for b in batch]))
-
-      padded_coords = pad_for_batch(coords, max_batch_len, 'crd')
-      padded_coord_masks = pad_for_batch(coord_masks, max_batch_len, 'crd_msk')
-      ret.update(coord=padded_coords, coord_mask=padded_coord_masks)
-      # optional
-      fields = ('coord_plddt', )
-      for field in fields:
-        if not all(field in b for b in batch):
-          continue
-        padded_values = pad_for_batch([b[field] for b in batch], max_batch_len, field)
-        ret[field] = padded_values
-
-    if feat_flags & FEAT_MSA:
-      fields = ('msa', 'msa_mask', 'msa_idx', 'str_msa', 'del_msa', 'num_msa')
-      msas, msa_msks, msa_idx, str_msas, del_msas, num_msa = list(
-          zip(*[[b[k] for k in fields] for b in batch])
-      )
-
-      padded_msas = pad_for_batch(msas, max_batch_len, 'msa')
-      msa_msks = pad_for_batch(msa_msks, max_batch_len, 'msa_mask')
-      padded_dels = pad_for_batch(del_msas, max_batch_len, 'del_msa')
-      ret.update(
-          msa=padded_msas,
-          msa_mask=msa_msks,
-          msa_idx=torch.as_tensor(msa_idx, dtype=torch.int),
-          str_msa=str_msas,
-          del_msa=padded_dels,
-          num_msa=torch.as_tensor(num_msa, dtype=torch.int)
-      )
-
-    if feat_flags & FEAT_VAR and all('variant' in b for b in batch):
-      fields = (
-          'variant', 'variant_mask', 'variant_label', 'variant_pid',
-          'variant_label_mask', 'variant_task_mask', 'num_var'
-      )
-      variants, variant_msks, variant_labels, variant_pids, variant_label_msks, variant_task_msks, num_var = list(
-          zip(*[[b[k] for k in fields] for b in batch])
-      )
-
-      padded_vars = pad_for_batch(variants, max_batch_len, 'msa')
-      variant_msks = pad_for_batch(variant_msks, max_batch_len, 'msa_mask')
-      variant_labels = pad_for_batch(variant_labels, max_batch_len, 'msa_row_mask')
-      variant_label_msks = pad_for_batch(
-          variant_label_msks, max_batch_len, 'msa_row_mask'
-      )
-      variant_task_msks = pad_for_batch(variant_task_msks, max_batch_len, 'msa_mask')
-      # padded_dels = pad_for_batch(del_vars, max_batch_len, 'del_msa')
-      ret.update(
-          variant=padded_vars,
-          variant_mask=variant_msks,
-          variant_label=variant_labels,
-          variant_label_mask=variant_label_msks,
-          variant_task_mask=variant_task_msks,
-          variant_pid=variant_pids,
-          num_var=torch.as_tensor(num_var, dtype=torch.int)
-      )
-
-    ret['clips'] = clips
-
-    return ret
-
-
-def pad_for_batch(items, batch_length, dtype):
-  """Pad a list of items to batch_len using values dependent on the item type.
-
-    Args:
-        items: List of items to pad (i.e. sequences or masks represented as
-            arrays of numbers, angles, coordinates, pssms).
-        batch_length: The integer maximum length of any of the items in the
-            input. All items are padded so that their length matches this
-            number.
-        dtype: A string ('seq', 'msk', 'crd') reperesenting the type of
-            data included in items.
-
-    Returns:
-         A padded list of the input items, all independently converted to Torch
-           tensors.
-    """
-  batch = []
-  if dtype == 'seq':
-    for seq in items:
-      z = torch.ones(
-          batch_length - seq.shape[0], dtype=seq.dtype
-      ) * residue_constants.unk_restype_index
-      c = torch.cat((seq, z), dim=0)
-      batch.append(c)
-  elif dtype == 'seq_index':
-    for idx in items:
-      z = torch.zeros(batch_length - idx.shape[0], dtype=idx.dtype)
-      c = torch.cat((idx, z), dim=0)
-      batch.append(c)
-  elif dtype == 'msk':
-    # Mask sequences (1 if present, 0 if absent) are padded with 0s
-    for msk in items:
-      z = torch.zeros(batch_length - msk.shape[0], dtype=msk.dtype)
-      c = torch.cat((msk, z), dim=0)
-      batch.append(c)
-  elif dtype == 'crd':
-    for item in items:
-      z = torch.zeros(
-          (batch_length - item.shape[0], item.shape[-2], item.shape[-1]),
-          dtype=item.dtype
-      )
-      c = torch.cat((item, z), dim=0)
-      batch.append(c)
-  elif dtype in ('crd_msk', 'coord_plddt'):
-    for item in items:
-      z = torch.zeros((batch_length - item.shape[0], item.shape[-1]), dtype=item.dtype)
-      c = torch.cat((item, z), dim=0)
-      batch.append(c)
-  elif dtype == 'msa':
-    msa_depth = max(msa.shape[0] for msa in items)
-    for msa in items:
-      c = msa
-      # Append columns
-      z = torch.ones((c.shape[0], batch_length - c.shape[1]),
-                     dtype=c.dtype) * residue_constants.HHBLITS_AA_TO_ID['-']
-      c = torch.cat((c, z), dim=1)
-      # Append rows
-      z = torch.ones((msa_depth - c.shape[0], c.shape[1]),
-                     dtype=c.dtype) * residue_constants.HHBLITS_AA_TO_ID['-']
-      c = torch.cat((c, z), dim=0)
-      batch.append(c)
-  elif dtype == 'msa_mask':
-    msa_depth = max(msa.shape[0] for msa in items)
-    for msa in items:
-      c = msa
-      # Append columns
-      z = torch.zeros(
-          (c.shape[0], batch_length - c.shape[1]) + c.shape[2:], dtype=c.dtype
-      )
-      c = torch.cat((c, z), dim=1)
-      # Append rows
-      z = torch.zeros((msa_depth - c.shape[0], c.shape[1]) + c.shape[2:], dtype=c.dtype)
-      c = torch.cat((c, z), dim=0)
-      batch.append(c)
-  elif dtype == 'msa_row_mask':
-    msa_depth = max(msa.shape[0] for msa in items)
-    for msa in items:
-      c = msa
-      # Append rows
-      z = torch.zeros((msa_depth - c.shape[0]), dtype=c.dtype)
-      c = torch.cat((c, z), dim=0)
-      batch.append(c)
-  elif dtype == 'del_msa':
-    msa_depth = max(msa.shape[0] for msa in items)
-    for del_msa in items:
-      c = del_msa
-      # Append columns
-      z = torch.zeros((c.shape[0], batch_length - c.shape[1]), dtype=c.dtype)
-      c = torch.cat((c, z), dim=1)
-      # Append rows
-      z = torch.zeros((msa_depth - c.shape[0], c.shape[1]), dtype=c.dtype)
-      c = torch.cat((c, z), dim=0)
-      batch.append(c)
-  else:
-    raise ValueError('Not implement yet!')
-  batch = torch.stack(batch, dim=0)
-  return batch
+  return ret
 
 
 def load(
@@ -2029,11 +1912,6 @@ def load(
   )
 
   if 'data_crop_fn' not in kwargs:
-    crop_fn_kwargs = {}
-    if 'intra_domain_probability' in kwargs:
-      crop_fn_kwargs['intra_domain_probability'] = kwargs.pop(
-          'intra_domain_probability'
-      )
     data_crop_fn = functools.partial(
         _protein_clips_fn,
         min_crop_len=min_crop_len,
@@ -2041,8 +1919,7 @@ def load(
         min_crop_pae=min_crop_pae,
         max_crop_plddt=max_crop_plddt,
         crop_probability=crop_probability,
-        crop_algorithm=crop_algorithm,
-        **crop_fn_kwargs
+        crop_algorithm=crop_algorithm
     )
   else:
     data_crop_fn = kwargs.pop('data_crop_fn')

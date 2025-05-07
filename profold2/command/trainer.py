@@ -126,7 +126,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         max_crop_plddt=True,
         crop_algorithm=args.crop_algorithm,
         crop_probability=crop_probability,
-        intra_domain_probability=args.intra_domain_probability,
         batch_size=args.batch_size,
         weights=list(weights_from_file(weights)),
         shuffle=True,
@@ -337,7 +336,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       seq = batch['seq']
       logging.debug(
           '%d %d %d seq.shape: %s pid: %s, clips: %s', epoch, it, jt, seq.shape,
-          ','.join(batch['pid']), batch.get('clips')
+          ','.join(batch['pid']), batch.get('clip')
       )
 
       # maybe sync or not
@@ -419,7 +418,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           seq = data['seq']
           logging.debug(
               '%d %d %d seq.shape: %s, pid: %s, clips: %s', 0, it, jt, seq.shape,
-              ','.join(data['pid']), data.get('clips')
+              ','.join(data['pid']), data.get('clip')
           )
           data = features(data, is_training=False)
           r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
@@ -555,7 +554,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       '--crop_algorithm',
       type=str,
       default='auto',
-      choices=['auto', 'random', 'domain', 'knn'],
+      choices=['auto', 'random', 'knn'],
       help='type of crop algorithm.'
   )
   parser.add_argument(
@@ -647,13 +646,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       type=float,
       default=None,
       help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.'
-  )
-  parser.add_argument(
-      '--intra_domain_probability',
-      type=float,
-      default=0.0,
-      help='select intra domain with probability INTRA_DOMAIN_PROBABILITY '
-      'instead of domain.'
   )
   parser.add_argument('--random_seed', type=int, default=None, help='random seed.')
 

@@ -437,9 +437,19 @@ def make_to_device(protein, fields, device, is_training=True):
 
   if isfunction(device):
     device = device()
+
+  def _to_device(tensor):
+    if isinstance(tensor, torch.Tensor):
+      return tensor.to(device)
+    if isinstance(tensor, list):
+      return [_to_device(t) for t in tensor]
+    elif isinstance(tensor, dict):
+      return {k: _to_device(v) for k, v in tensor.items()}
+    return tensor
+
   for k in fields:
     if k in protein:
-      protein[k] = protein[k].to(device)
+      protein[k] = _to_device(protein[k])
   return protein
 
 

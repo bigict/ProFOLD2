@@ -11,7 +11,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model.commons import Always, PairwiseEmbedding, tensor_add
-from profold2.model.functional import pseudo_beta_fn, distogram_from_positions
+from profold2.model import functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
 from profold2.utils import default, exists
@@ -201,9 +201,9 @@ class AlphaFold2(nn.Module):
     # add recyclables, if present
     if exists(recyclables):
       if exists(recyclables.coords) and exists(self.recycling_pos_linear):
-        pseudo_beta = pseudo_beta_fn(seq, recyclables.coords)
+        pseudo_beta = functional.pseudo_beta_fn(seq, recyclables.coords)
         breaks = self.recycling_pos_breaks.to(pseudo_beta.device)
-        dgram = distogram_from_positions(pseudo_beta, breaks)
+        dgram = functional.distogram_from_positions(pseudo_beta, breaks)
         x = tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
       m[:, 0] = tensor_add(
           m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr)
@@ -245,7 +245,14 @@ class AlphaFold2(nn.Module):
       ret.headers[name] = value
       if 'representations' in value:
         representations.update(value['representations'])
-      if self.training and compute_loss and hasattr(module, 'loss'):
+    if 'folding' in ret.headers:
+      batch = functional.multi_chain_permutation_alignment(
+          ret.headers['folding'], batch
+      )
+    if self.training and compute_loss:
+      for name, module, options in self.headers:
+        if not hasattr(module, 'loss') or name not in ret.headers:
+          continue
         loss = module.loss(ret.headers[name], batch)
         if exists(loss):
           ret.headers[name].update(loss)

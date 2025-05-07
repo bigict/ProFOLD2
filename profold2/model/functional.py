@@ -1,8 +1,10 @@
 import collections
 import functools
+from typing import Optional
 
 import numpy as np
 import torch
+from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
@@ -1286,3 +1288,233 @@ def symmetric_ground_truth_rename(
       coord_renamed=coord_renamed,
       coord_renamed_mask=coord_renamed_mask
   )
+
+
+def rmsd(
+    x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None, eps=1e-8
+):
+  """Calculate the RMSD between x and y.
+  Args:
+      x (torch.Tensor): source atom coordinates with shape `(num_res, 3)`.
+      y (torch.Tensor): target atom coordinates with shape `(num_res, 3)`.
+      mask (torch.Tensor optional): with shape `(num_res, )`.
+  Returns:
+      RMSD value.
+    """
+  d = torch.sum(torch.square(x - y), dim=-1)
+  if exists(mask):
+    d = masked_mean(value=d, mask=mask)
+  else:
+    d = torch.mean(d)
+  return torch.sqrt(d + eps)
+
+
+def kabsch_rotation(
+    x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None
+):
+  """Calculate the best rotation that minimises the RMSD between x and y.
+  Args:
+      x (torch.Tensor): source atom coordinates with shape `(num_res, 3)`.
+      y (torch.Tensor): target atom coordinates with shape `(num_res, 3)`.
+      mask (torch.Tensor optional): with shape `(num_res, )`.
+  Returns:
+      r (torch.Tensor): rotation matrix with shape `(3, 3)`
+    """
+  assert x.shape == y.shape
+
+  if exists(mask):
+    x, y = x[mask, :], y[mask, :]
+
+  with autocast(enabled=False):
+    x, y = x.float(), y.float()
+
+    # optimal rotation matrix via SVD of the convariance matrix {x.T * y}
+    v, _, w = torch.linalg.svd(x.T @ y)
+
+    # determinant sign for direction correction
+    d = torch.sign(torch.det(v) * torch.det(w))
+    v[-1, -1] = v[-1, -1] * d
+    # Create Rotation matrix U
+    r = v @ w
+  return r
+
+
+def optimal_transform_create(pred_points, true_points, points_mask):
+  """Transform ground truth onto prediction such that anchors are aligned"""
+  ca_idx = residue_constants.atom_order['CA']
+
+  pred_ca = pred_points[..., ca_idx, :]
+  true_ca = true_points[..., ca_idx, :]
+  mask_ca = points_mask[..., ca_idx]
+
+  # mask_ca = mask_ca * (seq_color == seq_anchor)
+
+  if torch.any(torch.isnan(pred_points)) or torch.any(torch.isinf(pred_points)):
+    pred_points = torch.nan_to_num(pred_points, nan=0.0, posinf=1.0, neginf=1.0)
+
+  if torch.any(mask_ca):
+    pred_ca = pred_ca[mask_ca, :]
+    true_ca = true_ca[mask_ca, :]
+  else:
+    with torch.no_grad():
+      pred_ca = true_ca
+
+  R = kabsch_rotation(pred_ca, true_ca)
+
+  pred_center = torch.mean(pred_ca, dim=-2, keepdim=True)
+  true_center = torch.mean(true_ca, dim=-2, keepdim=True)
+  t = true_center - torch.einsum('... h w, ... w -> ... h', R, pred_center)
+
+  return R, t
+
+
+def seq_crop_mask(fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_anchor):
+  fgt_seq_index = fgt_seq_index[fgt_seq_color == seq_anchor]
+  seq_index = seq_index[seq_color == seq_anchor]
+
+  return torch.any(
+      (rearrange(fgt_seq_index, 'i -> i ()') - rearrange(seq_index, 'j -> () j')) == 0,
+      dim=-1
+  )
+
+
+def seq_crop_apply(
+    fgt_coord, fgt_coord_mask, fgt_seq_index, fgt_seq_color, seq_anchor, crop_mask
+):
+  chain_mask = (fgt_seq_color == seq_anchor)
+  fgt_seq_index = fgt_seq_index[chain_mask]
+  assert fgt_seq_index.shape == crop_mask.shape
+
+  return fgt_coord[chain_mask][crop_mask], fgt_coord_mask[chain_mask][crop_mask]
+
+
+def seq_crop_candidate(fgt_seq_color, fgt_seq_entity, seq_anchor):
+  """Find out all seq_colors that having the same seq_entity with `seq_anchor`"""
+  seq_entity = torch.unique(fgt_seq_entity[fgt_seq_color == seq_anchor])
+  seq_color = torch.unique(fgt_seq_color[fgt_seq_entity == seq_entity])
+  return seq_color
+
+
+def optimal_permutation_find(
+    fgt_coord,
+    fgt_coord_mask,
+    fgt_seq_index,
+    fgt_seq_color,
+    fgt_seq_entity,
+    seq_index,
+    seq_color,
+    seq_entity,
+    pred_points
+):
+  used = set()
+  ca_idx = residue_constants.atom_order['CA']
+
+  for seq_color_i in filter(lambda x: x > 0, torch.unique(seq_color)):
+    seq_color_opt, rmsd_opt = None, None
+
+    crop_mask = seq_crop_mask(
+        fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_color_i
+    )
+    pred_points_i = pred_points[seq_color == seq_color_i, ...]
+    for seq_color_j in seq_crop_candidate(fgt_seq_color, fgt_seq_entity, seq_color_i):
+      if int(seq_color_j) not in used:
+        true_points_j, points_mask_j = seq_crop_apply(
+            fgt_coord,
+            fgt_coord_mask,
+            fgt_seq_index,
+            fgt_seq_color,
+            seq_color_j,
+            crop_mask
+        )
+        r = rmsd(
+            pred_points_i[..., ca_idx, :],
+            true_points_j[..., ca_idx, :],
+            points_mask_j[..., ca_idx]
+        )
+        if not exists(rmsd_opt) or r < rmsd_opt:
+          seq_color_opt, rmsd_opt = seq_color_j, r
+
+    assert exists(seq_color_opt)
+    used.add(int(seq_color_opt))
+
+    if seq_color_i != seq_color_opt:
+      yield seq_color_i, seq_color_opt
+
+
+def multi_chain_permutation_alignment(value, batch):
+  """Permute chains with identical sequences such that they are best-effort aligned
+     with those of the prediction."""
+  if 'coord_fgt' in batch:
+    for bdx in range(batch['seq'].shape[0]):
+      if batch['seq_anchor'][bdx] > 0:
+        coord_opt, coord_mask_opt, rmsd_opt = None, None, None
+
+        crop_mask = seq_crop_mask(
+            batch['seq_index_fgt'][bdx],
+            batch['seq_color_fgt'][bdx],
+            batch['seq_index'][bdx],
+            batch['seq_color'][bdx],
+            batch['seq_anchor'][bdx]
+        )
+        for c in seq_crop_candidate(
+            batch['seq_color_fgt'][bdx],
+            batch['seq_entity_fgt'][bdx],
+            batch['seq_anchor'][bdx]
+        ):
+          true_points, points_mask = seq_crop_apply(
+              batch['coord_fgt'][bdx],
+              batch['coord_mask_fgt'][bdx],
+              batch['seq_index_fgt'][bdx],
+              batch['seq_color_fgt'][bdx],
+              c,
+              crop_mask
+          )
+          pred_points = value['coords'][bdx][batch['seq_color'][bdx] == batch['seq_anchor'][bdx]]
+          T = optimal_transform_create(pred_points, true_points, points_mask)
+
+          coord, coord_mask = batch['coord'][bdx], batch['coord_mask'][bdx]
+          for seq_color_i, seq_color_j in optimal_permutation_find(
+              rigids_apply(T, batch['coord_fgt'][bdx]),
+              batch['coord_mask_fgt'][bdx],
+              batch['seq_index_fgt'][bdx],
+              batch['seq_color_fgt'][bdx],
+              batch['seq_entity_fgt'][bdx],
+              batch['seq_index'][bdx],
+              batch['seq_color'][bdx],
+              batch['seq_entity'][bdx],
+              value['coords'][bdx]
+          ):
+            crop_mask = seq_crop_mask(
+                batch['seq_index_fgt'][bdx],
+                batch['seq_color_fgt'][bdx],
+                batch['seq_index'][bdx],
+                batch['seq_color'][bdx],
+                seq_color_i
+            )
+            true_points, points_mask = seq_crop_apply(
+                batch['coord_fgt'][bdx],
+                batch['coord_mask_fgt'][bdx],
+                batch['seq_index_fgt'][bdx],
+                batch['seq_color_fgt'][bdx],
+                seq_color_j,
+                crop_mask
+            )
+            coord[batch['seq_color'][bdx] == seq_color_i, ...] = true_points
+            coord_mask[batch['seq_color'][bdx] == seq_color_i, ...] = points_mask
+
+          ca_idx = residue_constants.atom_order['CA']
+          r = rmsd(
+              value['coords'][bdx, ..., ca_idx, :],
+              rigids_apply(T, coord[..., ca_idx, :]),
+              coord_mask[..., ca_idx]
+          )
+          if not exists(rmsd_opt) or r < rmsd_opt:
+            coord_opt, coord_mask_opt = coord, coord_mask
+            rmsd_opt = r
+        assert exists(coord_opt) and exists(coord_mask_opt)
+        assert coord_opt.shape == batch['coord'][bdx].shape
+        assert coord_mask_opt.shape == batch['coord_mask'][bdx].shape
+
+        # Apply the optimal coordinates
+        batch['coord'][bdx], batch['coord_mask'][bdx] = coord_opt, coord_mask_opt
+  return batch
