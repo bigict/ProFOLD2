@@ -22,7 +22,7 @@ help() {
 
 platform="slurm"
 
-ARGS=$(getopt -o "p:h" -l "--platform:help" -- "$@") || help 1
+ARGS=$(getopt -o "p:h" -l "platform:,help" -- "$@") || help 1
 eval "set -- ${ARGS}"
 while true; do
   case "$1" in
