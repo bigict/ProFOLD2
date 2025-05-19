@@ -106,7 +106,6 @@ ${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${ma
     --num_workers=1 \
     --prefetch_factor=4 \
     \
-    --wandb_enabled \
     --wandb_mode=offline \
     --wandb_dir=./wandb-${exp} \
     --wandb_name=profold2_${exp} \
