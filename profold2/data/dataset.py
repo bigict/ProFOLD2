@@ -1461,21 +1461,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       var_dict = ret['var']
       del ret['var']
 
-      def _is_aligned(k, chain_list):
-        if k != protein_id and k in self.attr_list:
-          for c, *_ in chain_list:
-            x = self.get_chain_list(compose_pid(k, c))
-            # FIX: some chains may be removed from chain.idx
-            if exists(x) and len(set(x) & set(chain_list)) == len(x):
-              return True
-        return False
-
-      def _yield_cluster(var_pid):
-        for var_pid in set(self.cluster.get(var_pid, []) + [var_pid]):
-          var_pid, c = decompose_pid(var_pid)
-          if self.has_chain(var_pid, c):
-            yield var_pid, c
-
       # filter complex with all chains aligned
       with timing(
           f'ProteinStructureDataset.build_chain_list {protein_id}', logger.debug
