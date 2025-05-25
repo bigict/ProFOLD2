@@ -274,7 +274,8 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   """Create pseudo beta features."""
 
   is_gly = torch.eq(
-      aatype, residue_constants.restype_order[('G', residue_constants.PROT)])
+      aatype, residue_constants.restype_order[('G', residue_constants.PROT)]
+  )
   ca_idx = residue_constants.atom_order['CA']
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
@@ -517,19 +518,21 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
   torsion_angles_mask = torch.prod(torsion_point_mask, dim=-1) * torsion_atom14_exists
 
   # Mirror psi, because we computed it from the Oxygen-atom.
+  mirror_vec = [1., 1., -1.] + [1.] * (residue_constants.chi_angles_num - 3)
   torsion_angles *= rearrange(
-      torch.as_tensor([1., 1., -1., 1., 1., 1., 1.], device=torsion_angles.device),
-      'g -> g ()'
+      torch.as_tensor(mirror_vec, device=torsion_angles.device), 'g -> g ()'
   )
 
   # Create alternative angles for ambiguous atom names.
   chi_is_ambiguous = batched_gather(
-      np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32), aatypes
+      np.asarray(residue_constants.chi_pi_periodic, dtype=np.float32)[
+          ..., :residue_constants.chi_angles_num - 3
+      ], aatypes
   )
   mirror_ambiguous = torch.cat(
       (
-          torch.ones(aatypes.shape + (3, ), dtype=torch.float32,
-                     device=aatypes.device), 1 - 2 * chi_is_ambiguous
+          torch.ones(aatypes.shape + (3, ), dtype=torch.float32, device=aatypes.device),
+          1 - 2 * chi_is_ambiguous,
       ),
       dim=-1
   )
@@ -587,7 +590,8 @@ def rigids_from_positions(aatypes, coords, coord_mask):
   )
   # Adapt backbone frame to old convention (mirror x-axis and z-axis).
   rots = torch.tile(
-      torch.eye(3, dtype=torch.float32, device=group_points.device), [8, 1, 1]
+      torch.eye(3, dtype=torch.float32, device=group_points.device),
+      [residue_constants.restype_rigid_group_num, 1, 1]
   )
   rots[0, 0, 0] = -1
   rots[0, 2, 2] = -1
@@ -596,18 +600,22 @@ def rigids_from_positions(aatypes, coords, coord_mask):
   # The frames for ambiguous rigid groups are just rotated by 180 degree around
   # the x-axis. The ambiguous group is always the last chi-group.
   restype_rigid_group_is_ambiguous = np.zeros(
-      [residue_constants.restype_num + 1, 8], dtype=np.float32
+      [residue_constants.restype_num + 1, residue_constants.restype_rigid_group_num],
+      dtype=np.float32
   )
   restype_rigid_group_rotations = np.tile(
-      np.eye(3, dtype=np.float32), [residue_constants.restype_num + 1, 8, 1, 1]
+      np.eye(3, dtype=np.float32), [
+          residue_constants.restype_num + 1, residue_constants.restype_rigid_group_num,
+          1, 1
+      ]
   )
 
   for resname, _ in residue_constants.residue_atom_renaming_swaps.items():
     restype = residue_constants.restype_order[residue_constants.restype_3to1[resname]]
-    chi_idx = int(sum(residue_constants.chi_angles_mask[restype]) - 1)
-    restype_rigid_group_is_ambiguous[restype, chi_idx + 4] = 1
-    restype_rigid_group_rotations[restype, chi_idx + 4, 1, 1] = -1
-    restype_rigid_group_rotations[restype, chi_idx + 4, 2, 2] = -1
+    chi_idx = int(sum(residue_constants.torsion_angles_mask[restype]) - 1)
+    restype_rigid_group_is_ambiguous[restype, chi_idx + 1] = 1
+    restype_rigid_group_rotations[restype, chi_idx + 1, 1, 1] = -1
+    restype_rigid_group_rotations[restype, chi_idx + 1, 2, 2] = -1
 
   group_is_ambiguous = batched_gather(restype_rigid_group_is_ambiguous, aatypes)
   group_ambiguous_rotations = batched_gather(restype_rigid_group_rotations, aatypes)
@@ -631,7 +639,9 @@ def rigids_to_positions(frames, aatypes):
   # Shape (b, l, 14)
   group_idx = batched_gather(residue_constants.restype_atom14_to_rigid_group, aatypes)
   # Shape (b, l, 14, 8)
-  group_mask = F.one_hot(group_idx.long(), num_classes=8).float()  # pylint: disable=not-callable
+  group_mask = F.one_hot(
+      group_idx.long(), num_classes=residue_constants.restype_rigid_group_num
+  ).float()  # pylint: disable=not-callable
 
   rotations = torch.einsum('... m n,... n h w->... m h w', group_mask, rotations)
   translations = torch.einsum('... m n,... n h->... m h', group_mask, translations)
@@ -695,7 +705,8 @@ def rigids_from_angles(aatypes, backb_frames, angles):
   # Shape (b, l)
   assert aatypes.shape == backb_rotations.shape[:-2]
   # Shape (b, l, n, 2) s.t. n <= 7
-  assert angles.shape[-1] == 2 and angles.shape[-2] <= 7
+  assert angles.shape[-1] == 2
+  assert angles.shape[-2] < residue_constants.restype_rigid_group_num
   assert angles.shape[:-2] == aatypes.shape
 
   _, _, n = angles.shape[:3]
@@ -737,14 +748,27 @@ def rigids_from_angles(aatypes, backb_frames, angles):
 
   # \chi_2, \chi_3, and \chi_4 frames do not transform to the backbone frame
   # but to the previous frame. So chain them up accordingly.
+  depend = batched_gather(residue_constants.restype_rigid_group_depend, aatypes)
+
   def to_prev_frames(frames, idx):
     rotations, translations = frames
 
     assert rotations.device == translations.device
     assert rotations.shape[:-2] == translations.shape[:-1]
 
+    # ri, ti = rigids_multiply(
+    #     (rotations[..., idx - 1:idx, :, :], translations[..., idx - 1:idx, :]),
+    #     (rotations[..., idx:idx + 1, :, :], translations[..., idx:idx + 1, :])
+    # )
     ri, ti = rigids_multiply(
-        (rotations[..., idx - 1:idx, :, :], translations[..., idx - 1:idx, :]),
+        (
+            torch.gather(
+                rotations, -3, repeat(depend[..., idx], '... l -> ... l () c d', c=3, d=3)
+            ),
+            torch.gather(
+                translations, -2, repeat(depend[..., idx], '... l -> ... l () d', d=3)
+            ),
+        ),
         (rotations[..., idx:idx + 1, :, :], translations[..., idx:idx + 1, :])
     )
     return torch.cat(
@@ -753,7 +777,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
         (translations[..., :idx, :], ti, translations[..., idx + 1:, :]), dim=-2
     )
 
-  for i in range(5, n + 1):
+  for i in range(5, residue_constants.chi_angles_num + 1):
     atom_frames = to_prev_frames(atom_frames, i)
 
   return rigids_multiply(

@@ -137,6 +137,30 @@ def tokens_modify_main(args):
   m = torch.cat((m[:-1], padd, m[-1:]), dim=0)
   x['model'][token_emb_key] = m
 
+  """
+  module.impl.head_folding.struct_module.to_angles.to_groups.weight torch.Size([14, 128])
+  module.impl.head_folding.struct_module.to_angles.to_groups.bias torch.Size([14])
+  chi_angles_num
+
+  """
+  # angle_net
+  angle_net_key = f'{args.key_prefix}head_folding.struct_module.to_angles.to_groups'
+  angle_net_weight_key, angle_net_bias_key = _linear_key(angle_net_key)
+  if angle_net_weight_key in x['model']:
+    m = x['model'][angle_net_weight_key]
+    assert m.shape[0] == 7 * 2
+    padd = torch.zeros(11 * 2 - m.shape[0], m.shape[1], dtype=m.dtype)
+    torch.nn.init.uniform_(padd)
+    m = torch.cat((m, padd), dim=0)
+    x['model'][angle_net_weight_key] = m
+  if angle_net_bias_key in x['model']:
+    m = x['model'][angle_net_bias_key]
+    assert m.shape[0] == 7 * 2
+    padd = torch.zeros(11 * 2 - m.shape[0], dtype=m.dtype)
+    torch.nn.init.uniform_(padd)
+    m = torch.cat((m, padd), dim=0)
+    x['model'][angle_net_bias_key] = m
+
   # sequence profile
   profile_key = f'{args.key_prefix}head_profile.project.3'
   profile_weight_key, profile_bias_key = _linear_key(profile_key)

@@ -22,25 +22,6 @@ from profold2.utils import exists, timing
 
 logger = logging.getLogger(__file__)
 
-_na_types = {
-    'DA': ' DA',
-    'DC': ' DC',
-    'DG': ' DG',
-    'DT': ' DT',
-    'A': '  A',
-    'C': '  C',
-    'G': '  G',
-    'U': '  U',
-}
-
-_na_atoms = {
-    'OP1': 'N',
-    'P': 'CA',
-    'OP2': 'C',
-    'O5\'': 'O',
-    'C5\'': 'CB',
-}
-
 
 def output_get_basename(filename):
   filename = os.path.basename(filename)
@@ -114,8 +95,9 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
   chain_type_dict = dict(mmcif_yield_chain_type(mmcif_dict))
 
   def _get_residue_id(residue_id, chain_type):
-    if chain_type in ('mol:dna', 'mol:rna'):
-      return _na_types.get(residue_id, 'UNK')
+    del chain_type
+    while len(residue_id) < 3:
+      residue_id = f' {residue_id}'
     if residue_id == 'MSE':
       return 'MET'
     return residue_id
@@ -198,7 +180,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       continue
 
     int_resseq = label_seq_id_list[i]
-    residue_id = _get_residue_id(residue_id_list[i], chain_type)
+    residue_id = residue_id_list[i]
     if fieldname_list[i] == 'HETATM' and (
         chain_id, int_resseq, residue_id
     ) in mod_residue_id_list:
@@ -207,6 +189,10 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       residue_id_arr = [residue_id]
     else:
       continue
+
+    residue_id_arr = [
+        _get_residue_id(residue_id, chain_type) for residue_id in residue_id_arr
+    ]
 
     int_resseq = int(int_resseq)
     if not exists(int_resseq_start):
@@ -225,9 +211,6 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
 
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
       for j, residue_id in enumerate(residue_id_arr):
-        if residue_id == 'MSE':
-          residue_id = 'MET'
-
         int_resseq_offset += (1 if j > 0 else 0)
         resname = _get_residue_letter(residue_id, chain_type)
         seq.append(resname)
@@ -236,24 +219,24 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
           coord_list.append(labels)
           coord_mask_list.append(label_mask)
           bfactor_list.append(bfactors)
-        labels = np.zeros((14, 3), dtype=np.float32)
-        label_mask = np.zeros((14, ), dtype=np.bool_)
-        bfactors = np.zeros((14, ), dtype=np.float32)
+        labels = np.zeros((residue_constants.atom14_type_num, 3), dtype=np.float32)
+        label_mask = np.zeros((residue_constants.atom14_type_num, ), dtype=np.bool_)
+        bfactors = np.zeros((residue_constants.atom14_type_num, ), dtype=np.float32)
 
     int_resseq_end = int_resseq
 
     if len(residue_id_arr) == 1:
+      residue_id = residue_id_arr[0]
       atom_list = _get_atom_list(residue_id, chain_type)
       try:
-        if chain_type in ('mol:dna', 'mol:rna'):
-          atom_id = _na_atoms.get(atom_id)
-        if exists(atom_id):
+        atom_idx = atom_list.index(atom_id)
+        if atom_idx != -1:
           atom_idx = atom_list.index(atom_id)
           coord = np.asarray((x_list[i], y_list[i], z_list[i]))
           if np.any(np.isnan(coord)):
             continue
           labels[atom_idx] = coord
-        if exists(atom_id) and np.any(coord != 0):
+        if atom_idx != -1 and np.any(coord != 0):
           # occupancy & B factor
           tempfactor = 0.0
           try:
@@ -263,7 +246,9 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
           bfactors[atom_idx] = tempfactor
           label_mask[atom_idx] = True
       except ValueError as e:
-        logger.debug(e)
+        logger.debug(
+            'residue_id: %s, chain_type: %s, exception: %s', residue_id, chain_type, e
+        )
 
   if exists(chain_id) and seq:
     domains += [
@@ -342,7 +327,9 @@ def main(args):  # pylint: disable=redefined-outer-name
           sk_list.pop(-1)
         if (v, chain_type) in mapping_dict:
           assert pk == mapping_dict[(v, chain_type)][0]
-          mapping_dict[(v, chain_type)] = (pk, mapping_dict[v][1] | set(sk_list))
+          mapping_dict[(v, chain_type)] = (
+              pk, mapping_dict[(v, chain_type)][1] | set(sk_list)
+          )
         else:
           mapping_dict[(v, chain_type)] = (pk, set(sk_list))
 
