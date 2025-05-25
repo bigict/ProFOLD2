@@ -5,6 +5,7 @@
      for further help.
   """
 import os
+import collections
 import functools
 import glob
 import gzip
@@ -17,25 +18,6 @@ from profold2.common import residue_constants
 from profold2.utils import exists, timing
 
 logger = logging.getLogger(__file__)
-
-_na_types = {
-    'DA': ' DA',
-    'DC': ' DC',
-    'DG': ' DG',
-    'DT': ' DT',
-    'A': '  A',
-    'C': '  C',
-    'G': '  G',
-    'U': '  U',
-}
-
-_na_atoms = {
-    'OP1': 'N',
-    'P': 'CA',
-    'OP2': 'C',
-    'O5\'': 'O',
-    'C5\'': 'CB',
-}
 
 
 def output_get_basename(filename):
@@ -86,12 +68,31 @@ def mmcif_yield_chain(mmcif_dict, _):  # pylint: disable=redefined-outer-name
   icode_list = mmcif_dict['_atom_site.pdbx_PDB_ins_code']
   fieldname_list = mmcif_dict['_atom_site.group_PDB']
   model_list = mmcif_dict['_atom_site.pdbx_PDB_model_num']
+  mod_residue_id_list = collections.defaultdict(list)
+  if '_pdbx_struct_mod_residue.id' in mmcif_dict:
+    for asym_id, seq_id, comp_id, parent_comp_id in zip(
+        mmcif_dict['_pdbx_struct_mod_residue.auth_asym_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.label_seq_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.label_comp_id'],
+        mmcif_dict['_pdbx_struct_mod_residue.parent_comp_id']
+    ):
+      mod_residue_id_list[(asym_id, seq_id, comp_id)].append(parent_comp_id)
+  elif '_struct_ref_seq_dif.mon_id' in mmcif_dict:  # FIX: 1xmz
+    for asym_id, seq_id, comp_id, parent_comp_id in zip(
+        mmcif_dict['_struct_ref_seq_dif.pdbx_pdb_strand_id'],
+        mmcif_dict['_struct_ref_seq_dif.seq_num'],
+        mmcif_dict['_struct_ref_seq_dif.mon_id'],
+        mmcif_dict['_struct_ref_seq_dif.db_mon_id']
+    ):
+      if parent_comp_id in residue_constants.restypes_with_x:
+        mod_residue_id_list[(asym_id, seq_id, comp_id)].append(parent_comp_id)
 
   chain_type_dict = dict(mmcif_yield_chain_type(mmcif_dict))
 
   def _get_residue_id(residue_id, chain_type):
-    if chain_type in ('mol:dna', 'mol:rna'):
-      return _na_types.get(residue_id, 'UNK')
+    del chain_type
+    while len(residue_id) < 3:
+      residue_id = f' {residue_id}'
     if residue_id == 'MSE':
       return 'MET'
     return residue_id
@@ -140,9 +141,19 @@ def mmcif_yield_chain(mmcif_dict, _):  # pylint: disable=redefined-outer-name
       continue
 
     int_resseq = label_seq_id_list[i]
-    residue_id = _get_residue_id(residue_id_list[i], chain_type)
-    if fieldname_list[i] != 'ATOM':
+    residue_id = residue_id_list[i]
+    if fieldname_list[i] == 'HETATM' and (
+        chain_id, int_resseq, residue_id
+    ) in mod_residue_id_list:
+      residue_id_arr = mod_residue_id_list[(chain_id, int_resseq, residue_id)]
+    elif fieldname_list[i] == 'ATOM':
+      residue_id_arr = [residue_id]
+    else:
       continue
+
+    residue_id_arr = [
+        _get_residue_id(residue_id, chain_type) for residue_id in residue_id_arr
+    ]
 
     int_resseq = int(int_resseq)
     if not exists(int_resseq_start):
@@ -152,13 +163,14 @@ def mmcif_yield_chain(mmcif_dict, _):  # pylint: disable=redefined-outer-name
       int_resseq_start = int_resseq
 
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
-      label_comp_id = _get_residue_letter(residue_id, chain_type)
-      auth_comp_id = _get_residue_letter(
-          _get_residue_id(auth_comp_id_list[i], chain_type), chain_type
-      )
-      seq.append(
-          (label_seq_id_list[i], label_comp_id, auth_seq_id_list[i], auth_comp_id)
-      )
+      if len(residue_id_arr) == 1:
+        label_comp_id = _get_residue_letter(residue_id_arr[0], chain_type)
+        auth_comp_id = _get_residue_letter(
+            _get_residue_id(auth_comp_id_list[i], chain_type), chain_type
+        )
+        seq.append(
+            (label_seq_id_list[i], label_comp_id, auth_seq_id_list[i], auth_comp_id)
+        )
 
     int_resseq_end = int_resseq
 

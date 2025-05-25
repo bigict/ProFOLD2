@@ -570,9 +570,9 @@ def _make_pdb_features(
       seq.append(resname)
 
       # cordinates
-      labels = np.zeros((14, 3), dtype=np.float32)
-      label_mask = np.zeros((14, ), dtype=np.bool_)
-      bfactors = np.zeros((14, ), dtype=np.float32)
+      labels = np.zeros((residue_constants.atom14_type_num, 3), dtype=np.float32)
+      label_mask = np.zeros((residue_constants.atom14_type_num, ), dtype=np.bool_)
+      bfactors = np.zeros((residue_constants.atom14_type_num, ), dtype=np.float32)
 
       if residue_id in residue_constants.restype_name_to_atom14_names:
         res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]
@@ -1797,6 +1797,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
+    # HACK: for rna or dna rebuild dataset
+    if pid.startswith('rna-') or pid.startswith('dna-'):
+      pid = pid[4:]
     return self.resolu.get(pid[:4], -1.)
 
   def get_msa_features_new(
@@ -1958,12 +1961,28 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               ret.update(
                   coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float32)
               )
+          # FIX: compatible with atom14
+          for field in ('coord', 'coord_mask', 'coord_plddt'):
+            if field in ret and ret[field].shape[1] < residue_constants.atom14_type_num:
+              pad = torch.zeros(
+                  ret[field].shape[0],
+                  residue_constants.atom14_type_num - ret[field].shape[1],
+                  *ret[field].shape[2:],
+                  dtype=ret[field].dtype
+              )
+              ret[field] = torch.cat((ret[field], pad), dim=1)
         else:
           l = ret['seq'].shape[0]
           ret.update(
-              coord=torch.zeros(l, 14, 3, dtype=torch.float32),
-              coord_mask=torch.zeros(l, 14, dtype=torch.bool),
-              coord_plddt=torch.ones(l, 14, dtype=torch.float32)
+              coord=torch.zeros(
+                  l, residue_constants.atom14_type_num, 3, dtype=torch.float32
+              ),
+              coord_mask=torch.zeros(
+                  l, residue_constants.atom14_type_num, dtype=torch.bool
+              ),
+              coord_plddt=torch.ones(
+                  l, residue_constants.atom14_type_num, dtype=torch.float32
+              )
           )
     else:  # from pdb_db file, NOTE: protein supported only
       for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
@@ -2077,7 +2096,9 @@ def _collate_fn(batch, feat_flags=None):
     for field in ('msa_idx', 'num_msa'):
       ret[field] = _to_tensor(field, dtype=torch.int)
     ret['msa'] = pad_rectangle(
-        _to_list('msa'), max_batch_len, padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        _to_list('msa'),
+        max_batch_len,
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('msa_mask', 'del_msa'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
@@ -2089,7 +2110,7 @@ def _collate_fn(batch, feat_flags=None):
     ret['variant'] = pad_rectangle(
         _to_list('variant'),
         max_batch_len,
-        padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
