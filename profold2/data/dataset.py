@@ -126,7 +126,7 @@ def _msa_as_seq(item, idx, str_key='msa'):
     i, new_order = 0, []
 
     while i < len(item['str_seq']):
-      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+      if item['str_seq'][i] not in residue_constants.restypes_gap:
         new_order.append(i)
       i += 1
     logger.debug(
@@ -144,12 +144,47 @@ def _msa_as_seq(item, idx, str_key='msa'):
     if 'coord' in item:
       # Apply new coord_mask based on aatypes
       restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
-      includes = set(['N', 'CA', 'C', 'CB', 'O'])
+      includes = set(
+          [
+              ('N',    residue_constants.PROT),
+              ('CA',   residue_constants.PROT),
+              ('C',    residue_constants.PROT),
+              ('CB',   residue_constants.PROT),
+              ('O',    residue_constants.PROT),
+              ('OP1',  residue_constants.DNA),
+              ('P',    residue_constants.DNA),
+              ('OP2',  residue_constants.DNA),
+              ('O5\'', residue_constants.DNA),
+              ('C5\'', residue_constants.DNA),
+              ('C4\'', residue_constants.DNA),
+              ('O4\'', residue_constants.DNA),
+              ('C3\'', residue_constants.DNA),
+              ('O3\'', residue_constants.DNA),
+              ('C2\'', residue_constants.DNA),
+              ('O2\'', residue_constants.DNA),
+              ('C1\'', residue_constants.DNA),
+              ('OP1',  residue_constants.RNA),
+              ('P',    residue_constants.RNA),
+              ('OP2',  residue_constants.RNA),
+              ('O5\'', residue_constants.RNA),
+              ('C5\'', residue_constants.RNA),
+              ('C4\'', residue_constants.RNA),
+              ('O4\'', residue_constants.RNA),
+              ('C3\'', residue_constants.RNA),
+              ('O3\'', residue_constants.RNA),
+              ('C2\'', residue_constants.RNA),
+              ('O2\'', residue_constants.RNA),
+              ('C1\'', residue_constants.RNA),
+          ]
+      )
       for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[
+            (residue_constants.restypes[i], mol_type)
+        ]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) not in includes:
             restype_atom14_mask[i, j] = 0
       coord_exists = torch.gather(
           torch.from_numpy(restype_atom14_mask), 0,
@@ -175,6 +210,7 @@ def _msa_as_seq(item, idx, str_key='msa'):
       item['resolu'] = -1.  # delete it !
 
   return item
+
 
 def _make_msa_features(
     sequences, seq_type=residue_constants.PROT, msa_idx=0, max_msa_depth=None
@@ -569,9 +605,9 @@ def _make_pdb_features(
       seq.append(resname)
 
       # cordinates
-      labels = np.zeros((14, 3), dtype=np.float32)
-      label_mask = np.zeros((14, ), dtype=np.bool_)
-      bfactors = np.zeros((14, ), dtype=np.float32)
+      labels = np.zeros((residue_constants.atom14_type_num, 3), dtype=np.float32)
+      label_mask = np.zeros((residue_constants.atom14_type_num, ), dtype=np.bool_)
+      bfactors = np.zeros((residue_constants.atom14_type_num, ), dtype=np.float32)
 
       if residue_id in residue_constants.restype_name_to_atom14_names:
         res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]
@@ -913,7 +949,7 @@ def _protein_crop_fn(protein, clip):
       l = protein[field].shape[0]
       protein[field] = F.one_hot(protein[field].long(), l + 1)  # shape: i c j
       protein[field] = torch.cat(
-          (protein[field][i:j, :, :1], protein[field][i:j, :, i+1:j+1]), dim=-1
+          (protein[field][i:j, :, :1], protein[field][i:j, :, i + 1:j + 1]), dim=-1
       )
       protein[field] = torch.argmax(protein[field], dim=-1)  # shapre: i c
   for field in ('str_msa', ):
@@ -1395,9 +1431,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # CATH update pid
       ret['pid'] = compose_pid(pid, None, seq_index_join(domains))
 
-    if 'msa_idx' in ret and ret['msa_idx'] != 0:
+    if ret.get('msa_idx', 0) != 0:
       ret = _msa_as_seq(ret, ret['msa_idx'], str_key='msa')
-    elif 'var_idx' in ret and ret['var_idx'] != 0:
+    elif ret.get('var_idx', 0) != 0:
       ret = _msa_as_seq(ret, ret['var_idx'], str_key='var')
     elif exists(domains):
       pass
@@ -1597,7 +1633,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           else:
             ret[field] = torch.cat((ret[field], feat[field]), dim=1)
         # Update chain_id
-        if feat['msa_idx'] > 0:
+        if feat.get('msa_idx', 0) > 0:
           msa_idx = feat['msa_idx']
           chains[idx] = f'{chain}@{msa_idx}'
       # Var related
@@ -1784,6 +1820,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
+    # HACK: for rna or dna rebuild dataset
+    if pid.startswith('rna-') or pid.startswith('dna-'):
+      pid = pid[4:]
     return self.resolu.get(pid[:4], -1.)
 
   def get_msa_features_new(
@@ -1844,8 +1883,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def get_var_features_new(
       self, fs, protein_id, seq_type=residue_constants.PROT, clip=None
   ):
-    k = int(np.random.randint(len(self.msa_list)))
-    source = self.msa_list[k]
     variant_path = f'{self.var_dir}/{protein_id}/msas/{protein_id}.a3m'
     if fs.exists(variant_path):
       with fs.open(variant_path) as f:
@@ -1946,12 +1983,31 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               ret.update(
                   coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float32)
               )
+          # FIX: compatible with atom14
+          for field in ('coord', 'coord_mask', 'coord_plddt'):
+            if field in ret:
+              if ret[field].shape[1] < residue_constants.atom14_type_num:
+                pad = torch.zeros(
+                    ret[field].shape[0],
+                    residue_constants.atom14_type_num - ret[field].shape[1],
+                    *ret[field].shape[2:],
+                    dtype=ret[field].dtype
+                )
+                ret[field] = torch.cat((ret[field], pad), dim=1)
+              elif ret[field].shape[1] > residue_constants.atom14_type_num:
+                ret[field] = ret[field][:, :residue_constants.atom14_type_num, ...]
         else:
           l = ret['seq'].shape[0]
           ret.update(
-              coord=torch.zeros(l, 14, 3, dtype=torch.float32),
-              coord_mask=torch.zeros(l, 14, dtype=torch.bool),
-              coord_plddt=torch.ones(l, 14, dtype=torch.float32)
+              coord=torch.zeros(
+                  l, residue_constants.atom14_type_num, 3, dtype=torch.float32
+              ),
+              coord_mask=torch.zeros(
+                  l, residue_constants.atom14_type_num, dtype=torch.bool
+              ),
+              coord_plddt=torch.ones(
+                  l, residue_constants.atom14_type_num, dtype=torch.float32
+              )
           )
     else:  # from pdb_db file, NOTE: protein supported only
       for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
@@ -2066,7 +2122,9 @@ def _collate_fn(batch, feat_flags=None):
     for field in ('msa_idx', 'num_msa'):
       ret[field] = _to_tensor(field, dtype=torch.int)
     ret['msa'] = pad_rectangle(
-        _to_list('msa'), max_batch_len, padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        _to_list('msa'),
+        max_batch_len,
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('msa_mask', 'del_msa'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
@@ -2078,7 +2136,7 @@ def _collate_fn(batch, feat_flags=None):
     ret['variant'] = pad_rectangle(
         _to_list('variant'),
         max_batch_len,
-        padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
