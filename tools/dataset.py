@@ -330,11 +330,11 @@ def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
   return parser
 
 
-def chain_file_parse(f):
+def chain_file_parse(f, chain_num=0):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     entry_id, chains = decompose_pid(line)
     chains = chains.split(',')
-    if len(chains) > 1:
+    if len(chains) > chain_num:
       yield entry_id.lower(), chains
 
 
@@ -388,7 +388,7 @@ def rebuild(data, args):  # pylint: disable=redefined-outer-name
   for chain_file in args.chain_file:
     with timing(f'processing {chain_file}', logger.info):
       with open(chain_file, 'r') as f:
-        for entry_id, chains in chain_file_parse(f):
+        for entry_id, chains in chain_file_parse(f, args.chain_num):
           seq, desc, npz = _rebuild(data, pid_to_idx, entry_id, chains)
           fid = f'{args.entry_id_prefix}{entry_id}_{chains[0]}'
           typ = f'mol:{args.chain_type}'
@@ -427,6 +427,9 @@ def rebuild_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('-o', '--output', type=str, default='.', help='output dir.')
   parser.add_argument(
       '--entry_id_prefix', type=str, default='', help='add `prefix` to pid.'
+  )
+  parser.add_argument(
+      '--chain_num', type=int, default=0, help='ignore #chains -le CHAIN_NUM.'
   )
   return parser
 
