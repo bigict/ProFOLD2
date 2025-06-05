@@ -27,7 +27,7 @@ logger = logging.getLogger(__file__)
 
 
 def _to_chain_group(data, args, idx):
-  def _monomer_contact_num(datum, cx, cy):
+  def _chain_contact_num(datum, cx, cy):
     ca_idx = residue_constants.atom_order['CA']
 
     squared_mask = rearrange(
@@ -40,42 +40,52 @@ def _to_chain_group(data, args, idx):
 
     return torch.sum((dist2 <= args.contact_cutoff**2) * squared_mask).item()
 
-  def _multimer_contact_num(contacts, cx_group, cy_group):
+  def _chain_group_contact_num(contacts, cx_group, cy_group):
     return sum(
         contacts[cx][cy] for cx, cy in itertools.product(
             cx_group, cy_group
         ) if cy not in cx_group
     )
 
-  def _new_chain_group(datum, chain_group):
+  def _chain_group_seq_len(datum, chain_group):
+    return sum(datum[c]['seq'].shape[0] for c in chain_group)
+
+  def _chain_group_new(datum, chain_group):
     contacts = defaultdict(dict)
 
     # compute contacts for each chain pair.
     for cx in chain_group:
       for cy in chain_group:
         if cx != cy:
-          c = _monomer_contact_num(datum, cx, cy)
+          c = _chain_contact_num(datum, cx, cy)
           contacts[cx][cy] = c
           contacts[cy][cx] = c
         else:
           contacts[cx][cy] = 0
 
-    chain_seen = set()
+    # re-group monomers
+    chain_group_list = defaultdict(list)
     for c in chain_group:
-      new_group, new_len, new_added = [c], datum[c]['seq'].shape[0], True
+      chain_group_list[datum[c]['str_seq']].append(c)
+    chain_group_list = list(chain_group_list.values())
+
+    chain_seen = set()
+    for cg in chain_group_list:
+      new_group, new_len, new_added = cg, _chain_group_seq_len(datum, cg), True
       while new_added and new_len < args.max_sequence_length:
         weights = [
-            (i, _multimer_contact_num(contacts, new_group, [x]))
-            for i, x in enumerate(chain_group)
+            (i, _chain_group_contact_num(contacts, new_group, x))
+            for i, x in enumerate(chain_group_list)
         ]
 
         new_added = False
         for i, w in sorted(
             filter(lambda x: x[1] > 0, weights), key=lambda x: x[1], reverse=True
         ):
-          if new_len + datum[chain_group[i]]['seq'].shape[0] < args.max_sequence_length:
-            new_len += datum[chain_group[i]]['seq'].shape[0]
-            new_group += [chain_group[i]]
+          cg_len = _chain_group_seq_len(datum, chain_group_list[i])
+          if new_len + cg_len < args.max_sequence_length:
+            new_len += cg_len
+            new_group += chain_group_list[i]
             new_added = True
       new_group_str = ','.join(sorted(new_group))
       if new_group_str not in chain_seen:
@@ -103,7 +113,7 @@ def _to_chain_group(data, args, idx):
               logger.debug(
                   'NOTE: %s length: %d chains: %s', pid, chain_group_length, ','.join(chain_group)
               )
-              for g in _new_chain_group(datum, chain_group):
+              for g in _chain_group_new(datum, chain_group):
                 chain_dict[pid].append(g)
             else:
               chain_dict[pid].append(chain_group)
@@ -431,6 +441,7 @@ def contacts_add_argument(parser):  # pylint: disable=redefined-outer-name
 
 
 def main(work_fn, args):  # pylint: disable=redefined-outer-name
+  logger.info(args)
   # get data
   feat_flags = dataset.FEAT_ALL & (~dataset.FEAT_MSA)
   if hasattr(args, 'msa_required') and args.msa_required:
@@ -444,7 +455,7 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
       msa_as_seq_prob=args.msa_as_seq_prob,
       feat_flags=feat_flags
   )
-  with timing(f'{args.command}', logging.info):
+  with timing(f'{args.command}', logger.info):
     work_fn(data, args)
 
 
