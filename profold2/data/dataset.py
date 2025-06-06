@@ -414,43 +414,45 @@ def _make_anchor_features(fgt_color, fgt_entity, feat):
       entity_color_cnt[int(entity_id)] = len(input_color)
       entity_length[int(entity_id)] = int(torch.sum(feat['seq_entity'] == entity_id))
 
-  # filter entities by count
-  if entity_color_cnt:
-    group_by_cnt = lambda x: x[1]
-    _, entity_color_cnt = next(
-        itertools.groupby(
-            sorted(entity_color_cnt.items(), key=group_by_cnt), key=group_by_cnt
-        )
-    )
-    entity_color_cnt = dict(entity_color_cnt)
+  if any(n > 1 for n in entity_color_cnt.values()):  # is a homomer
+    # filter entities by count
+    if entity_color_cnt:
+      group_by_cnt = lambda x: x[1]
+      _, entity_color_cnt = next(
+          itertools.groupby(
+              sorted(entity_color_cnt.items(), key=group_by_cnt), key=group_by_cnt
+          )
+      )
+      entity_color_cnt = dict(entity_color_cnt)
 
-  # filter entities by length
-  if len(entity_color_cnt) > 1:
-    max_length = max(entity_length[entity_id] for entity_id in entity_color_cnt)
-    entity_color_cnt = {
-        entity_id: cnt
-        for entity_id, cnt in entity_color_cnt.items()
-        if entity_length[entity_id] == max_length
-    }
-
-  # random select one
-  if len(entity_color_cnt) > 1:
-    entity_color_cnt = dict(np.random.choice(entity_color_cnt.items()))
-
-  if entity_color_cnt:
-    assert len(entity_color_cnt) == 1
-    entity_id = next(iter(entity_color_cnt))
-    color_list = torch.unique(feat['seq_color'][feat['seq_entity'] == entity_id])
-
-    if len(color_list) > 1:
-      color_length = {}
-      for c in color_list:
-        color_length[int(c)] = int(torch.sum(feat['seq_color'] == c))
-      max_length = max(color_length.values())
-      color_list = [c for c in color_list if color_length[int(c)] == max_length]
+    # filter entities by length
+    if len(entity_color_cnt) > 1:
+      max_length = max(entity_length[entity_id] for entity_id in entity_color_cnt)
+      entity_color_cnt = {
+          entity_id: cnt
+          for entity_id, cnt in entity_color_cnt.items()
+          if entity_length[entity_id] == max_length
+      }
 
     # random select one
-    ret.update(seq_anchor=np.random.choice(color_list))
+    if len(entity_color_cnt) > 1:
+      entity_color_cnt = dict(np.random.choice(entity_color_cnt.items()))
+
+    if entity_color_cnt:
+      assert len(entity_color_cnt) == 1
+      entity_id = next(iter(entity_color_cnt))
+      color_list = torch.unique(feat['seq_color'][feat['seq_entity'] == entity_id])
+
+      if len(color_list) > 1:
+        color_length = {}
+        for c in color_list:
+          color_length[int(c)] = int(torch.sum(feat['seq_color'] == c))
+        max_length = max(color_length.values())
+        color_list = [c for c in color_list if color_length[int(c)] == max_length]
+
+      # random select one
+      ret.update(seq_anchor=np.random.choice(color_list))
+  logger.debug('_make_anchor_features: %s', int(ret.get('seq_anchor', 0)))
 
   return ret
 
