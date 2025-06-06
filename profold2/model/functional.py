@@ -1378,14 +1378,8 @@ def seq_crop_mask(fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_anchor
   )
 
 
-def seq_crop_apply(
-    fgt_coord, fgt_coord_mask, fgt_seq_index, fgt_seq_color, seq_anchor, crop_mask
-):
-  chain_mask = (fgt_seq_color == seq_anchor)
-  fgt_seq_index = fgt_seq_index[chain_mask]
-  assert fgt_seq_index.shape == crop_mask.shape
-
-  return fgt_coord[chain_mask][crop_mask], fgt_coord_mask[chain_mask][crop_mask]
+def seq_crop_apply(fgt_coord, fgt_coord_mask, color_mask, crop_mask):
+  return fgt_coord[color_mask][crop_mask], fgt_coord_mask[color_mask][crop_mask]
 
 
 def seq_crop_candidate(fgt_seq_color, fgt_seq_entity, seq_anchor):
@@ -1421,9 +1415,7 @@ def optimal_permutation_find(
         true_points_j, points_mask_j = seq_crop_apply(
             fgt_coord,
             fgt_coord_mask,
-            fgt_seq_index,
-            fgt_seq_color,
-            seq_color_j,
+            fgt_seq_color == seq_color_j,
             crop_mask
         )
         r = rmsd(
@@ -1464,9 +1456,7 @@ def multi_chain_permutation_alignment(value, batch):
           true_points, points_mask = seq_crop_apply(
               batch['coord_fgt'][bdx],
               batch['coord_mask_fgt'][bdx],
-              batch['seq_index_fgt'][bdx],
-              batch['seq_color_fgt'][bdx],
-              c,
+              batch['seq_color_fgt'][bdx] == c,
               crop_mask
           )
           pred_points = value['coords'][bdx][batch['seq_color'][bdx] == batch['seq_anchor'][bdx]]
@@ -1484,7 +1474,7 @@ def multi_chain_permutation_alignment(value, batch):
               batch['seq_entity'][bdx],
               value['coords'][bdx]
           ):
-            crop_mask = seq_crop_mask(
+            crop_mask_i = seq_crop_mask(
                 batch['seq_index_fgt'][bdx],
                 batch['seq_color_fgt'][bdx],
                 batch['seq_index'][bdx],
@@ -1494,10 +1484,8 @@ def multi_chain_permutation_alignment(value, batch):
             true_points, points_mask = seq_crop_apply(
                 batch['coord_fgt'][bdx],
                 batch['coord_mask_fgt'][bdx],
-                batch['seq_index_fgt'][bdx],
-                batch['seq_color_fgt'][bdx],
-                seq_color_j,
-                crop_mask
+                batch['seq_color_fgt'][bdx] == seq_color_j,
+                crop_mask_i
             )
             coord[batch['seq_color'][bdx] == seq_color_i, ...] = true_points
             coord_mask[batch['seq_color'][bdx] == seq_color_i, ...] = points_mask
