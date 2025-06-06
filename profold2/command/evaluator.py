@@ -13,16 +13,11 @@ from einops import rearrange
 
 # models & data
 from profold2.data import dataset
-from profold2.data.utils import pdb_save, tensor_to_numpy
+from profold2.data.utils import tensor_to_numpy
 from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import Kabsch, TMscore, exists, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
-
-
-def preprocess(args):  # pylint: disable=redefined-outer-name
-  if args.save_pdb:
-    os.makedirs(os.path.abspath(os.path.join(args.prefix, 'pdbs')), exist_ok=True)
 
 
 def evaluate(rank, args):  # pylint: disable=redefined-outer-name
@@ -178,8 +173,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
           'no: %d pid: %s, %s', idx, fasta_name,
           ', '.join(f'{k}: {v}' for k, v in metric_dict.items())
       )
-      if args.save_pdb:
-        pdb_save(batch, r.headers, os.path.join(args.prefix, 'pdbs'), step=idx)
 
       return tms.item()
     else:
@@ -211,9 +204,6 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
 
   if n > 0:
     logging.info('%d TM-score: %f (average)', n, tmscore / n)
-
-
-setattr(evaluate, 'preprocess', preprocess)
 
 
 def add_arguments(parser):  # pylint: disable=redefined-outer-name
@@ -325,7 +315,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       help='shard size in evoformer model.'
   )
 
-  parser.add_argument('--save_pdb', action='store_true', help='save pdb files.')
   parser.add_argument(
       '--amp_enabled', action='store_true', help='enable automatic mixed precision.'
   )

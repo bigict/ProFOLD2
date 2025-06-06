@@ -22,7 +22,7 @@ from torch.optim import Adam
 from profold2.common import residue_constants
 from profold2.data import dataset
 from profold2.data.utils import (
-    cycling, embedding_get_labels, tensor_to_numpy, weights_from_file
+    embedding_get_labels, tensor_to_numpy, weights_from_file
 )
 from profold2.model import FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
@@ -134,7 +134,16 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         pin_memory=True,
         num_workers=args.num_workers
     )
-    return cycling(data_loader, data_filter)
+    epoch = 0
+    while True:
+      logging.info('epoch: %d', epoch)
+
+      data_iter = iter(data_loader)
+      for data in data_iter:
+        if data_filter(data):
+          yield epoch, data
+
+      epoch += 1
 
   train_data = create_cycling_data(
       args.train_data,

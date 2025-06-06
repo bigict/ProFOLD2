@@ -1,12 +1,9 @@
 """Utils from data module
  """
-import logging
-import os
 import re
 
 import numpy as np
 import torch
-from einops import rearrange
 
 from profold2.common import protein, residue_constants
 from profold2.utils import exists
@@ -105,19 +102,6 @@ def parse_seq_index(description, input_sequence, seq_index):
   return seq_index
 
 
-def cycling(loader, cond=lambda x: True):
-  epoch = 0
-  while True:
-    logging.info('epoch: %d', epoch)
-
-    data_iter = iter(loader)
-    for data in data_iter:
-      if cond(data):
-        yield epoch, data
-
-    epoch += 1
-
-
 def weights_from_file(filename_list):
   if filename_list:
     for filename in filename_list.split(','):
@@ -137,13 +121,6 @@ def embedding_get_labels(name, mat):
         for i in range(mat.shape[0])
     ]
   return None
-
-
-def filter_from_file(filename):
-  if filename:
-    with open(filename, 'r', encoding='utf-8') as f:
-      for line in filter(lambda x: len(x) > 0, map(lambda x: x.strip(), f)):
-        yield line
 
 
 def tensor_to_numpy(t):
@@ -197,25 +174,3 @@ def pdb_from_prediction(batch, headers, idx=None):
   if exists(idx):
     return to_pdb_str(idx)
   return [to_pdb_str(i) for i in range(len(batch['pid']))]
-
-
-def pdb_save(batch, headers, prefix='/tmp', step=None):
-  for idx, pid in enumerate(batch['pid']):
-    pdb_str = pdb_from_prediction(batch, headers, idx=idx)
-
-    if exists(step):
-      p = os.path.join(prefix, f'{pid}_{step}_{idx}.pdb')
-    else:
-      p = os.path.join(prefix, f'{pid}.pdb')
-    with open(p, 'w') as f:
-      f.write(pdb_str)
-
-      str_seq = batch['str_seq'][idx]
-      if 'mask' in batch:
-        masked_seq_len = torch.sum(batch['mask'][idx, ...], dim=-1)
-      else:
-        masked_seq_len = len(str_seq)
-      logging.debug(
-          'step: %s/%s, length: %s/%s, PDB save: %s', step, idx, masked_seq_len,
-          len(str_seq), pid
-      )
