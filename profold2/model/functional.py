@@ -1359,7 +1359,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     with torch.no_grad():
       pred_ca = true_ca
 
-  R = kabsch_rotation(pred_ca, true_ca)
+  R = kabsch_rotation(pred_ca, true_ca)  # pylint: disable=invalid-name
 
   pred_center = torch.mean(pred_ca, dim=-2, keepdim=True)
   true_center = torch.mean(true_ca, dim=-2, keepdim=True)
@@ -1397,7 +1397,6 @@ def optimal_permutation_find(
     fgt_seq_entity,
     seq_index,
     seq_color,
-    seq_entity,
     pred_points
 ):
   used = set()
@@ -1459,8 +1458,10 @@ def multi_chain_permutation_alignment(value, batch):
               batch['seq_color_fgt'][bdx] == c,
               crop_mask
           )
-          pred_points = value['coords'][bdx][batch['seq_color'][bdx] == batch['seq_anchor'][bdx]]
-          T = optimal_transform_create(pred_points, true_points, points_mask)
+          pred_points = value['coords'][bdx][
+              batch['seq_color'][bdx] == batch['seq_anchor'][bdx]
+          ]
+          T = optimal_transform_create(pred_points, true_points, points_mask)  # pylint: disable=invalid-name
 
           coord, coord_mask = batch['coord'][bdx], batch['coord_mask'][bdx]
           for seq_color_i, seq_color_j in optimal_permutation_find(
@@ -1471,7 +1472,6 @@ def multi_chain_permutation_alignment(value, batch):
               batch['seq_entity_fgt'][bdx],
               batch['seq_index'][bdx],
               batch['seq_color'][bdx],
-              batch['seq_entity'][bdx],
               value['coords'][bdx]
           ):
             crop_mask_i = seq_crop_mask(
