@@ -52,6 +52,7 @@ def _to_chain_group(data, args, idx):
 
   def _chain_group_new(datum, chain_group):
     contacts = defaultdict(dict)
+    chain_seen = set()
 
     # compute contacts for each chain pair.
     for cx in chain_group:
@@ -63,15 +64,10 @@ def _to_chain_group(data, args, idx):
         else:
           contacts[cx][cy] = 0
 
-    # re-group monomers
-    chain_group_list = defaultdict(list)
-    for c in chain_group:
-      chain_group_list[datum[c]['str_seq']].append(c)
-    chain_group_list = list(chain_group_list.values())
+    def _make_group(cg, chain_group_list):
+      new_group, new_len, new_added= cg, _chain_group_seq_len(datum, cg), True
+      assert new_len <= args.max_sequence_length
 
-    chain_seen = set()
-    for cg in chain_group_list:
-      new_group, new_len, new_added = cg, _chain_group_seq_len(datum, cg), True
       while new_added and new_len < args.max_sequence_length:
         weights = [
             (i, _chain_group_contact_num(contacts, new_group, x))
@@ -91,6 +87,20 @@ def _to_chain_group(data, args, idx):
       if new_group_str not in chain_seen:
         yield new_group
         chain_seen.add(new_group_str)
+
+    # re-group monomers
+    chain_group_list = defaultdict(list)
+    for c in chain_group:
+      chain_group_list[datum[c]['str_seq']].append(c)
+    chain_group_list = list(chain_group_list.values())
+
+    for cg in chain_group_list:
+      new_len = _chain_group_seq_len(datum, cg)
+      if new_len < args.max_sequence_length:
+        yield from _make_group(cg, chain_group_list)
+      else:
+        for c in cg:
+          yield from _make_group([c], [[x] for x in cg])
 
   chain_dict = defaultdict(list)
 
