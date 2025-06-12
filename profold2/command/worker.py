@@ -212,9 +212,9 @@ class WorkerModel(object):
       checkpoint = torch.load(f, map_location=map_location)
     kwargs = dict(
         dim=checkpoint['dim'],
-        depth=checkpoint['evoformer_depth'],
-        heads=checkpoint['evoformer_head_num'],
-        dim_head=checkpoint['evoformer_head_dim'],
+        evoformer_depth=checkpoint['evoformer_depth'],
+        evoformer_head_num=checkpoint['evoformer_head_num'],
+        evoformer_head_dim=checkpoint['evoformer_head_dim'],
         accept_msa_attn=checkpoint.get('evoformer_accept_msa_attn', True),
         accept_frame_attn=checkpoint.get('evoformer_accept_frame_attn', False),
         accept_frame_update=checkpoint.get('evoformer_accept_frame_update', False),
