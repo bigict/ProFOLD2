@@ -436,7 +436,8 @@ def _make_anchor_features(fgt_color, fgt_entity, feat):
 
     # random select one
     if len(entity_color_cnt) > 1:
-      entity_color_cnt = dict(np.random.choice(entity_color_cnt.items()))
+      entity_id = np.random.choice(list(entity_color_cnt))
+      entity_color_cnt = {entity_id: entity_color_cnt[entity_id]}
 
     if entity_color_cnt:
       assert len(entity_color_cnt) == 1
