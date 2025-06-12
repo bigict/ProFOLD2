@@ -64,9 +64,9 @@ class AlphaFold2(nn.Module):
       self,
       *,
       dim,
-      depth=48,
-      heads=8,
-      dim_head=32,
+      evoformer_depth=48,
+      evoformer_head_num=8,
+      evoformer_head_dim=32,
       max_rel_dist=32,
       num_tokens=len(residue_constants.restypes_with_x),
       attn_dropout=0.,
@@ -96,11 +96,11 @@ class AlphaFold2(nn.Module):
 
     # main trunk modules
     self.evoformer = Evoformer(
-        depth=depth,
+        depth=evoformer_depth,
         dim_msa=dim_msa,
         dim_pairwise=dim_pairwise,
-        heads=heads,
-        dim_head=dim_head,
+        heads=evoformer_head_num,
+        dim_head=evoformer_head_dim,
         accept_msa_attn=accept_msa_attn,
         accept_frame_attn=accept_frame_attn,
         accept_frame_update=accept_frame_update,
