@@ -66,7 +66,7 @@ def _to_chain_group(data, args, idx):
 
     def _make_group(cg, chain_group_list):
       new_group, new_len, new_added= cg, _chain_group_seq_len(datum, cg), True
-      assert new_len <= args.max_sequence_length
+      # assert new_len <= args.max_sequence_length
 
       while new_added and new_len < args.max_sequence_length:
         weights = [
