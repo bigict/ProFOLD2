@@ -46,6 +46,7 @@ def _msa_aligned_ratio(msa, n, threshold=None):
     return 0
   return r
 
+
 def _msa_ident_ratio(msa, seq, threshold=None):
   r = 0
   i, j = 0, 0
@@ -60,6 +61,7 @@ def _msa_ident_ratio(msa, seq, threshold=None):
     return 0
   return r
 
+
 def _msa_sample_weight(msa, min_alr=None, min_ident=None):
   m, n = len(msa[0]), len(msa)
 
@@ -70,6 +72,7 @@ def _msa_sample_weight(msa, min_alr=None, min_ident=None):
     v = np.asarray([_msa_ident_ratio(s, msa[0], threshold=min_ident) for s in msa[1:n]])
     w *= v
   return w
+
 
 def _msa_yield_from_clip(msa, clip):
   k = 0
@@ -92,6 +95,7 @@ def _msa_yield_from_clip(msa, clip):
         if k >= i:
           yield c
         k += 1
+
 
 def _msa_as_seq(item, idx, str_key='msa'):
   str_msa_key, del_msa_key = f'str_{str_key}', f'del_{str_key}'
@@ -173,9 +177,7 @@ def _msa_as_seq(item, idx, str_key='msa'):
     #       del item[field]
 
     # Fix seq_index
-    del_seq = torch.cumsum(
-        item[del_msa_key][0], dim=-1, dtype=item[del_msa_key].dtype
-    )
+    del_seq = torch.cumsum(item[del_msa_key][0], dim=-1, dtype=item[del_msa_key].dtype)
     item['seq_index'] = item['seq_index'] + del_seq
     if 'resolu' in item:
       item['resolu'] = -1.  # delete it !
@@ -1554,27 +1556,28 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['num_var'] = len(ret['variant'])
 
       var_idx, sequences = 0, ret['str_var']
-      if ret['msa_idx'] == 0 and len(sequences) > 1:
-        w = _msa_sample_weight(
-            sequences,
-            min_alr=self.var_as_seq_min_alr,
-            min_ident=self.var_as_seq_min_ident
-        )
-
-        if exists(self.var_as_seq_min_label):
-          v = torch.logical_or(
-              torch.logical_and(
-                  ret['variant_label'] >= self.var_as_seq_min_label,
-                  ret['variant_label_mask']
-              ),
-              ~ret['variant_label_mask']
+      if ret['msa_idx'] == 0:
+        if len(sequences) > 1 and np.random.random() < self.var_as_seq_prob:
+          w = _msa_sample_weight(
+              sequences,
+              min_alr=self.var_as_seq_min_alr,
+              min_ident=self.var_as_seq_min_ident
           )
-          w *= np.all(v[1:].numpy(), axis=-1)
 
-        t = np.sum(w)
-        if t > 0:
-          w /= t
-          var_idx = int(np.argmax(np.random.multinomial(1, w))) + 1
+          if exists(self.var_as_seq_min_label):
+            v = torch.logical_or(
+                torch.logical_and(
+                    ret['variant_label'] >= self.var_as_seq_min_label,
+                    ret['variant_label_mask']
+                ),
+                ~ret['variant_label_mask']
+            )
+            w *= np.all(v[1:].numpy(), axis=-1)
+
+          t = np.sum(w)
+          if t > 0:
+            w /= t
+            var_idx = int(np.argmax(np.random.multinomial(1, w))) + 1
 
       if var_idx > 0:
         var_depth = len(sequences)
