@@ -92,6 +92,8 @@ def make_loss_weight(protein, distogram_w=.5, folding_w=.0, is_training=True):
   assert distogram_w <= 1.0 and folding_w <= 1.0
   if is_training and 'msa_idx' in protein:
     mask = (protein['msa_idx'] == 0)
+    if 'var_idx' in protein:
+      mask = mask & (protein['var_idx'] == 0)
     protein['loss.distogram.w'] = mask * (1.0 - distogram_w) + distogram_w
     protein['loss.folding.w'] = mask * (1.0 - folding_w) + folding_w
   return protein
