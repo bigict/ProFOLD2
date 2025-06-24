@@ -47,7 +47,7 @@ else
   master_addr=${master_addr:-"127.0.0.1"}
   node_opts="--nnodes=${nnodes:-1} --node_rank=${node_rank:-0}"
 fi
-master_port=${MASTER_PORT:-23456}
+master_port=${master_port:-23456}
 echo "MasterAddr=${master_addr}:${master_port}"
 echo "==================================="
 

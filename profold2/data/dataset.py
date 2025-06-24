@@ -1110,7 +1110,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       self.chain_list = defaultdict(list)
       chain_idx = default(chain_idx, 'chain.idx')
       if fs.exists(chain_idx):
-        logger.info('load chian data from: %s', chain_idx)
+        logger.info('load chain data from: %s', chain_idx)
         with fs.open(chain_idx) as f:
           for line in filter(
               lambda x: len(x) > 0, map(lambda x: fs.textise(x).strip(), f)
