@@ -6,7 +6,7 @@ ProFOLD2 - A protein 3D structure prediction application
 
 ## Requirements
 
-* [Python3.6+](https://www.python.org)
+* [Python3.8+](https://www.python.org)
 * [Dependencies](https://github.com/bigict/ProFOLD2/network/dependencies)
 
 ## Running ProFOLD2
