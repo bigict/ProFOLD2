@@ -1141,11 +1141,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         self.pdb_db = FoldcompDB(fs, pdb_uri, pdb_idx)
         weakref.finalize(self.pdb_db, self.pdb_db.close)
 
-    self.fasta_dir = 'fasta'
-    self.pdb_dir = 'npz'
+    self.fasta_dir = env('profold2_data_fasta_dir', defval='fasta')
+    self.pdb_dir = env('profold2_data_pdb_dir', defval='npz')
 
     self.msa_list = ['BFD30_E-3']
-    self.var_dir = default(var_dir, 'var')
+    self.var_dir = env('profold2_data_var_dir', defval=default(var_dir, 'var'))
 
   def __getstate__(self):
     d = self.__dict__
