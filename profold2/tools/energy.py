@@ -121,12 +121,12 @@ def main(args):  # pylint: disable=redefined-outer-name
     if exists(U0):
       X = elo_score(U[b], U0[b], sigma, config)  # pylint: disable=invalid-name
       for _, (s, d, u, x) in enumerate(zip(sequences, descriptions, U[b], X)):
-        out.write(f'>{d} U:{u.tolist()} X:{torch.exp(u).tolist()} Elo_score:{x.tolist()}\n'
+        out.write(f'>{d}\tU:{u.tolist()}\tX:{torch.exp(u).tolist()}\tElo_score:{x.tolist()}\n'
         )
         out.write(f'{s}\n')
     else:
       for _, (s, d, u) in enumerate(zip(sequences, descriptions, U[b])):
-        out.write(f'>{d} U:{u.tolist()} X:{torch.exp(u).tolist()}\n')
+        out.write(f'>{d}\tU:{u.tolist()}\tX:{torch.exp(u).tolist()}\n')
         out.write(f'{s}\n')
 
   def _energy(S, mask):
@@ -188,7 +188,10 @@ if __name__ == '__main__':
   )
 
   parser.add_argument(
-      'a3m_file', type=str, nargs='+', help='list of model files (.pkl)'
+      'a3m_file',
+      type=argparse.FileType('r'),
+      nargs='+',
+      help='list of a3m files (.a3m)'
   )
   parser.add_argument(
       '--model_ckpt', type=str, default=None, help='profold model file (.pth)'
@@ -202,9 +205,9 @@ if __name__ == '__main__':
   parser.add_argument(
       '-o',
       '--output_file',
-      type=str,
-      default=None,
-      help='list of amino acides to be masked.'
+      type=argparse.FileType('w'),
+      default=sys.stdout,
+      help='output file'
   )
   parser.add_argument(
       '--chunksize',
@@ -214,9 +217,6 @@ if __name__ == '__main__':
   )
   parser.add_argument(
       '-m', '--mask', type=str, default='-', help='list of amino acides to be masked.'
-  )
-  parser.add_argument(
-      '--field', type=str, default='U', help='list of amino acides to be masked.'
   )
 
   args = parser.parse_args()
