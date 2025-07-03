@@ -144,9 +144,7 @@ def main(args):  # pylint: disable=redefined-outer-name
 
 
   for a3m_file in args.a3m_file:
-    with open(a3m_file, 'r') as f:
-      a3m_string = f.read()
-    sequences, descriptions = parse_fasta(a3m_string)
+    sequences, descriptions = parse_fasta(a3m_file.read())
 
     if exists(args.model_ckpt):
       feats = _make_var_features(sequences[:1], descriptions[:1])
