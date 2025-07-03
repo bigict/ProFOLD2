@@ -10,11 +10,11 @@ from torch import nn
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model.commons import Always, PairwiseEmbedding, tensor_add
+from profold2.model.commons import PairwiseEmbedding, tensor_add
 from profold2.model import functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
-from profold2.utils import default, exists
+from profold2.utils import exists
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,49 @@ class ReturnValues(_ReturnValues):
     )
 
 
+class InputEmbeddings(nn.Module):
+  """InputEmbedder
+   """
+  def __init__(
+      self,
+      dim,
+      num_seq_tokens=len(residue_constants.restypes_with_x),
+      num_msa_tokens=0,
+      max_rel_dist=0
+  ):
+    super().__init__()
+
+    dim_msa, dim_pairwise = dim
+
+    self.to_single_emb = nn.Embedding(num_seq_tokens + 1, dim_msa)
+    self.to_msa_emb = nn.Linear(num_msa_tokens, dim_msa) if num_msa_tokens > 0 else None
+
+    if num_msa_tokens > 0:
+      self.to_pairwise_emb = PairwiseEmbedding(
+          (num_msa_tokens, dim_pairwise), max_rel_dist=max_rel_dist
+      )
+    else:
+      self.to_pairwise_emb = PairwiseEmbedding(dim, max_rel_dist=max_rel_dist)
+
+  def forward(self, target_feat, target_mask, seq_index, msa_feat=None, msa_mask=None):
+    s = self.to_single_emb(target_feat)
+    if exists(self.to_msa_emb) and exists(msa_feat):
+      m = self.to_msa_emb(msa_feat)
+      m_mask = msa_mask
+      assert exists(msa_mask)
+    else:
+      m = self.to_single_emb(rearrange(target_feat, '... i d -> ... () i d'))
+      m_mask = rearrange(target_mask, '... i -> ... () i')
+
+    # add single representation to msa representation
+    m = tensor_add(m, rearrange(s, '... i d -> ... () i d'))
+
+    if not exists(msa_feat):
+      target_feat = s
+    x, x_mask = self.to_pairwise_emb(target_feat, target_mask, seq_index=seq_index)
+    return x, m, x_mask, m_mask
+
+
 class AlphaFold2(nn.Module):
   """An implementation of the AlphaFold2 model
    """
@@ -69,9 +112,9 @@ class AlphaFold2(nn.Module):
       evoformer_head_dim=32,
       max_rel_dist=32,
       num_tokens=len(residue_constants.restypes_with_x),
+      num_msa_tokens=0,
       attn_dropout=0.,
       ff_dropout=0.,
-      disable_token_embed=False,
       accept_msa_attn=True,
       accept_frame_attn=False,
       accept_frame_update=False,
@@ -88,11 +131,13 @@ class AlphaFold2(nn.Module):
     self.dim = dim
     dim_single, dim_msa, dim_pairwise = dim
 
-    # token embedding
-    self.token_emb = nn.Embedding(num_tokens +
-                                  1, dim_msa) if not disable_token_embed else Always(0)
-    self.disable_token_embed = disable_token_embed
-    self.to_pairwise_repr = PairwiseEmbedding((dim_msa, dim_pairwise), max_rel_dist)
+    # input embedder
+    self.embedder = InputEmbeddings(
+        (dim_msa, dim_pairwise),
+        num_tokens,
+        num_msa_tokens=num_msa_tokens,
+        max_rel_dist=max_rel_dist
+    )
 
     # main trunk modules
     self.evoformer = Evoformer(
@@ -130,7 +175,8 @@ class AlphaFold2(nn.Module):
 
   def embeddings(self):
     return dict(
-        token=self.token_emb.weight, pairwise=self.to_pairwise_repr.embeddings()
+        token=self.embedder.to_single_emb.weight,
+        pairwise=self.embedder.to_pairwise_emb.embeddings()
     )
 
   def forward(
@@ -144,59 +190,15 @@ class AlphaFold2(nn.Module):
       msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
     else:
       msa, msa_mask, msa_embed = None, None, None  # msa as features disabled
-    embedds, = map(batch.get, ('embedds', ))
+    del seq_embed, msa_embed
     recyclables, = map(batch.get, ('recyclables', ))
-
-    # variables
-    # b, n, device = *seq.shape[:2], seq.device
-
-    assert not (
-        self.disable_token_embed and not exists(seq_embed)
-    ), 'sequence embedding must be supplied if one has disabled token embedding'
-    assert not (
-        self.disable_token_embed and not exists(msa_embed)
-    ), 'msa embedding must be supplied if one has disabled token embedding'
 
     representations = {}
 
-    # if MSA is not passed in, just use the sequence itself
-    if not exists(embedds) and not exists(msa):
-      msa = rearrange(seq, 'b i -> b () i')
-      msa_mask = rearrange(mask, 'b i -> b () i')
-
-    # assert on sequence length
-    assert not exists(msa) or msa.shape[-1] == seq.shape[
-        -1], 'sequence length of MSA and primary sequence must be the same'
-
-    # embed main sequence
-    x = self.token_emb(seq)
-
-    if exists(seq_embed):
-      x = tensor_add(x, seq_embed)
-
-    # embed multiple sequence alignment (msa)
-    if exists(msa):
-      m = self.token_emb(msa)
-
-      if exists(msa_embed):
-        m = tensor_add(m, msa_embed)
-
-      # add single representation to msa representation
-      m = tensor_add(m, rearrange(x, 'b i d -> b () i d'))
-
-      # get msa_mask to all ones if none was passed
-      msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
-
-    elif exists(embedds):
-      m = embedds
-
-      # get msa_mask to all ones if none was passed
-      msa_mask = default(msa_mask, lambda: torch.ones_like(embedds[..., -1]).bool())
-    else:
-      raise ValueError('either MSA or embeds must be given')
-
-    # derive pairwise representation
-    x, x_mask = self.to_pairwise_repr(x, mask, seq_index)
+    # input embeddings
+    x, m, x_mask, msa_mask = self.embedder(
+        seq, mask, seq_index, msa_feat=msa, msa_mask=mask
+    )
 
     # add recyclables, if present
     if exists(recyclables):
