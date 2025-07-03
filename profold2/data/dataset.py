@@ -386,7 +386,7 @@ def _make_task_mask(
           variant_task_mask[j].append(mask[task_idx[i]:task_idx[i + 1]])
         else:
           variant_task_mask[j].append(
-              torch.zeros(chain_length_list[i], dtype=torch.bool)
+              torch.zeros(chain_length_list[i], dtype=torch.bool, device=mask.device)
           )
     for j in range(task_num):
       variant_task_mask[j] = torch.cat(variant_task_mask[j], dim=0)
@@ -1556,7 +1556,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['num_var'] = len(ret['variant'])
 
       var_idx, sequences = 0, ret['str_var']
-      if ret['msa_idx'] == 0:
+      if ret.get('msa_idx', 0) == 0:
         if len(sequences) > 1 and np.random.random() < self.var_as_seq_prob:
           w = _msa_sample_weight(
               sequences,
