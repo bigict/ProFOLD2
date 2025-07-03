@@ -112,10 +112,7 @@ def main(args):  # pylint: disable=redefined-outer-name
   )
   task_mask = repeat(task_mask, 'i c -> b () i c', b=seq_color.shape[0])
 
-  if exists(args.output_file):
-    out = open(args.output_file, 'w')  # pylint: disable=consider-using-with
-  else:
-    out = sys.stdout
+  out = args.output_file
 
   def _output(b, U, sequences, descriptions, U0=None):  # pylint: disable=invalid-name
     if exists(U0):
@@ -175,9 +172,6 @@ def main(args):  # pylint: disable=redefined-outer-name
       U = _energy(S, mask)
 
       _output(0, U, sequences[cstart:cend], descriptions[cstart:cend], U0=U0)
-
-  if exists(args.output_file):
-    out.close()
 
 
 if __name__ == '__main__':
