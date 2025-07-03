@@ -267,13 +267,13 @@ def main(args):
   handlers = [logging.StreamHandler()]
   logging.basicConfig(format=fmt, level=level, handlers=handlers)
 
-  for tool_name in (  # pylint: disable=redefined-outer-name
-      'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
-    if not getattr(args, f'{tool_name}_binary_path'):
-      raise ValueError(
-          f'Could not find path to the "{tool_name}" binary. Make '
-          'sure it is installed on your system.'
-      )
+  # for tool_name in (  # pylint: disable=redefined-outer-name
+  #     'jackhmmer', 'hhblits', 'hhsearch', 'hmmsearch', 'hmmbuild'):
+  #   if not getattr(args, f'{tool_name}_binary_path'):
+  #     raise ValueError(
+  #         f'Could not find path to the "{tool_name}" binary. Make '
+  #         'sure it is installed on your system.'
+  #     )
   # Check for duplicate FASTA file names.
   fasta_names = [pathlib.Path(p).stem for p in args.fasta_paths]
   if len(fasta_names) != len(set(fasta_names)):
