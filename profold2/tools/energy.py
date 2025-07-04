@@ -7,7 +7,6 @@
 import os
 import sys
 import json
-import math
 import pickle
 
 from tqdm.auto import tqdm
@@ -63,19 +62,18 @@ def model_from_pkl(model_file, mask=None, device=None):
   return wij, bi, gating, seq_color
 
 
-def elo_score(U, U0, sigma, config):  # pylint: disable=invalid-name
+def elo_score(U, sigma, config):  # pylint: disable=invalid-name
   softplus = config.get('softplus', False)
   prior_b = config.get('prior_b', None)
   w = sigma
 
   if softplus:
-    w = F.softplus(w)
+    w = F.softplus(w)  # pylint: disable=not-callable
     if exists(prior_b):
       w = w + prior_b
   elif exists(prior_b):
     w = torch.clamp(w, min=prior_b)
-  dG = U0 - U
-  return F.sigmoid(w * dG)  # H + U = 0
+  return F.sigmoid(w * U)  # H + U = 0
 
 
 def main(args):  # pylint: disable=redefined-outer-name
@@ -88,8 +86,6 @@ def main(args):  # pylint: disable=redefined-outer-name
 
   if exists(args.model_ckpt):
     sigma, config = model_from_ckpt(args.model_ckpt, device=device)
-  if config.get('pooling', 'sum') == 'mean':
-    print('Using mean pooling')
 
   pid, _ = os.path.splitext(os.path.basename(args.model_file))
   if pid.endswith('_var'):
@@ -112,47 +108,44 @@ def main(args):  # pylint: disable=redefined-outer-name
   )
   task_mask = repeat(task_mask, 'i c -> b () i c', b=seq_color.shape[0])
 
-  out = args.output_file
+  def _output(U, sequences, descriptions):  # pylint: disable=invalid-name
+    def _tensor_fmt(x):
+      return json.dumps(x.tolist(), separators=(',', ':'))
 
-  def _output(b, U, sequences, descriptions, U0=None):  # pylint: disable=invalid-name
-    if exists(U0):
-      X = elo_score(U[b], U0[b], sigma, config)  # pylint: disable=invalid-name
-      for _, (s, d, u, x) in enumerate(zip(sequences, descriptions, U[b], X)):
-        out.write(f'>{d}\tU:{u.tolist()}\tX:{torch.exp(u).tolist()}\tElo_score:{x.tolist()}\n'
-        )
-        out.write(f'{s}\n')
+    if exists(args.model_ckpt):
+      X = elo_score(U, sigma, config)  # pylint: disable=invalid-name,possibly-used-before-assignment
+      for _, (s, d, u, x) in enumerate(zip(sequences, descriptions, U, X)):
+        u, x, elo = map(_tensor_fmt, (u, torch.exp(u), x))
+        args.output_file.write(f'>{d}\tU:{x}\tX:{x}\tElo_score:{elo}\n')
+        args.output_file.write(f'{s}\n')
     else:
-      for _, (s, d, u) in enumerate(zip(sequences, descriptions, U[b])):
-        out.write(f'>{d}\tU:{u.tolist()}\tX:{torch.exp(u).tolist()}\n')
-        out.write(f'{s}\n')
+      for _, (s, d, u) in enumerate(zip(sequences, descriptions, U)):
+        u, x = map(_tensor_fmt, (u, torch.exp(u)))
+        args.output_file.write(f'>{d}\tU:{u}\tX:{x}\n')
+        args.output_file.write(f'{s}\n')
 
-  def _energy(S, mask):
-    U0, U_i = potts.energy(S, -bi, -wij, mask)  # pylint: disable=invalid-name
+  def _energy(S, mask):  # pylint: disable=invalid-name
+    U0, U_i = potts.energy(S, bi, wij, mask)  # pylint: disable=invalid-name
     if config.get('log_softmax', False):
-      U_i = F.log_softmax(U_i, dim=-1)
-    U_i = torch.sum(
-        U_i * F.one_hot(S.long(), num_classes=bi.shape[-1]), dim=-1, keepdim=True  # pylint: disable=invalid-name
+      U_i = F.log_softmax(U_i, dim=-1)  # pylint: disable=invalid-name
+    U_i = torch.sum(  # pylint: disable=invalid-name
+        U_i * F.one_hot(S.long(), num_classes=bi.shape[-1]), dim=-1, keepdim=True  # pylint: disable=invalid-name,not-callable
     )
-    U_i = U_i * mask[..., None]
+    mask = task_mask * mask[..., None]
+    if exists(args.model_ckpt):
+      mask = mask * mask[:, :1, ...]
+      U_i = U_i - U_i[:, :1, ...]  # pylint: disable=invalid-name
     if exists(gating):
-      U_i = U_i * gating
+      U_i = U_i * gating  # pylint: disable=invalid-name
     if config.get('pooling', 'sum') == 'mean':
-      U0 = functional.masked_mean(value=U_i, mask=task_mask, dim=-2)  # pylint: disable=invalid-name
+      U0 = functional.masked_mean(value=U_i, mask=mask, dim=-2)  # pylint: disable=invalid-name
     else:
-      U0 = torch.sum(U_i, dim=-2)
+      U0 = torch.sum(U_i * mask, dim=-2)  # pylint: disable=invalid-name
     return U0
 
 
   for a3m_file in args.a3m_file:
     sequences, descriptions = parse_fasta(a3m_file.read())
-
-    if exists(args.model_ckpt):
-      feats = _make_var_features(sequences[:1], descriptions[:1])
-      S = feats['variant'].to(device=device)[None]  # pylint: disable=invalid-name
-      mask = feats['variant_mask'].to(device=device)[None]
-      U0 = _energy(S, mask)
-    else:
-      U0 = None
 
     if not exists(args.chunksize):
       args.chunksize = len(sequences)
@@ -163,13 +156,24 @@ def main(args):  # pylint: disable=redefined-outer-name
       num_seqs = min(args.chunksize, len(sequences) - cidx * args.chunksize)
       cend = cstart + num_seqs
 
-      feats = _make_var_features(sequences[cstart:cend], descriptions[cstart:cend])
+      if exists(args.model_ckpt):
+        feats = _make_var_features(
+            sequences[0:1] + sequences[cstart:cend],
+            descriptions[0:1] + descriptions[cstart:cend]
+        )
+      else:
+        feats = _make_var_features(sequences[cstart:cend], descriptions[cstart:cend])
       # S = torch.randint(0, c, size=(b, num_seqs, n), device=device)
       S = feats['variant'].to(device=device)[None]  # pylint: disable=invalid-name
       mask = feats['variant_mask'].to(device=device)[None]
-      U = _energy(S, mask)
+      U = _energy(S, mask)  # pylint: disable=invalid-name
 
-      _output(0, U, sequences[cstart:cend], descriptions[cstart:cend], U0=U0)
+      if exists(args.model_ckpt):
+        U = U[:, 1:, ...]  # pylint: disable=invalid-name
+      _output(U[0], sequences[cstart:cend], descriptions[cstart:cend])
+
+  if args.output_file != sys.stdout:
+    args.output_file.close()
 
 
 if __name__ == '__main__':
