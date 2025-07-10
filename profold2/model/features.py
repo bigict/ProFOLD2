@@ -36,10 +36,8 @@ def make_seq_mask(protein, padd_id=20, is_training=True):
   return protein
 
 
-@take1st
-def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
-  del is_training
-
+@functools.cache
+def _restype_atom14_mask(includes=None, excludes=None):
   if exists(includes) or exists(excludes):
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if exists(includes):
@@ -58,11 +56,23 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
         for j in range(restype_atom14_mask.shape[1]):
           if restype_atom14_mask[i, j] > 0 and atom_list[j] in excludes:
             restype_atom14_mask[i, j] = 0
-    coord_exists = functional.batched_gather(restype_atom14_mask, protein['seq'])
-  else:
-    coord_exists = functional.batched_gather(
-        residue_constants.restype_atom14_mask, protein['seq']
-    )
+    return restype_atom14_mask
+  return residue_constants.restype_atom14_mask
+
+
+@take1st
+def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
+  del is_training
+
+  # FIX: hashable
+  if exists(includes):
+    includes = tuple(includes)
+  if exists(excludes):
+    excludes = tuple(excludes)
+
+  coord_exists = functional.batched_gather(
+      _restype_atom14_mask(includes=includes, excludes=excludes), protein['seq']
+  )
   protein['coord_exists'] = coord_exists
   if 'coord_mask' in protein:
     protein['coord_mask'] *= coord_exists
