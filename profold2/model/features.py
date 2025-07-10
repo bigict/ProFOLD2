@@ -41,7 +41,6 @@ def _restype_atom14_mask(includes=None, excludes=None):
   if exists(includes) or exists(excludes):
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if exists(includes):
-      includes = set(includes)
       for i in range(residue_constants.restype_num):
         resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
@@ -49,7 +48,6 @@ def _restype_atom14_mask(includes=None, excludes=None):
           if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
             restype_atom14_mask[i, j] = 0
     if exists(excludes):
-      excludes = set(excludes)
       for i in range(residue_constants.restype_num):
         resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
@@ -66,9 +64,9 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
 
   # FIX: hashable
   if exists(includes):
-    includes = tuple(includes)
+    includes = frozenset(includes)
   if exists(excludes):
-    excludes = tuple(excludes)
+    excludes = frozenset(excludes)
 
   coord_exists = functional.batched_gather(
       _restype_atom14_mask(includes=includes, excludes=excludes), protein['seq']
