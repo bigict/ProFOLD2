@@ -1416,6 +1416,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               fs, pkey, pid, seq_color=seq_color, seq_entity=seq_entity
           )
       )
+
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey, seq_type=ret['seq_type']))
@@ -1427,10 +1428,20 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           )
         ret = self.data_from_domain(ret, domains)
       if exists(crop_fn):
+        # FIX: RNA duplexes
+        for field in ('seq_index', 'seq_color', 'seq_entity', 'coord', 'coord_mask'):
+          if field in ret:
+            ret[f'{field}_fgt'] = ret[field]
+
         clip = crop_fn(ret)
         if exists(clip):
           ret = _protein_crop_fn(ret, clip)
           ret['clip'] = clip
+
+        # FIX: RNA duplexes
+        ret.update(
+            _make_anchor_features(ret['seq_color_fgt'], ret['seq_entity_fgt'], ret)
+        )
       if not exists(domains) and (self.feat_flags & FEAT_MSA):
         assert isinstance(ret['seq_type'], int)
         ret.update(
@@ -1995,6 +2006,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               ret.update(
                   coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float32)
               )
+
           # FIX: compatible with atom14
           for field in ('coord', 'coord_mask', 'coord_plddt'):
             if field in ret:
@@ -2008,6 +2020,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 ret[field] = torch.cat((ret[field], pad), dim=1)
               elif ret[field].shape[1] > residue_constants.atom14_type_num:
                 ret[field] = ret[field][:, :residue_constants.atom14_type_num, ...]
+
+          # FIX: RNA duplexes
+          for field in ('seq_color', 'seq_entity'):
+            if field in structure:
+              ret[field] = torch.from_numpy(structure[field]) + ret[field] - 1
         else:
           l = ret['seq'].shape[0]
           ret.update(
