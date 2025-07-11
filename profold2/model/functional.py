@@ -1505,4 +1505,10 @@ def multi_chain_permutation_alignment(value, batch):
 
         # Apply the optimal coordinates
         batch['coord'][bdx], batch['coord_mask'][bdx] = coord_opt, coord_mask_opt
+    if torch.any(batch['seq_anchor'] > 0) and 'coord_alt' in batch:
+      batch.update(
+          symmetric_ground_truth_create_alt(
+              batch['seq'], batch['coord'], batch['coord_mask']
+          )
+      )
   return batch
