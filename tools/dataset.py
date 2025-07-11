@@ -331,17 +331,20 @@ def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
   return parser
 
 
-def chain_file_parse(f, chain_num=0):
+def chain_file_parse(f, chain_num=1):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     entry_id, chains = decompose_pid(line)
     chains = chains.split(',')
-    if len(chains) > chain_num:
+    if len(chains) >= chain_num:
       yield entry_id.lower(), chains
 
 
 def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
   str_seq, seq_idx = '', []
+  seq_color, seq_entity = [], []
   coord, coord_mask = [], []
+
+  seq_entity_map = defaultdict(int)
 
   for i, asym_id in enumerate(chains):
     pid = compose_pid(entry_id, asym_id)
@@ -350,6 +353,11 @@ def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
     str_seq += data['str_seq']
     seq_idx.append(data['seq_index'] + i * seq_index_gap)
 
+    if data['str_seq'] not in seq_entity_map:
+      seq_entity_map[data['str_seq']] = len(seq_entity_map) + 1
+    seq_color.append(data['seq_color'] * (i + 1))
+    seq_entity.append(data['seq_entity'] * seq_entity_map[data['str_seq']])
+
     coord.append(data['coord'])
     coord_mask.append(data['coord_mask'])
 
@@ -357,13 +365,17 @@ def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
     seq_idx[i + 1] += seq_idx[i][-1]
 
   seq_idx = torch.cat(seq_idx, dim=0)
-  coord, coord_mask = map(lambda x: torch.cat(x, dim=0), (coord, coord_mask))
+  coord, coord_mask, seq_color, seq_entity = map(
+      lambda x: torch.cat(x, dim=0), (coord, coord_mask, seq_color, seq_entity)
+  )
 
   domains = str_seq_index(seq_idx)
   chains = ','.join(chains)
   desc = f'chains:{chains} domains:{domains} length={len(str_seq)}'
 
-  return str_seq.upper(), desc, dict(coord=coord, coord_mask=coord_mask)
+  return str_seq.upper(), desc, dict(
+      coord=coord, coord_mask=coord_mask, seq_color=seq_color, seq_entity=seq_entity
+  )
 
 
 def rebuild(data, args):  # pylint: disable=redefined-outer-name
@@ -430,7 +442,7 @@ def rebuild_add_argument(parser):  # pylint: disable=redefined-outer-name
       '--entry_id_prefix', type=str, default='', help='add `prefix` to pid.'
   )
   parser.add_argument(
-      '--chain_num', type=int, default=0, help='ignore #chains -le CHAIN_NUM.'
+      '--chain_num', type=int, default=1, help='ignore #chains -lt CHAIN_NUM.'
   )
   return parser
 
