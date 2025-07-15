@@ -384,7 +384,7 @@ def rebuild(data, args):  # pylint: disable=redefined-outer-name
   assert args.msa_as_seq_prob == 0.0
   assert args.pseudo_linker_prob == 0.0
 
-  feat_flags = dataset.FEAT_ALL & (~dataset.FEAT_MSA)
+  # feat_flags = dataset.FEAT_ALL & (~dataset.FEAT_MSA)
   # if args.msa_required:
   #   feat_flags = feat_flags | dataset.FEAT_MSA
 
@@ -435,7 +435,11 @@ def rebuild_add_argument(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument('chain_file', type=str, nargs='+', help='chain file.')
 
   parser.add_argument(
-      '--chain_type', type=str, default='rna', choices=['rna'], help='chain type.'
+      '--chain_type',
+      type=str,
+      default='rna',
+      choices=['dna', 'rna'],
+      help='chain type.'
   )
   parser.add_argument('-o', '--output', type=str, default='.', help='output dir.')
   parser.add_argument(

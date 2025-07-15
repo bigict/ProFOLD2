@@ -1,3 +1,4 @@
+"""Tools for processing FR3D dataset"""
 import os
 from collections import defaultdict
 import csv
@@ -9,9 +10,12 @@ bptypes = (
 
 def bptype_normalize(bptype):
   assert len(bptype) in (3, 4), bptype
-  if len(bptype) == 4 and bptype.startswith("n"):
-    bptype = bptype[1:]
-  assert len(bptype) == 3
+  if len(bptype) == 4:
+    if bptype.startswith("n"):
+      bptype = bptype[1:]
+    elif bptype.endswith("a"):
+      bptype = bptype[:-1]
+  assert len(bptype) == 3, bptype
   if bptype in ("cHW", "tHW", "cSW", "tSW", "cSH", "tSH"):
     bptype = bptype[0] + bptype[2] + bptype[1]
   return bptype
@@ -39,11 +43,18 @@ def mapping_idx_read(f):
   x = {}
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     center, v, mol_type = line.split()
+    del mol_type
     x[v] = center
   return x
 
 
-def pid_list_filter(pid_list, unit_id1, unit_id2):
+def pid_list_chain_filter(pid_list, entry_id, asym_id):
+  if pid_list:
+    return entry_id in pid_list and asym_id in pid_list[entry_id]
+  return True
+
+
+def pid_list_unit_filter(pid_list, unit_id1, unit_id2):
   if not all(map(unit_id_filter, (unit_id1, unit_id2))):
     return False
 
@@ -67,7 +78,7 @@ def comp_id_list_read(f):
   for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
     pid, mol_type, label_seq_id, label_comp_id, auth_seq_id, _ = line.split()
     # if label_seq_id != auth_seq_id:
-    if mol_type in ("mol:rna", ):
+    if mol_type in ("mol:rna", "mol:dna"):
       x[(pid, int(auth_seq_id))] = (int(label_seq_id), label_comp_id)
   return x
 
@@ -89,7 +100,9 @@ def comp_id_list_correct(comp_id_list, mapping_idx):
   for (pid, auth_seq_id), (label_seq_id, _) in comp_id_list.items():
     cluster_id = mapping_idx.get(pid, pid)
     if cluster_id != pid:
-      assert len(label_seq_list[cluster_id]) == len(label_seq_list[pid]), (pid, cluster_id)
+      assert len(label_seq_list[cluster_id]) == len(label_seq_list[pid]), (
+          pid, cluster_id
+      )
       comp_id_list[(pid, auth_seq_id)] = label_seq_list[
           cluster_id
       ][label_seq_order[pid][label_seq_id]]
@@ -140,7 +153,9 @@ def pseudo_seq_create(
 
 
 def bpseq_dict_create(bpseq_dict, bpseq, asym_id1):
-  for auth_seq_id1, label_comp_id1, asym_id2, auth_seq_id2, label_comp_id2, basepair in bpseq:
+  for (
+      auth_seq_id1, label_comp_id1, asym_id2, auth_seq_id2, label_comp_id2, basepair
+  ) in bpseq:
     bpseq_dict[(asym_id1, label_comp_id1, auth_seq_id1)].add(
         (asym_id2, label_comp_id2, auth_seq_id2, basepair)
     )
@@ -148,6 +163,10 @@ def bpseq_dict_create(bpseq_dict, bpseq, asym_id1):
         (asym_id1, label_comp_id1, auth_seq_id1, basepair)
     )
   return bpseq_dict
+
+
+def bpseq_data_header(entry_id, asym_list):
+  return [f"# _entry.id:{entry_id}_{','.join(asym_list)}"]
 
 
 def bpseq_data_create(
@@ -165,13 +184,13 @@ def bpseq_data_create(
   for asym_id, bpseq in pair_dict.items():
     asym_list = [asym_id]
     if _multimer_filter(bpseq, asym_id):
-      asym_list += list(set([asym for _, _, asym, *_ in bpseq if asym != asym_id]))
+      asym_list += list(set([asym for _, _, asym, *_ in bpseq if asym != asym_id]))  # pylint: disable=consider-using-set-comprehension
     assert asym_id in asym_list
     seq_idx = pseudo_seq_create(
         seq_dict, asym_id, asym_list, seq_id_start=seq_id_start.get(entry_id.lower())
     )
 
-    bpseq_data = [f"# _entry.id:{entry_id}_{','.join(asym_list)}"]  # comment
+    bpseq_data = bpseq_data_header(entry_id, asym_list)  # comment
 
     for (asym_id1, label_comp_id1, auth_seq_id1), new_idx1 in sorted(
         seq_idx.items(), key=lambda x: x[1]
@@ -203,39 +222,49 @@ def base_pairing(rows, pid_list, comp_id_list, multimer_threshold=0):
     else:
       seq_id_start[entry_id][asym_id] = label_seq_id
 
-  entry_id = None
+  entry_id, asym_list = None, set()
   seq_dict, pair_dict = defaultdict(dict), defaultdict(set)
 
-  for i, row in enumerate(rows):
+  for row in rows:
     unit_id1, unit_id2 = row["unit_id1"], row["unit_id2"]
     basepair = row["FR3D basepair (f_lwbp)"]
-    if pid_list_filter(pid_list, unit_id1, unit_id2):
-      entry_id1, _, asym_id1, label_comp_id1, auth_seq_id1 = unit_id_split(unit_id1)
-      entry_id2, _, asym_id2, label_comp_id2, auth_seq_id2 = unit_id_split(unit_id2)
-      auth_seq_id1, auth_seq_id2 = map(int, (auth_seq_id1, auth_seq_id2))
-      auth_seq_id1, label_comp_id1 = comp_id_list_lookup(
-          comp_id_list, entry_id1, asym_id1, auth_seq_id1, default_comp_id=None
-      )
-      auth_seq_id2, label_comp_id2 = comp_id_list_lookup(
-          comp_id_list, entry_id2, asym_id2, auth_seq_id2, default_comp_id=None
-      )
-      assert entry_id1 == entry_id2, (entry_id1, entry_id2)
-      if label_comp_id1 is None or label_comp_id2 is None:
-        continue
 
-      if entry_id != entry_id1:
-        if entry_id:
-          yield from bpseq_data_create(
-              entry_id,
-              seq_dict,
-              pair_dict,
-              seq_id_start,
-              multimer_threshold=multimer_threshold
-          )
+    entry_id1, _, asym_id1, label_comp_id1, auth_seq_id1 = unit_id_split(unit_id1)
+    entry_id2, _, asym_id2, label_comp_id2, auth_seq_id2 = unit_id_split(unit_id2)
+    auth_seq_id1, auth_seq_id2 = map(int, (auth_seq_id1, auth_seq_id2))
+    auth_seq_id1, label_comp_id1 = comp_id_list_lookup(
+        comp_id_list, entry_id1, asym_id1, auth_seq_id1, default_comp_id=None
+    )
+    auth_seq_id2, label_comp_id2 = comp_id_list_lookup(
+        comp_id_list, entry_id2, asym_id2, auth_seq_id2, default_comp_id=None
+    )
+    assert entry_id1 == entry_id2, (entry_id1, entry_id2)
 
-        entry_id = entry_id1
-        seq_dict, pair_dict = defaultdict(dict), defaultdict(set)
+    if entry_id != entry_id1:
+      if entry_id:
+        yield from bpseq_data_create(
+            entry_id,
+            seq_dict,
+            pair_dict,
+            seq_id_start,
+            multimer_threshold=multimer_threshold
+        )
+        for asym_id in asym_list:
+          if not asym_id in pair_dict:
+            yield entry_id, asym_id, bpseq_data_header(entry_id, [asym_id])
 
+      entry_id, asym_list = entry_id1, set()
+      seq_dict, pair_dict = defaultdict(dict), defaultdict(set)
+
+    if pid_list_chain_filter(pid_list, entry_id1, asym_id1):
+      asym_list.add(asym_id1)
+    if pid_list_chain_filter(pid_list, entry_id2, asym_id2):
+      asym_list.add(asym_id2)
+
+    if label_comp_id1 is None or label_comp_id2 is None:
+      continue
+
+    if pid_list_unit_filter(pid_list, unit_id1, unit_id2):
       seq_dict[asym_id1][auth_seq_id1] = label_comp_id1
       seq_dict[asym_id2][auth_seq_id2] = label_comp_id2
 
@@ -256,9 +285,12 @@ def base_pairing(rows, pid_list, comp_id_list, multimer_threshold=0):
         seq_id_start,
         multimer_threshold=multimer_threshold
     )
+    for asym_id in asym_list:
+      if not asym_id in pair_dict:
+        yield entry_id, asym_id, bpseq_data_header(entry_id, [asym_id])
 
 
-def main(args):
+def main(args):  # pylint: disable=redefined-outer-name
   os.makedirs(args.output_dir, exist_ok=True)
 
   if args.pid_list:
