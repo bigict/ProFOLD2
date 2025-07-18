@@ -16,6 +16,7 @@
 import os
 import collections
 import functools
+import json
 from typing import Mapping, List, Tuple
 
 import numpy as np
@@ -896,16 +897,70 @@ restype_name_to_atom14_names = {
 # pylint: enable=line-too-long
 # pylint: enable=bad-whitespace
 
+restype_list = set(
+    env(
+        'profold2_restype_list', defval=[PROT, DNA, RNA], type=json.loads
+    )
+)
+assert restype_list
+
 # This is the standard residue order when coding AA type as a number.
 # Reproduce it by taking 3-letter AA codes and sorting them alphabetically.
 restypes = (
     'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
     'S', 'T', 'W', 'Y', 'V', 'A', 'C', 'G', 'T', 'X', 'A', 'C', 'G', 'U', 'X'
 )
+restypes = ()
+if PROT in restype_list:
+  restypes = restypes + (
+    'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
+    'S', 'T', 'W', 'Y', 'V'
+  )
+if DNA in restype_list:
+  restypes = restypes + ('A', 'C', 'G', 'T', 'X')
+if RNA in restype_list:
+  restypes = restypes + ('A', 'C', 'G', 'U', 'X')
 
-prot_from_idx, prot_to_idx = 0, 19
-dna_from_idx, dna_to_idx, dna_gap_idx = 20, 24, 32
-rna_from_idx, rna_to_idx, rna_gap_idx = 25, 29, 33
+restype_from_idx = -1
+if PROT in restype_list:
+  prot_from_idx, prot_to_idx = restype_from_idx + 1, restype_from_idx + 20
+  restype_from_idx = prot_to_idx
+else:
+  prot_from_idx, prot_to_idx = -1, -1
+
+if DNA in restype_list:
+  dna_from_idx, dna_to_idx = restype_from_idx + 1, restype_from_idx + 5  # with X
+  restype_from_idx = dna_to_idx
+else:
+  dna_from_idx, dna_to_idx = -1, -1
+
+if RNA in restype_list:
+  rna_from_idx, rna_to_idx = restype_from_idx + 1, restype_from_idx + 5  # with X
+  restype_from_idx = rna_to_idx
+else:
+  rna_from_idx, rna_to_idx = -1, -1
+
+if PROT in restype_list:
+  restype_from_idx += 1  # with X
+
+if PROT in restype_list:
+  prot_gap_idx = restype_from_idx + 1
+  restype_from_idx = prot_gap_idx
+else:
+  prot_gap_idx = -1
+
+if DNA in restype_list:
+  dna_gap_idx = restype_from_idx + 1
+  restype_from_idx = dna_gap_idx
+else:
+  dna_gap_idx = -1
+
+if RNA in restype_list:
+  rna_gap_idx = restype_from_idx + 1
+  restype_from_idx = rna_gap_idx
+else:
+  rna_gap_idx = -1
+del restype_from_idx
 
 def moltype(mol_idx):
   if dna_from_idx <= mol_idx <= dna_to_idx or mol_idx == dna_gap_idx:    # dna gap .
@@ -924,7 +979,7 @@ def is_aa(restype):
   return moltype(restype) == PROT
 
 
-restypes_with_x = restypes + ('X', )
+restypes_with_x = restypes + ('X', ) if PROT in restype_list else restypes
 restype_order_with_x = {
     (restype, moltype(i)): i
     for i, restype in enumerate(restypes_with_x)
@@ -1039,111 +1094,133 @@ resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 # "-" representing a missing amino acid in an alignment.  The id for these
 # codes is put at the end (20 and 21) so that they can easily be ignored if
 # desired.
-HHBLITS_AA_TO_ID = {
-    ('A', PROT): 0,
-    ('B', PROT): 2,
-    ('C', PROT): 1,
-    ('D', PROT): 2,
-    ('E', PROT): 3,
-    ('F', PROT): 4,
-    ('G', PROT): 5,
-    ('H', PROT): 6,
-    ('I', PROT): 7,
-    ('J', PROT): 20,
-    ('K', PROT): 8,
-    ('L', PROT): 9,
-    ('M', PROT): 10,
-    ('N', PROT): 11,
-    ('O', PROT): 20,
-    ('P', PROT): 12,
-    ('Q', PROT): 13,
-    ('R', PROT): 14,
-    ('S', PROT): 15,
-    ('T', PROT): 16,
-    ('U', PROT): 1,
-    ('V', PROT): 17,
-    ('W', PROT): 18,
-    ('X', PROT): 20,
-    ('Y', PROT): 19,
-    ('Z', PROT): 3,
-    ('A', DNA ): 21,
-    ('C', DNA ): 22,
-    ('G', DNA ): 23,
-    ('T', DNA ): 24,
-    ('U', DNA ): 24,
-    ('X', DNA ): 25,
-    ('B', DNA ): 25,
-    ('D', DNA ): 25,
-    ('H', DNA ): 25,
-    ('K', DNA ): 25,
-    ('M', DNA ): 25,
-    ('N', DNA ): 25,
-    ('R', DNA ): 25,
-    ('S', DNA ): 25,
-    ('V', DNA ): 25,
-    ('W', DNA ): 25,
-    ('Y', DNA ): 25,
-    ('A', RNA ): 26,
-    ('C', RNA ): 27,
-    ('G', RNA ): 28,
-    ('U', RNA ): 29,
-    ('T', RNA ): 29,
-    ('X', RNA ): 30,
-    ('B', RNA ): 30,
-    ('D', RNA ): 30,
-    ('H', RNA ): 30,
-    ('K', RNA ): 30,
-    ('M', RNA ): 30,
-    ('N', RNA ): 30,
-    ('R', RNA ): 30,
-    ('S', RNA ): 30,
-    ('V', RNA ): 30,
-    ('W', RNA ): 30,
-    ('Y', RNA ): 30,
-    ('-', PROT): 31,
-    ('-', DNA ): 32,
-    ('-', RNA ): 33,
-}
+HHBLITS_AA_TO_ID = {}
+if PROT in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', PROT): prot_from_idx + 0,
+    ('B', PROT): prot_from_idx + 2,
+    ('C', PROT): prot_from_idx + 1,
+    ('D', PROT): prot_from_idx + 2,
+    ('E', PROT): prot_from_idx + 3,
+    ('F', PROT): prot_from_idx + 4,
+    ('G', PROT): prot_from_idx + 5,
+    ('H', PROT): prot_from_idx + 6,
+    ('I', PROT): prot_from_idx + 7,
+    ('J', PROT): unk_restype_index,
+    ('K', PROT): prot_from_idx + 8,
+    ('L', PROT): prot_from_idx + 9,
+    ('M', PROT): prot_from_idx + 10,
+    ('N', PROT): prot_from_idx + 11,
+    ('O', PROT): unk_restype_index,
+    ('P', PROT): prot_from_idx + 12,
+    ('Q', PROT): prot_from_idx + 13,
+    ('R', PROT): prot_from_idx + 14,
+    ('S', PROT): prot_from_idx + 15,
+    ('T', PROT): prot_from_idx + 16,
+    ('U', PROT): prot_from_idx + 1,
+    ('V', PROT): prot_from_idx + 17,
+    ('W', PROT): prot_from_idx + 18,
+    ('X', PROT): unk_restype_index,
+    ('Y', PROT): prot_from_idx + 19,
+    ('Z', PROT): prot_from_idx + 3,
+    ('-', PROT): prot_gap_idx,
+  })
+if DNA in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', DNA ): dna_from_idx + 0,
+    ('C', DNA ): dna_from_idx + 1,
+    ('G', DNA ): dna_from_idx + 2,
+    ('T', DNA ): dna_from_idx + 3,
+    ('U', DNA ): dna_from_idx + 3,
+    ('X', DNA ): dna_from_idx + 4,
+    ('B', DNA ): dna_from_idx + 4,
+    ('D', DNA ): dna_from_idx + 4,
+    ('H', DNA ): dna_from_idx + 4,
+    ('K', DNA ): dna_from_idx + 4,
+    ('M', DNA ): dna_from_idx + 4,
+    ('N', DNA ): dna_from_idx + 4,
+    ('R', DNA ): dna_from_idx + 4,
+    ('S', DNA ): dna_from_idx + 4,
+    ('V', DNA ): dna_from_idx + 4,
+    ('W', DNA ): dna_from_idx + 4,
+    ('Y', DNA ): dna_from_idx + 4,
+    ('-', DNA ): dna_gap_idx,
+  })
+if RNA in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', RNA ): rna_from_idx + 0,
+    ('C', RNA ): rna_from_idx + 1,
+    ('G', RNA ): rna_from_idx + 2,
+    ('U', RNA ): rna_from_idx + 3,
+    ('T', RNA ): rna_from_idx + 3,
+    ('X', RNA ): rna_from_idx + 4,
+    ('B', RNA ): rna_from_idx + 4,
+    ('D', RNA ): rna_from_idx + 4,
+    ('H', RNA ): rna_from_idx + 4,
+    ('K', RNA ): rna_from_idx + 4,
+    ('M', RNA ): rna_from_idx + 4,
+    ('N', RNA ): rna_from_idx + 4,
+    ('R', RNA ): rna_from_idx + 4,
+    ('S', RNA ): rna_from_idx + 4,
+    ('V', RNA ): rna_from_idx + 4,
+    ('W', RNA ): rna_from_idx + 4,
+    ('Y', RNA ): rna_from_idx + 4,
+    ('-', RNA ): rna_gap_idx,
+  })
 
 # Partial inversion of HHBLITS_AA_TO_ID.
-ID_TO_HHBLITS_AA = {
-     0: ('A', PROT),
-     1: ('C', PROT),  # Also U.
-     2: ('D', PROT),  # Also B.
-     3: ('E', PROT),  # Also Z.
-     4: ('F', PROT),
-     5: ('G', PROT),
-     6: ('H', PROT),
-     7: ('I', PROT),
-     8: ('K', PROT),
-     9: ('L', PROT),
-    10: ('M', PROT),
-    11: ('N', PROT),
-    12: ('P', PROT),
-    13: ('Q', PROT),
-    14: ('R', PROT),
-    15: ('S', PROT),
-    16: ('T', PROT),
-    17: ('V', PROT),
-    18: ('W', PROT),
-    19: ('Y', PROT),
-    20: ('X', PROT),  # Includes J and O.
-    21: ('A', DNA),
-    22: ('C', DNA),  # Also U.
-    23: ('G', DNA),  # Also B.
-    24: ('T', DNA),  # Also T.
-    25: ('X', DNA),
-    26: ('A', RNA),
-    27: ('C', RNA),  # Also U.
-    28: ('G', RNA),  # Also B.
-    29: ('U', RNA),  # Also T.
-    30: ('X', RNA),
-    31: ('-', PROT),
-    32: ('.', DNA),
-    33: ('*', RNA),
-}
+ID_TO_HHBLITS_AA = {}
+if PROT in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    prot_from_idx +  0: ('A', PROT),
+    prot_from_idx +  1: ('C', PROT),  # Also U.
+    prot_from_idx +  2: ('D', PROT),  # Also B.
+    prot_from_idx +  3: ('E', PROT),  # Also Z.
+    prot_from_idx +  4: ('F', PROT),
+    prot_from_idx +  5: ('G', PROT),
+    prot_from_idx +  6: ('H', PROT),
+    prot_from_idx +  7: ('I', PROT),
+    prot_from_idx +  8: ('K', PROT),
+    prot_from_idx +  9: ('L', PROT),
+    prot_from_idx + 10: ('M', PROT),
+    prot_from_idx + 11: ('N', PROT),
+    prot_from_idx + 12: ('P', PROT),
+    prot_from_idx + 13: ('Q', PROT),
+    prot_from_idx + 14: ('R', PROT),
+    prot_from_idx + 15: ('S', PROT),
+    prot_from_idx + 16: ('T', PROT),
+    prot_from_idx + 17: ('V', PROT),
+    prot_from_idx + 18: ('W', PROT),
+    prot_from_idx + 19: ('Y', PROT),
+    unk_restype_index:  ('X', PROT),  # Includes J and O.
+    prot_gap_idx:       ('-', PROT),
+  })
+if DNA in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    dna_from_idx + 0: ('A', DNA),
+    dna_from_idx + 1: ('C', DNA),  # Also U.
+    dna_from_idx + 2: ('G', DNA),  # Also B.
+    dna_from_idx + 3: ('T', DNA),  # Also T.
+    dna_from_idx + 4: ('X', DNA),
+    dna_gap_idx:      ('.', DNA),
+  })
+if RNA in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    rna_from_idx + 0: ('A', RNA),
+    rna_from_idx + 1: ('C', RNA),  # Also U.
+    rna_from_idx + 2: ('G', RNA),  # Also B.
+    rna_from_idx + 3: ('U', RNA),  # Also T.
+    rna_from_idx + 4: ('X', RNA),
+    rna_gap_idx:      ('*', RNA),
+  })
 
-restypes_gap = ('-', '.', '*')
+restypes_gap = ()
+if PROT in restype_list:
+  restypes_gap = restypes_gap + ('-', )
+if DNA in restype_list:
+  restypes_gap = restypes_gap + ('.', )
+if RNA in restype_list:
+  restypes_gap = restypes_gap + ('*', )
 restypes_with_x_and_gap = restypes_with_x + restypes_gap
 restype_order_with_x_and_gap = {
     (restype, moltype(i)): i
@@ -1177,6 +1254,8 @@ chi_angles_atom14_indices = np.zeros(
 )
 chi_angles_atom14_exists = np.zeros((restype_num + 1, chi_angles_num), dtype=np.bool_)
 for res_name, res_chi_angles in torsion_angles_atoms.items():
+  if res_name not in resname_to_idx:
+    continue
   res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
 
