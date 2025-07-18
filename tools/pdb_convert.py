@@ -19,16 +19,6 @@ from Bio.PDB.PDBParser import PDBParser
 logger = logging.getLogger(__file__)
 
 
-class CustomSelect(Select):
-  def accept_chain(self, chain):
-    del chain
-    return True
-
-  def accept_atom(self, atom):
-    del atom
-    return True
-
-
 def mmcif_rename_chains(structure):
   next_chain = 0
 
@@ -69,7 +59,7 @@ def pdb_get_structure(filename):
   return o.get_structure('1n2c', filename)
 
 
-def cif2pdb(mmcif_file, pdb_file):
+def cif2pdb(mmcif_file, pdb_file, preserve_atom_numbering=True):
   try:
     io = PDBIO()
     structure = mmcif_get_structure(mmcif_file)
@@ -77,10 +67,10 @@ def cif2pdb(mmcif_file, pdb_file):
 
     if pdb_file.suffix == '.gz':
       with gzip.open(pdb_file, 'wt') as f:
-        io.save(f, select=CustomSelect(), preserve_atom_numbering=True)
+        io.save(f, preserve_atom_numbering=preserve_atom_numbering)
     else:
       with open(pdb_file, 'w') as f:
-        io.save(f, select=CustomSelect(), preserve_atom_numbering=True)
+        io.save(f, preserve_atom_numbering=preserve_atom_numbering)
 
   except Exception as e:
     logger.error('%s, %s', mmcif_file, str(e))
@@ -89,17 +79,18 @@ def cif2pdb(mmcif_file, pdb_file):
   return mmcif_file
 
 
-def pdb2cif(pdb_file, mmcif_file):
+def pdb2cif(pdb_file, mmcif_file, preserve_atom_numbering=True):
   io = MMCIFIO()
   try:
-    io.set_structure(pdb_get_structure(pdb_file))
+    structure = pdb_get_structure(pdb_file)
+    io.set_structure(structure)
 
     if mmcif_file.suffix == '.gz':
       with gzip.open(mmcif_file, 'wt') as f:
-        io.save(f, preserve_atom_numbering=True)
+        io.save(f, preserve_atom_numbering=preserve_atom_numbering)
     else:
       with open(mmcif_file, 'w') as f:
-        io.save(f, preserve_atom_numbering=True)
+        io.save(f, preserve_atom_numbering=preserve_atom_numbering)
 
     logger.info(mmcif_file)
   except Exception as e:
@@ -117,9 +108,11 @@ def read_pairwise_list(f, output):
     yield input_file, output_file
 
 
-def work_fn_wrap(item, work_fn=None):
+def work_fn_wrap(work_fn, item, preserve_atom_numbering=True):
   input_file, output_file = item
-  return work_fn(input_file, output_file)
+  return work_fn(
+      input_file, output_file, preserve_atom_numbering=preserve_atom_numbering
+  )
 
 
 def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
@@ -153,7 +146,11 @@ def main(args, work_fn, fmt):  # pylint: disable=redefined-outer-name
       pairwise_list.append((input_file, output_file))
 
   with mp.Pool() as p:
-    for _ in p.imap(functools.partial(work_fn_wrap, work_fn=work_fn), pairwise_list):
+    for _ in p.imap(
+        functools.partial(
+            work_fn_wrap, work_fn, preserve_atom_numbering=args.preserve_atom_numbering
+        ), pairwise_list
+    ):
       pass
 
 
@@ -173,6 +170,11 @@ if __name__ == '__main__':
         '-o', '--output', type=str, default='.', help='output dir, default=\'.\''
     )
     cmd_parser.add_argument('--gzip', action='store_true', help='verbose')
+    cmd_parser.add_argument(
+        '--preserve_atom_numbering',
+        action='store_true',
+        help='preserve_atom_numbering'
+    )
     cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
     cmd_parser.add_argument(
         '-l', '--pairwise_list', default=None, help='read pdb file from list.'

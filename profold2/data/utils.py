@@ -38,6 +38,11 @@ def compose_pid(pid, chain, domains=None):
 
 
 _seq_index_pattern = '(\\d+)-(\\d+)'
+_seq_type_pattern = 'mol:((protein|rna|dna)(,(protein|rna|dna))*)'
+seq_type_dict = {
+    'protein': residue_constants.PROT,
+    'rna': residue_constants.RNA,
+    'dna': residue_constants.DNA}
 
 
 def seq_index_split(text):
@@ -83,9 +88,9 @@ def parse_seq_index(description, input_sequence, seq_index):
       p, q = positions[i]
       m, n = positions[i + 1]
       assert p <= q and m <= n, (p, q, m, n, description)
-      assert q <= m
+      assert q <= m, (q, m, description)
     m, n = positions[-1]
-    assert m <= n
+    assert m <= n, (m, n, description)
     assert sum(map(lambda p: p[1] - p[0] + 1, positions)) == len(input_sequence)
 
   positions = list(yield_seq_index(description))
@@ -100,6 +105,18 @@ def parse_seq_index(description, input_sequence, seq_index):
       p, q = m, n
 
   return seq_index
+
+
+def parse_seq_type(description):
+  fields = description.split()
+  for f in fields[1:]:
+    r = re.match(f'.*{_seq_type_pattern}.*', f)
+    if r:
+      seq_types = r.group(1).split(',')
+      if len(seq_types) == 1:
+        return seq_types[0]
+      return seq_types
+  return 'protein'
 
 
 def weights_from_file(filename_list):
@@ -133,14 +150,14 @@ def pdb_from_prediction(batch, headers, idx=None):
   def to_pdb_str(b):
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
-    #aatype = batch['seq'][b,...].numpy()
-    aatype = np.array(
-        [
-            residue_constants.restype_order_with_x.get(
-                aa, residue_constants.unk_restype_index
-            ) for aa in str_seq
-        ]
-    )
+    # aatype = np.array(
+    #     [
+    #         residue_constants.restype_order_with_x.get(
+    #             aa, residue_constants.unk_restype_index
+    #         ) for aa in str_seq
+    #     ]
+    # )
+    aatype = tensor_to_numpy(batch['seq'][b])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
       seq_index = tensor_to_numpy(batch['seq_index'][b])
     else:
