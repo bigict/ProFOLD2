@@ -64,8 +64,8 @@ eval_opts="--eval_data=${eval_data} ${eval_idx} ${eval_attr}"
 exp=${exp:-"150m"}
 model_suffix=${model_suffix:-""}
 
-export AxialAttention_accept_edge_norm=0
-export AxialAttention_accept_kernel_fn=1
+export AxialAttention_accept_edge_norm=${AxialAttention_accept_edge_norm:-"0"}
+export AxialAttention_accept_kernel_fn=${AxialAttention_accept_kernel_fn:-"1"}
 # export AxialAttention_accept_kernel_dtype="float16"
 
 export NCCL_SOCKET_FAMILY=AF_INET
