@@ -10,7 +10,7 @@ from einops import rearrange, repeat
 from profold2.common import residue_constants
 from profold2.model import functional, folding
 from profold2.model.commons import embedd_dim_get
-from profold2.utils import *
+from profold2.utils import contact_precision, default, exists, Kabsch, TMscore
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,8 @@ def binary_focal_loss_weight(probs, labels, gammar):
   return (1. - p) ** gammar
 
 
-def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0, epsilon=1e-7):
-  errors = F.binary_cross_entropy(probs, labels, reduction='none', pos_weight=alpha)
+def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0):
+  errors = F.binary_cross_entropy(probs, labels, reduction='none')
   if gammar > 0:  # focal loss enabled.
     errors = errors * binary_focal_loss_weight(probs, labels, gammar)
   return errors
@@ -82,21 +82,23 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
   def _yield_tmscore(b):
     flat_cloud_mask = rearrange(coord_mask[b], 'i c -> (i c)')
 
-    # rotate / align
-    coords_aligned, labels_aligned = Kabsch(
-        rearrange(
-            rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-        ),
-        rearrange(
-            rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-        )
-    )
+    if torch.any(flat_cloud_mask):
+      # rotate / align
+      coords_aligned, labels_aligned = Kabsch(
+          rearrange(
+              rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
+          ),
+          rearrange(
+              rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
+          )
+      )
 
-    return TMscore(
-        rearrange(coords_aligned, 'd l -> () d l'),
-        rearrange(labels_aligned, 'd l -> () d l'),
-        L=torch.sum(mask[b], dim=-1)
-    )
+      return TMscore(
+          rearrange(coords_aligned, 'd l -> () d l'),
+          rearrange(labels_aligned, 'd l -> () d l'),
+          L=torch.sum(mask[b], dim=-1)
+      )
+    return torch.as_tensor([0.], device=flat_cloud_mask.device)
 
   # tms = sum(map(_yield_tmscore, range(pred_points.shape[0])))
   tms = torch.cat(list(map(_yield_tmscore, range(pred_points.shape[0]))))
@@ -401,14 +403,9 @@ class DistogramHead(nn.Module):
           gammar=self.focal_loss
       )
     else:
-      b, l, device = *batch['seq'].shape, batch['seq'].device
-      mask = torch.ones((b, l), device=device, dtype=torch.bool)
-
+      mask = torch.zeros_like(batch['seq'], dtype=torch.bool)
       with torch.no_grad():
-        labels = torch.zeros(
-            logits.shape, device=logits.device
-        )  #F.softmax(logits, dim=-1)
-
+        labels = F.softmax(logits, dim=-1)
       errors = softmax_kl_diversity(labels=labels, logits=logits)
 
     square_mask, square_weight = (
@@ -892,72 +889,120 @@ class PAEHead(nn.Module):
     return dict(loss=loss)
 
 
-class PPIHead(nn.Module):
-  """Head for protein-protein interaction
+class PairingHead(nn.Module):
+  """Head to predict a nucleic acid base pairing.
     """
-  def __init__(self, dim, contact_cutoff=8., min_prob=0.15):
+  def __init__(self, dim, alpha=0.5, focal_loss=0):
     super().__init__()
+    _, dim = embedd_dim_get(dim)
 
-    del dim
-    self.contact_cutoff = contact_cutoff
-    self.min_prob = min_prob
+    # NOTE: 0 for unpaired
+    self.net = nn.Sequential(
+        nn.LayerNorm(dim), nn.Linear(dim, len(residue_constants.bptypes))
+    )
+    # NOTE: https://nakb.org/ndbmodule/bp-catalog/
+    # pairing = torch.zeros(
+    #     len(residue_constants.restypes_with_x), 3, dtype=torch.float32
+    # )
+    # a, c, g, u = [
+    #     residue_constants.restype_order_with_x[(b, residue_constants.RNA)]
+    #     for b in 'acgu'
+    # ]
+    # for i, (b1, b2) in enumerate([(a, u), (c, g), (g, u)]):
+    #   pairing[b1, i] = 1.0
+    #   pairing[b2, i] = 1.0
+    # self.register_buffer('pairing', pairing, persistent=False)
+
+    self.alpha = alpha
+    self.focal_loss = focal_loss
 
   def forward(self, headers, representations, batch):
-    assert 'distogram' in headers
-    assert 'seq_color' in batch
+    """Builds ParingHead module.
 
-    logits = headers['distogram']['logits']
-    breaks = headers['distogram']['breaks']
-    seq_mask = batch['mask']
-    seq_color = batch['seq_color']
+        Arguments:
+         representations: Dictionary of representations, must contain:
+           * 'pair': pair representation, shape [N_res, N_res, c_z].
+         batch: Batch, unused.
 
-    # Probability that distance between i and j less than or equal
-    # contact_cutoff
-    probs = F.softmax(logits, dim=-1)
-    t = torch.sum(breaks <= self.contact_cutoff)
-    probs = torch.sum(probs[..., :t + 1], dim=-1)
+        Returns:
+         Dictionary containing:
+           * logits: logits for distogram, shape [N_res, N_res, N_bins].
+        """
+    x = self.net(representations['pair'])
+    x = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
 
-    # Mask out intra-contact and padding
-    crd_mask = (seq_mask[..., None] * seq_mask[..., None, :])
-    clr_mask = (seq_color[..., None] != seq_color[..., None, :])
-    probs = probs * clr_mask * crd_mask
+    # build constrains
+    # 1. Only three types of nucleotide combinations can form base pairs
+    # 2. No sharp loop within three bases. For any adjacent bases within a
+    #    distance of three nucleotides, they cannot form pairs with each
+    #    other. for all |i - j| < 4, M_ij = 0
+    # m = F.one_hot(batch['seq'].long(), len(residue_constants.restypes_with_x)).float()
+    # m = rearrange(m, '... i d -> ... i () d') + rearrange(m, '... j d -> ... () j d')
+    # m = torch.any(
+    #     torch.einsum('... i j d,d c -> ... i j c', m, self.pairing) >= 2, dim=-1
+    # )
+    m = torch.abs(
+        rearrange(batch['seq_index'], '... i -> ... i ()') -
+        rearrange(batch['seq_index'], '... j -> ... () j')
+    ) > 3
+    # HACK: experience value
+    mask_value = 1e4 if x.dtype == torch.float16 else 1e6  # max_neg_value(q)
+    x = x.masked_fill(~m[..., None], -mask_value)
 
-    # Denoise
-    probs = F.threshold(probs, self.min_prob, 0.0)
+    l, d = x.shape[-2:]
+    u = torch.zeros(x.shape[:-3] + (l, 1, d), dtype=x.dtype, device=x.device)
+    v = torch.zeros(x.shape[:-3] + (1, l, d), dtype=x.dtype, device=x.device)
+    w = torch.zeros(x.shape[:-3] + (l, l, 1), dtype=x.dtype, device=x.device)
 
-    # Prob. that amini acid i has contact with the others
-    probs = 1.0 - torch.exp(torch.sum(torch.log(1.0 - probs), dim=-1))
+    x = F.log_softmax(torch.cat((u, x), dim=-2), dim=-2)[..., 1:, :] + F.log_softmax(
+        torch.cat((v, x), dim=-3), dim=-3
+    )[..., 1:, :, :] + 2 * F.log_softmax(torch.cat((w, x), dim=-1), dim=-1)[..., 1:]
 
-    # Denoise
-    probs = F.threshold(probs, self.min_prob, 0.0)
-
-    # Prob. that chain i has contact with the other chains
-    b, n = seq_mask.shape[0], torch.amax(seq_color)
-    probs = 1.0 - torch.exp(
-        torch.scatter_add(
-            torch.zeros(b, n, device=probs.device), -1,
-            seq_color.long() - 1, torch.log(1.0 - probs)
-        )
-    )
-
-    logger.debug('PPIHead.probs: %s', probs)
-    return dict(probs=probs)
+    return dict(logits=x)
 
   def loss(self, value, batch):
-    if 'ppi_label' in batch:
-      assert 'ppi_label' in batch and 'ppi_mask' in batch
+    """Log loss of a base pairing."""
+    x = value['logits']
+    assert len(x.shape) == 4
+    l, eps = x.shape[-2], 1e-6
 
-      probs = value['probs']
-      targets, mask = batch['ppi_label'], batch['ppi_mask']
-      logger.debug('PPIHead.targets: %s', targets)
+    # x = rearrange(x, '... i j d -> ... i (j d)')
+    if 'sta' in batch:
+      y = rearrange(
+          F.one_hot(batch['sta'].long(), l + 1)[..., 1:], '... i d j -> ... i j d'
+      )
       with autocast(enabled=False):
-        errors = F.binary_cross_entropy(
-            probs.float(), targets.float(), reduction='none'
+        probs = torch.clamp(
+            1. - torch.exp(
+                torch.sum(
+                    torch.log(
+                        torch.clamp(1. - torch.exp(x.float()), min=eps, max=1.)
+                    ),
+                    dim=-1
+                )
+            ),
+            min=eps,
+            max=1.
         )
-      avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.debug('PPIHead.loss: %s', avg_error)
-      return dict(loss=avg_error)
-    return None
+        targets = torch.any(y, dim=-1).float()
+        errors = sigmoid_cross_entropy(probs, targets, gammar=self.focal_loss)
+
+        assert 'sta_type_mask' in batch
+        if torch.any(batch['sta_type_mask']):
+          assert y.shape[-1] == x.shape[-1]
+          errors = (1. - self.alpha) * errors + self.alpha * torch.sum(
+              y.float() * x.float(), dim=-1
+          ) * batch['sta_type_mask']
+    else:
+      with torch.no_grad():
+        y = torch.exp(x)
+      errors = torch.sum(F.kl_div(x, y, reduction='none'), dim=-1)
+
+    errors = torch.sum(errors, dim=-1)
+
+    avg_error = functional.masked_mean(value=errors, mask=batch['mask'], epsilon=1e-6)
+    logger.debug('PairingHead.loss: %s', avg_error)
+    return dict(loss=avg_error)
 
 
 class RobertaLMHead(nn.Module):
@@ -1126,6 +1171,10 @@ class MetricDictHead(nn.Module):
         assert exists(point_mask)
 
         seq_index = batch.get('seq_index')
+        point_mask = point_mask * torch.logical_and(  # protein only
+            batch['seq'] >= residue_constants.prot_from_idx,
+            batch['seq'] <= residue_constants.prot_to_idx
+        )[..., None]
         ca_ca_distance_error = functional.between_ca_ca_distance_loss(
             points, point_mask, seq_index
         )
@@ -1525,6 +1574,7 @@ class ViolationHead(nn.Module):
   def loss(self, value, batch):
     assert 'coords' in value
     seq, mask = batch['seq'], batch['mask']
+    del mask
     seq_index = batch.get('seq_index')
     if not exists(seq_index):
       b, n = seq.shape[:2]
@@ -1534,6 +1584,10 @@ class ViolationHead(nn.Module):
           'coord_exists', batch.get('coord_mask')
       )
       assert exists(point_mask)
+      point_mask = point_mask * torch.logical_and(  # protein only
+          batch['seq'] >= residue_constants.prot_from_idx,
+          batch['seq'] <= residue_constants.prot_to_idx
+      )[..., None]
 
       # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
       #         points, point_mask, seq_index))
@@ -1572,7 +1626,7 @@ class HeaderBuilder:
       lddt=LDDTHead,
       metric=MetricDictHead,
       pae=PAEHead,
-      ppi=PPIHead,
+      pairing=PairingHead,
       profile=SequenceProfileHead,
       roberta=RobertaLMHead,
       tmscore=TMscoreHead,
