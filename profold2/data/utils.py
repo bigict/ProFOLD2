@@ -5,9 +5,11 @@ from typing import Any, Optional, Union
 
 import numpy as np
 import torch
+from torch.nn import functional as F
+from einops import repeat
 
 from profold2.common import protein, residue_constants
-from profold2.utils import exists
+from profold2.utils import default, exists
 
 
 def decompose_pid(pid, return_domain=False):
@@ -188,13 +190,14 @@ def tensor_to_numpy(t: torch.Tensor) -> np.ndarray:
 def pdb_from_model(
     batch: dict[str, Any],
     pcoord: torch.Tensor,
+    seq: Optional[torch.Tensor] = None,
     plddt: Optional[torch.Tensor] = None,
     idx: Optional[int] = None
 ) -> Union[str, list[str]]:
+  seq = default(seq, batch['seq'])
   def to_pdb_str(b: int) -> str:
-    str_seq = batch['str_seq'][b]
-    seq_len = len(str_seq)
-    aatype = tensor_to_numpy(batch['seq'][b])
+    seq_len = seq[b].shape[0]
+    aatype = tensor_to_numpy(seq[b])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
       seq_index = tensor_to_numpy(batch['seq_index'][b])
     else:
@@ -236,3 +239,33 @@ def pdb_from_prediction(
   if 'confidence' in headers and 'plddt' in headers['confidence']:
     plddt = headers['confidence']['plddt'][..., None]
   return pdb_from_model(batch, headers['folding']['coords'], plddt=plddt, idx=idx)
+
+
+def pdb_from_generation(
+    batch: dict[str, Any], headers: dict[str, Any], idx: Optional[int] = None
+) -> Union[str, list[str], list[list[str]]]:
+  plddt = None
+  if 'donfidence' in headers and 'plddt' in headers['donfidence']:
+    plddt = headers['donfidence']['plddt']
+  generation_batch_size = None
+  if 'sequence' in headers:
+    seq = torch.argmax(F.softmax(headers['sequence']['logits'], dim=-1), dim=-1)
+  else:
+    seq = None
+  if 'diffusion' in headers:
+    pcoord = headers['diffusion']['coords']
+    generation_batch_size = headers['diffusion'].get('batch_size')
+  else:
+    assert 'coord' in batch
+    pcoord = batch['coord']
+  if exists(generation_batch_size):
+    return [
+        pdb_from_model(
+            batch,
+            pcoord[:, m],  # (b m i c d)
+            seq=seq[:, m] if exists(seq) else None,
+            plddt=plddt[:, m] if exists(plddt) else None,
+            idx=idx
+        ) for m in range(generation_batch_size)
+    ]
+  return pdb_from_model(batch, pcoord, seq=seq, plddt=plddt, idx=idx)
