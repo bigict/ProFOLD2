@@ -25,7 +25,7 @@ from torch.utils.data import WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange, repeat
 
-from profold2.common import residue_constants
+from profold2.common import chemical_components, residue_constants
 from profold2.data.parsers import parse_fasta
 from profold2.data.padding import pad_sequential, pad_rectangle
 from profold2.data.utils import (
@@ -429,6 +429,57 @@ def _make_task_mask(
     for j in range(task_num):
       variant_task_mask[j] = mask
   return torch.stack(variant_task_mask, dim=-1)
+
+
+def _make_ref_conformer(seq, seq_index, pad_with_virtual_atoms=False):
+  atom_array = chemical_components.polymer_atom_array(
+      seq, seq_index, pad_with_virtual_atoms=pad_with_virtual_atoms
+  )
+  mask = 0 if pad_with_virtual_atoms else 1
+  ret = {
+      key: torch.from_numpy(value)
+      for key, value in (
+          ('ref_pos', atom_array.coord * mask),
+          ('ref_charge', atom_array.charge * mask),
+          ('ref_mask', atom_array.mask),
+          ('ref_element', atom_array.element_idx * mask),
+          ('ref_atom_name_chars', atom_array.atom_name_chars * mask),
+          ('ref_space_uid', atom_array.space_uid),
+          ('atom_to_token_idx', atom_array.atom_to_token_idx),
+          ('atom_within_token_idx', atom_array.atom_within_token_idx),
+          ('atom_within_token_mask', atom_array.atom_within_token_mask),
+          ('atom_repr_token_mask', atom_array.atom_repr_token_mask),
+          ('atom_padding_token_idx', atom_array.atom_padding_token_idx),
+      )
+  }
+  if pad_with_virtual_atoms:
+    is_prot = torch.logical_and(
+        seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
+    )
+    is_dna = torch.logical_and(
+        seq >= residue_constants.dna_from_idx, seq <= residue_constants.dna_to_idx
+    )
+    is_rna = torch.logical_and(
+        seq >= residue_constants.rna_from_idx, seq <= residue_constants.rna_to_idx
+    )
+    ret['seq_true'] = seq
+    if torch.any(is_rna):
+      unk_rna_index = residue_constants.restype_order_with_x[('X', residue_constants.RNA)]
+      seq = torch.where(
+          is_rna,
+          residue_constants.restype_order_with_x[('X', residue_constants.RNA)],
+          seq
+      )
+    if torch.any(is_dna):
+      seq = torch.where(
+          is_dna,
+          residue_constants.restype_order_with_x[('X', residue_constants.DNA)],
+          seq
+      )
+    if torch.any(is_prot):
+      seq = torch.where(is_prot, residue_constants.unk_restype_index, seq)
+    ret['seq'] = seq
+  return ret
 
 
 def _make_seq_features(
@@ -1210,6 +1261,8 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
         feat.update(_make_msa_features(self.msa[idx][seq_idx], feat['seq_type']))
         ret = concat_msa_feats(ret, feat)
 
+    # ret.update(_make_ref_conformer(ret['seq'], ret['seq_index']))
+
     return ret
 
   def __len__(self):
@@ -1388,6 +1441,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret = self.get_monomer(pid, crop_fn=self.data_crop_fn)
       else:
         ret = self.get_multimer(pid, chains)
+      # ret.update(_make_ref_conformer(ret['seq'], ret['seq_index']))
 
       # We need all the amino acids!
       # if 'coord_mask' in ret:
@@ -2033,6 +2087,17 @@ def _collate_fn(batch, feat_flags=None):
 
   ret = {}
 
+  pad_with_virtual_atoms = np.random.random() < env(
+      'profold2_data_pad_with_virtual_atoms_ratio', defval=0, dtype=float
+  )
+  for b in batch:
+    b.update(
+        _make_ref_conformer(
+            b['seq'], b['seq_index'], pad_with_virtual_atoms=pad_with_virtual_atoms
+        )
+    )
+  # ret['diffuser_use_conditioning'] = not pad_with_virtual_atoms
+
   for field in ('pid', 'str_seq', 'clip'):
     ret[field] = _to_list(field)
 
@@ -2041,6 +2106,10 @@ def _collate_fn(batch, feat_flags=None):
   ret['seq'] = pad_sequential(
       _to_list('seq'), max_batch_len, padval=residue_constants.unk_restype_index
   )
+  if _any('seq_true'):
+    ret['seq_true'] = pad_sequential(
+        _to_list('seq_true'), max_batch_len, padval=residue_constants.unk_restype_index
+    )
   for field in ('seq_index', 'mask'):
     ret[field] = pad_sequential(_to_list(field), max_batch_len)
 
@@ -2100,6 +2169,29 @@ def _collate_fn(batch, feat_flags=None):
       items = _to_list(field)
       max_depth = max(item.shape[0] for item in items if exists(item))
       ret[field] = pad_sequential(items, max_depth)
+
+  if _any('ref_pos'):
+    max_atoms = max(a.shape[0] for a in _to_list('ref_pos'))
+
+    for field in ('ref_pos', 'ref_mask', 'ref_element', 'ref_charge', 'ref_space_uid'):
+      ret[field] = pad_sequential(_to_list(field), max_atoms)
+
+    ret['ref_atom_name_chars'] = pad_sequential(
+        _to_list('ref_atom_name_chars'), max_atoms
+    )
+    ret['atom_within_token_mask'] = pad_sequential(
+        _to_list('atom_within_token_mask'), max_atoms
+    )
+    ret['atom_repr_token_mask'] = pad_sequential(
+        _to_list('atom_repr_token_mask'), max_atoms
+    )
+
+    for field in (
+        'atom_to_token_idx', 'atom_within_token_idx', 'atom_padding_token_idx'
+    ):
+      ret[field] = pad_sequential(_to_list(field), max_atoms, padval=-1)
+      # NOTE: torch.gather the last one if masked
+      ret[field] = ret[field] % (torch.max(ret[field]) + 1)
 
   return ret
 
