@@ -25,7 +25,7 @@ from torch.utils.data import WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange, repeat
 
-from profold2.common import residue_constants
+from profold2.common import chemical_components, residue_constants
 from profold2.data.parsers import parse_fasta
 from profold2.data.padding import pad_sequential, pad_rectangle
 from profold2.data.utils import (
@@ -429,6 +429,24 @@ def _make_task_mask(
     for j in range(task_num):
       variant_task_mask[j] = mask
   return torch.stack(variant_task_mask, dim=-1)
+
+
+def _make_ref_conformer(seq, seq_index):
+  atom_array = chemical_components.polymer_atom_array(seq, seq_index)
+  ret = {
+      key: torch.from_numpy(value)
+      for key, value in (
+          ('ref_pos', atom_array.coord),
+          ('ref_charge', atom_array.charge),
+          ('ref_mask', atom_array.mask),
+          ('ref_element', atom_array.element_idx),
+          ('ref_atom_name_chars', atom_array.atom_name_chars),
+          ('ref_space_uid', atom_array.space_uid),
+          ('atom_to_token_idx', atom_array.atom_to_token_idx),
+          ('atom_within_token_idx', atom_array.atom_within_token_idx),
+      )
+  }
+  return ret
 
 
 def _make_seq_features(
@@ -1224,6 +1242,8 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
         feat.update(_make_msa_features(self.msa[idx][seq_idx], feat['seq_type']))
         ret = concat_msa_feats(ret, feat)
 
+    ret.update(_make_ref_conformer(ret['seq'], ret['seq_index']))
+
     return ret
 
   def __len__(self):
@@ -1402,6 +1422,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret = self.get_monomer(pid, crop_fn=self.data_crop_fn)
       else:
         ret = self.get_multimer(pid, chains)
+      ret.update(_make_ref_conformer(ret['seq'], ret['seq_index']))
 
       # We need all the amino acids!
       # if 'coord_mask' in ret:
@@ -2097,6 +2118,21 @@ def _collate_fn(batch, feat_flags=None):
       items = _to_list(field)
       max_depth = max(item.shape[0] for item in items if exists(item))
       ret[field] = pad_sequential(items, max_depth)
+
+  if _any('ref_pos'):
+    max_atoms = max(a.shape[0] for a in _to_list('ref_pos'))
+
+    for field in ('ref_pos', 'ref_mask', 'ref_element', 'ref_charge', 'ref_space_uid'):
+      ret[field] = pad_sequential(_to_list(field), max_atoms)
+
+    ret['ref_atom_name_chars'] = pad_sequential(
+        _to_list('ref_atom_name_chars'), max_atoms
+    )
+
+    for field in ('atom_to_token_idx', 'atom_within_token_idx'):
+      ret[field] = pad_sequential(_to_list(field), max_atoms, padval=-1)
+      # NOTE: torch.gather the last one if masked
+      ret[field] = ret[field] % (torch.max(ret[field]) + 1)
 
   return ret
 
