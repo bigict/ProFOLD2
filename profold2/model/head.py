@@ -112,24 +112,24 @@ class ConfidenceHead(nn.Module):
   def forward(self, headers, representations, batch):
     metrics = {}
     with torch.no_grad():
+      mask = batch['mask']
       if 'lddt' in headers and 'logits' in headers['lddt']:
         metrics['plddt'] = functional.plddt(headers['lddt']['logits']) * 100
       if 'plddt' in metrics:
-        mask = batch['mask']
         # metrics['loss'] = functional.masked_mean(value=metrics['plddt'], mask=mask)
         metrics['loss'] = functional.masked_mean(
             value=metrics['plddt'], mask=mask, dim=-1
         )
         logger.debug('ConfidenceHead.loss: %s', metrics['loss'])
       if 'pae' in headers and 'logits' in headers['pae']:
-        pae, mae = functional.pae(
-            headers['pae']['logits'], headers['pae']['breaks'], return_mae=True
+        logits, breaks = headers['pae']['logits'], headers['pae']['breaks']
+        metrics['pae'], metrics['mae'] = functional.pae(
+            logits, breaks, mask=mask, return_mae=True
         )
-        metrics['pae'], metrics['mae'] = pae, mae
-        ptm = functional.ptm(
-            headers['pae']['logits'], headers['pae']['breaks'], mask=batch.get('mask')
+        metrics['ptm'] = functional.ptm(logits, breaks, mask=mask)
+        metrics['iptm'] = functional.ptm(
+           logits, breaks, mask=mask, seq_color=batch.get('seq_color')
         )
-        metrics['ptm'] = ptm
     return metrics
 
 
