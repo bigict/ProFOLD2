@@ -810,7 +810,7 @@ class PAEHead(nn.Module):
         buckets_first_break, buckets_last_break, steps=buckets_num - 1
     )
     self.register_buffer('buckets', buckets, persistent=False)
-    self.net = nn.Sequential(nn.Linear(dim, buckets_num))
+    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, buckets_num, bias=False))
 
     self.num_buckets = buckets_num
     self.min_resolution = min_resolution
