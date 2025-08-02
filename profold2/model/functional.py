@@ -362,20 +362,23 @@ def bin_centers_from_breaks(breaks):
   return bin_centers
 
 
-def pae(logits, breaks, return_mae=False):
+def pae(logits, breaks, mask=None, return_mae=False):
   """Computes aligned confidence metrics from logits
   """
   probs = F.softmax(logits, dim=-1)
   bin_centers = bin_centers_from_breaks(breaks)
 
   expected_align_error = torch.sum(probs * bin_centers, dim=-1)
+  if exists(mask):
+    pair_mask = mask[..., : None] * mask[..., None, :]
+    expected_align_error = expected_align_error * pair_mask
 
   if return_mae:  # return max aligned error
     return expected_align_error, bin_centers[..., -1]
   return expected_align_error
 
 
-def ptm(logits, breaks, mask=None):
+def ptm(logits, breaks, mask=None, seq_color=None):
   """Compute predicted TM alignment
   """
   assert logits.shape[-2] == logits.shape[-3]
@@ -402,7 +405,13 @@ def ptm(logits, breaks, mask=None):
   predicted_tm_term = torch.einsum('... i j d, ... d->... i j', probs, tm_per_bin)
 
   if exists(mask):
-    pair_mask = mask[..., None] * mask[..., None, :]
+    pair_mask = mask[..., :, None] * mask[..., None, :]
+    if exists(seq_color):
+      pair_color = (seq_color[..., :, None] != seq_color[..., None, :])
+      if torch.any(pair_color):  # iptm
+        pair_mask *= pair_color
+
+  if exists(mask):
     per_alignment = masked_mean(value=predicted_tm_term, mask=pair_mask, dim=-1)
   else:
     per_alignment = torch.mean(per_alignment, dim=-1)
