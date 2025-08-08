@@ -136,18 +136,9 @@ def _msa_as_seq(item, idx, str_key='msa'):
     if len(new_order) < i:
       item = _make_feats_shrinked(item, new_order)
 
-    # Renew seq related feats
+    # Renew pid
     pid = item['pid']
     item['pid'] = f'{pid}@{idx}'
-    item.update(
-        _make_seq_features(
-            item['str_seq'],
-            item['pid'],
-            seq_color=item['seq_color'][0],
-            seq_entity=item['seq_entity'][0],
-            max_seq_len=None
-        )
-    )
 
     if 'coord' in item:
       # Apply new coord_mask based on aatypes
@@ -610,7 +601,12 @@ def _make_feats_shrinked(
   # Update tensors
   new_order = torch.as_tensor(new_order)
 
-  for field in default(seq_feats, ('coord', 'coord_mask', 'coord_plddt')):
+  for field in default(
+      seq_feats, (
+          'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
+          'coord', 'coord_mask', 'coord_plddt'
+      )
+  ):
     if field in item:
       item[field] = torch.index_select(item[field], 0, new_order)
   for field in ('coord_pae', ):
@@ -792,14 +788,7 @@ def _protein_crop_fn(protein, clip):
   assert clip
 
   if 'd' in clip:
-    return _make_feats_shrinked(
-        protein,
-        clip['d'],
-        seq_feats=(
-            'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
-            'seq_color', 'seq_entity'
-        )
-    )
+    return _make_feats_shrinked(protein, clip['d'])
 
   i, j = clip['i'], clip['j']
   protein['str_seq'] = protein['str_seq'][i:j]
@@ -1198,14 +1187,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     assert 0 < len(new_order) <= n, (len(new_order), n)
     if len(new_order) < n:
-      item = _make_feats_shrinked(
-          item,
-          new_order,
-          seq_feats=(
-              'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
-              'seq_color', 'seq_entity'
-          )
-      )
+      item = _make_feats_shrinked(item, new_order)
     return item
 
   def data_rm_mask(self, item):
@@ -1220,14 +1202,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       assert 0 <= len(new_order) <= i, (len(new_order), i)
       if 0 < len(new_order) < i:
-        item = _make_feats_shrinked(
-            item,
-            new_order,
-            seq_feats=(
-                'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt',
-                'seq_color', 'seq_entity'
-            )
-        )
+        item = _make_feats_shrinked(item, new_order)
     return item
 
   @contextlib.contextmanager
