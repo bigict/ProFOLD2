@@ -388,7 +388,12 @@ def _make_task_mask(
 
 
 def _make_seq_features(
-    sequence, description, seq_color=1, seq_entity=None, max_seq_len=None
+    sequence,
+    description,
+    seq_color=1,
+    seq_entity=None,
+    seq_sym=None,
+    max_seq_len=None
 ):
   residue_index = torch.arange(len(sequence), dtype=torch.int)
   residue_index = parse_seq_index(description, sequence, residue_index)
@@ -398,6 +403,7 @@ def _make_seq_features(
   seq_entity = torch.full(
       (len(sequence), ), default(seq_entity, seq_color), dtype=torch.int
   )
+  seq_sym = torch.full((len(sequence), ), default(seq_sym, 1), dtype=torch.int)
   seq_color = torch.full((len(sequence), ), seq_color, dtype=torch.int)
 
   seq = torch.as_tensor(
@@ -422,13 +428,20 @@ def _make_seq_features(
       seq_index=residue_index,
       seq_color=seq_color,
       seq_entity=seq_entity,
+      seq_sym=seq_sym,
       str_seq=str_seq,
       mask=mask
   )
 
 
 def _make_pdb_features(
-    pdb_id, pdb_string, pdb_type='pdb', seq_color=1, seq_entity=None, max_seq_len=None
+    pdb_id,
+    pdb_string,
+    pdb_type='pdb',
+    seq_color=1,
+    seq_entity=None,
+    seq_sym=None,
+    max_seq_len=None
 ):
   assert pdb_type in ('pdb', 'cif')
   if pdb_type == 'pdb':
@@ -515,6 +528,7 @@ def _make_pdb_features(
       description,
       seq_color=seq_color,
       seq_entity=seq_entity,
+      seq_sym=seq_sym,
       max_seq_len=max_seq_len
   )
 
@@ -794,7 +808,7 @@ def _protein_crop_fn(protein, clip):
   protein['str_seq'] = protein['str_seq'][i:j]
   for field in (
       'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt', 'seq_color',
-      'seq_entity'
+      'seq_entity', 'seq_sym'
   ):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
@@ -1216,7 +1230,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     for name, value in kwargs_old.items():
       setattr(self, name, value)
 
-  def get_monomer(self, pid, seq_color=1, seq_entity=None, crop_fn=None):
+  def get_monomer(self, pid, seq_color=1, seq_entity=None, seq_sym=None, crop_fn=None):
     # CATH format pid
     pid, chain, domains = decompose_pid(pid, return_domain=True)
     if exists(domains):
@@ -1230,7 +1244,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       )
       ret.update(
           self.get_structure_label_npz(
-              fs, pkey, pid, seq_color=seq_color, seq_entity=seq_entity
+              fs, pkey, pid, seq_color=seq_color, seq_entity=seq_entity, seq_sym=seq_sym
           )
       )
       if exists(domains):
@@ -1312,7 +1326,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       np.random.shuffle(chains)
 
     seq_index_offset, seq_index_gap = 0, 128
-    seq_entity_map = defaultdict(int)
+    seq_entity_map, seq_sym_map = defaultdict(int), defaultdict(int)
 
     # Concat all the feats
     ret = {'seq_anchor': 0, 'clip': None}
@@ -1328,13 +1342,18 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         assert 'str_seq' in feat
         if feat['str_seq'] not in seq_entity_map:
           seq_entity_map[feat['str_seq']] = len(seq_entity_map) + 1
+        seq_sym_map[feat['str_seq']] += 1
         feat['seq_entity'] = torch.ones_like(feat['seq_entity']
                                             ) * seq_entity_map[feat['str_seq']]
+        feat['seq_sym'] = torch.ones_like(feat['seq_sym']
+                                            ) * seq_sym_map[feat['str_seq']]
       # Sequence related
       for field in ('str_seq', ):
         ret[field] = ret.get(field, '') + feat[field]
       assert 'seq' in feat
-      for field in ('seq', 'seq_color', 'seq_entity', 'mask', 'coord', 'coord_mask'):
+      for field in (
+          'seq', 'seq_color', 'seq_entity', 'seq_sym', 'mask', 'coord', 'coord_mask'
+      ):
         assert field in feat, (field, pid, chain)
         if field not in ret:
           ret[field] = feat[field]
@@ -1714,7 +1733,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return {}
 
   def get_structure_label_npz(
-      self, fs, protein_key, protein_id, seq_color=1, seq_entity=None
+      self, fs, protein_key, protein_id, seq_color=1, seq_entity=None, seq_sym=None
   ):
     ret = {}
 
@@ -1734,6 +1753,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               input_description,
               seq_color=seq_color,
               seq_entity=seq_entity,
+              seq_sym=seq_sym,
               max_seq_len=None
           )
       )
@@ -1770,6 +1790,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               pdb_type=pdb_type,
               seq_color=seq_color,
               seq_entity=seq_entity,
+              seq_sym=seq_sym,
               max_seq_len=None
           )
       )
@@ -1817,7 +1838,7 @@ def _collate_fn(batch, feat_flags=None):
   for field in ('seq_index', 'mask'):
     ret[field] = pad_sequential(_to_list(field), max_batch_len)
 
-  for field in ('seq_color', 'seq_entity'):
+  for field in ('seq_color', 'seq_entity', 'seq_sym'):
     if _any(field):
       ret[field] = pad_sequential(_to_list(field), max_batch_len)
 
