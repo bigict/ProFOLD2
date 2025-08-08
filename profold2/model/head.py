@@ -893,7 +893,7 @@ class PairingHead(nn.Module):
     """
   def __init__(self, dim, alpha=0.5, focal_loss=0):
     super().__init__()
-    _, dim = embedd_dim_get(dim)
+    _, dim = commons.embedd_dim_get(dim)
 
     # NOTE: 0 for unpaired
     self.net = nn.Sequential(

@@ -2010,7 +2010,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 ret[field] = ret[field][:, :residue_constants.atom14_type_num, ...]
 
           # FIX: RNA duplexes
-          for field in ('seq_color', 'seq_entity'):
+          for field in ('seq_color', 'seq_entity', 'seq_sym'):
             if field in structure:
               ret[field] = torch.from_numpy(structure[field]) + ret[field] - 1
         else:

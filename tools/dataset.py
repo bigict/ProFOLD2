@@ -341,10 +341,10 @@ def chain_file_parse(f, chain_num=1):
 
 def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
   str_seq, seq_idx = '', []
-  seq_color, seq_entity = [], []
+  seq_color, seq_entity, seq_sym = [], [], []
   coord, coord_mask = [], []
 
-  seq_entity_map = defaultdict(int)
+  seq_entity_map, seq_sym_map = defaultdict(int), defaultdict(int)
 
   for i, asym_id in enumerate(chains):
     pid = compose_pid(entry_id, asym_id)
@@ -355,8 +355,12 @@ def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
 
     if data['str_seq'] not in seq_entity_map:
       seq_entity_map[data['str_seq']] = len(seq_entity_map) + 1
+    seq_sym_map[data['str_seq']] += 1
     seq_color.append(data['seq_color'] * (i + 1))
-    seq_entity.append(data['seq_entity'] * seq_entity_map[data['str_seq']])
+    seq_entity.append(
+        torch.ones_like(data['seq_entity']) * seq_entity_map[data['str_seq']]
+    )
+    seq_sym.append(torch.ones_like(data['seq_sym']) * seq_sym_map[data['str_seq']])
 
     coord.append(data['coord'])
     coord_mask.append(data['coord_mask'])
@@ -365,8 +369,8 @@ def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
     seq_idx[i + 1] += seq_idx[i][-1]
 
   seq_idx = torch.cat(seq_idx, dim=0)
-  coord, coord_mask, seq_color, seq_entity = map(
-      lambda x: torch.cat(x, dim=0), (coord, coord_mask, seq_color, seq_entity)
+  coord, coord_mask, seq_color, seq_entity, seq_sym = map(
+      lambda x: torch.cat(x, dim=0), (coord, coord_mask, seq_color, seq_entity, seq_sym)
   )
 
   domains = str_seq_index(seq_idx)
@@ -374,7 +378,11 @@ def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
   desc = f'chains:{chains} domains:{domains} length={len(str_seq)}'
 
   return str_seq.upper(), desc, dict(
-      coord=coord, coord_mask=coord_mask, seq_color=seq_color, seq_entity=seq_entity
+      coord=coord,
+      coord_mask=coord_mask,
+      seq_color=seq_color,
+      seq_entity=seq_entity,
+      seq_sym=seq_sym
   )
 
 
