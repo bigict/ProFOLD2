@@ -41,18 +41,20 @@ def _restype_atom14_mask(includes=None, excludes=None):
   if exists(includes) or exists(excludes):
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if exists(includes):
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[(restype, mol_type)]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) not in includes:
             restype_atom14_mask[i, j] = 0
     if exists(excludes):
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[(restype, mol_type)]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] in excludes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) in excludes:
             restype_atom14_mask[i, j] = 0
     return restype_atom14_mask
   return residue_constants.restype_atom14_mask
@@ -64,9 +66,9 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
 
   # FIX: hashable
   if exists(includes):
-    includes = frozenset(includes)
+    includes = frozenset(map(tuple, includes))
   if exists(excludes):
-    excludes = frozenset(excludes)
+    excludes = frozenset(map(tuple, excludes))
 
   coord_exists = functional.batched_gather(
       _restype_atom14_mask(includes=includes, excludes=excludes), protein['seq']
@@ -244,10 +246,12 @@ def make_bert_mask(
   return protein
 
 
-def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
-  """Create pseudo beta features."""
+def pseudo_beta_alphafold(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from AlphaFold)."""
 
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
+  is_gly = torch.eq(
+      aatype, residue_constants.restype_order[('G', residue_constants.PROT)]
+  )
   ca_idx = residue_constants.atom_order['CA']
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
@@ -255,7 +259,7 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
       all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
   )
 
-  if all_atom_masks is not None:
+  if exists(all_atom_masks):
     pseudo_beta_mask = torch.where(
         is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
     )
@@ -265,9 +269,33 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
   return pseudo_beta
 
 
+def pseudo_beta_rosetta(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from RoseTTAFold)."""
+
+  n_idx = residue_constants.atom_order['N']
+  ca_idx = residue_constants.atom_order['CA']
+  c_idx = residue_constants.atom_order['C']
+
+  b = all_atom_positions[..., ca_idx, :] - all_atom_positions[..., n_idx, :]
+  c = all_atom_positions[..., c_idx, :] - all_atom_positions[..., ca_idx, :]
+  a = torch.cross(b, c, dim=-1)
+  pseudo_beta = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + all_atom_positions[
+      ..., ca_idx, :]
+
+  if exists(all_atom_masks):
+    pseudo_beta_mask = all_atom_masks[..., n_idx] * all_atom_masks[
+        ..., ca_idx] * all_atom_masks[..., c_idx]
+    pseudo_beta_mask = pseudo_beta_mask.float()
+    return pseudo_beta, pseudo_beta_mask
+
+  return pseudo_beta
+
+
 @take1st
-def make_pseudo_beta(protein, prefix='', is_training=True):
+def make_pseudo_beta(protein, prefix='', is_training=True, type='alphafold'):
   del is_training
+  assert type in ('alphafold', 'rosettafold')
+  pseudo_beta_fn = pseudo_beta_alphafold if type == 'alphafold' else pseudo_beta_rosetta
 
   if (
       prefix + 'seq' in protein and prefix + 'coord' in protein and
