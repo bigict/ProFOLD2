@@ -26,7 +26,7 @@ from profold2.utils import exists, timing
 logger = logging.getLogger(__file__)
 
 
-def _to_chain_group(data, args, idx):
+def _to_chain_group(data, args, idx):  # pylint: disable=redefined-outer-name
   def _chain_contact_num(datum, cx, cy):
     ca_idx = residue_constants.atom_order['CA']
 
@@ -40,9 +40,9 @@ def _to_chain_group(data, args, idx):
 
     return torch.sum((dist2 <= args.contact_cutoff**2) * squared_mask).item()
 
-  def _chain_group_contact_num(contacts, cx_group, cy_group):
+  def _chain_group_contact_num(contact_matrix, cx_group, cy_group):
     return sum(
-        contacts[cx][cy] for cx, cy in itertools.product(
+        contact_matrix[cx][cy] for cx, cy in itertools.product(
             cx_group, cy_group
         ) if cy not in cx_group
     )
@@ -51,7 +51,7 @@ def _to_chain_group(data, args, idx):
     return sum(datum[c]['seq'].shape[0] for c in chain_group)
 
   def _chain_group_new(datum, chain_group):
-    contacts = defaultdict(dict)
+    contact_matrix = defaultdict(dict)
     chain_seen = set()
 
     # compute contacts for each chain pair.
@@ -59,10 +59,10 @@ def _to_chain_group(data, args, idx):
       for cy in chain_group:
         if cx != cy:
           c = _chain_contact_num(datum, cx, cy)
-          contacts[cx][cy] = c
-          contacts[cy][cx] = c
+          contact_matrix[cx][cy] = c
+          contact_matrix[cy][cx] = c
         else:
-          contacts[cx][cy] = 0
+          contact_matrix[cx][cy] = 0
 
     def _make_group(cg, chain_group_list):
       new_group, new_len, new_added= cg, _chain_group_seq_len(datum, cg), True
@@ -70,7 +70,7 @@ def _to_chain_group(data, args, idx):
 
       while new_added and new_len < args.max_sequence_length:
         weights = [
-            (i, _chain_group_contact_num(contacts, new_group, x))
+            (i, _chain_group_contact_num(contact_matrix, new_group, x))
             for i, x in enumerate(chain_group_list)
         ]
 
@@ -121,7 +121,8 @@ def _to_chain_group(data, args, idx):
               chain_group_length += datum[c]['seq'].shape[0]
             if chain_group_length > args.max_sequence_length:  # sequence is too long
               logger.debug(
-                  'NOTE: %s length: %d chains: %s', pid, chain_group_length, ','.join(chain_group)
+                  'NOTE: %s length: %d chains: %s',
+                  pid, chain_group_length, ','.join(chain_group)
               )
               for g in _chain_group_new(datum, chain_group):
                 chain_dict[pid].append(g)
@@ -215,7 +216,7 @@ def to_fasta_add_argument(parser):  # pylint: disable=redefined-outer-name
 def to_pdb(data, args):  # pylint: disable=redefined-outer-name
   os.makedirs(args.output, exist_ok=True)
 
-  cb_idx = residue_constants.atom_order["CB"]
+  cb_idx = residue_constants.atom_order['CB']
   for feat in iter(data):
     coord_mask = feat['coord_mask']
     if args.coord_pad:
@@ -247,21 +248,21 @@ def checksum(data, args):  # pylint: disable=redefined-outer-name
     n = len(prot['str_seq'])
     if 'msa' in prot:
       if n != prot['msa'].shape[1]:
-        print(prot['pid'], n, prot['msa'].shape)
+        print(prot['pid'], 'msa', n, prot['msa'].shape)
       assert prot['msa'].shape == prot['msa_mask'].shape
     elif args.msa_required:
       print(prot['pid'], 'MSA required')
     if 'coord' in prot:
       if n != prot['coord'].shape[0]:
-        print(prot['pid'], n, prot['coord'].shape)
+        print(prot['pid'], 'coord', n, prot['coord'].shape)
     elif args.coord_required:
       print(prot['pid'], 'coord required')
     if 'coord_pae' in prot:
       if n != prot['coord_pae'].shape[0] or prot['coord_pae'].shape[1] != n:
-        print(prot['pid'], n, prot['coord_pae'].shape)
+        print(prot['pid'], 'coord_pae', n, prot['coord_pae'].shape)
     if 'coord_mask' in prot:
       if n != prot['coord_mask'].shape[0]:
-        print(prot['pid'], n, prot['coord_mask'].shape)
+        print(prot['pid'], 'coord_mask', n, prot['coord_mask'].shape)
     elif args.coord_required:
       print(prot['pid'], 'coord_mask required')
     if 'variant' in prot:
