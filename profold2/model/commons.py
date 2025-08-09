@@ -143,6 +143,49 @@ class APC(nn.Module):
     return functional.apc(x, dim=self.dim)
 
 
+# Adaptive LayerNorm
+class AdaLN(nn.Module):
+  def __init__(self, dim, dim_cond=None):
+    super().__init__()
+
+    if exists(dim_cond):
+      self.norm = nn.LayerNorm(dim, create_scale=False, create_offset=False)
+      self.norm_cond = nn.LayerNorm(dim_cond, create_offset=False)
+      self.to_w = nn.Linear(dim_cond, dim)
+      self.to_b = nn.Linear(dim_cond, dim, bias=False)
+
+      init_linear_(self.to_w)
+      init_linear_(self.to_b)
+    else:
+      self.norm = nn.LayerNorm(dim)
+
+  def forward(self, x, cond=None):
+    if exists(cond):
+      x, cond = self.norm(x), self.norm_cond(cond)
+      return F.sigmoid(self.to_w(cond)) * x + self.to_b(cond)
+    return self.norm(x)
+
+
+# SwiGLU transition block with AdaLN
+class SwiGLUForward(nn.Module):
+  """SwigGLUForward"""
+  def __init__(self, dim, dim_cond, mult=2):
+    super().__init__()
+
+    self.norm = AdaLN(dim, dim_cond=dim_cond)
+    self.swish = nn.Linear(dim, dim * mult * 2, bias=False)
+    self.gating = nn.Linear(dim_cond, dim)
+    init_linear_(self.gating, b=-2.0)
+    self.proj = nn.Linear(dim * mult, dim, bias=False)
+
+  def forward(self, x, cond, shard_dim=-2, shard_size=None):
+    x = self.norm(x, cond=cond)
+    a, b = torch.chunk(self.swish(x), 2, dim=-1)
+    x = tensor_mul(a, F.silu(b))
+    x = tensor_mul(self.proj(x), F.sigmoid(self.gating(cond)))
+    return x
+
+
 # feed forward
 class GEGLU(nn.Module):
   """Gated GELU"""
@@ -1030,7 +1073,7 @@ class PairwiseEmbedding(nn.Module):
   def embeddings(self):
     return {'position': self.relative_pos_emb.embedding.weight}
 
-  def forward(self, x, x_mask, seq_index=None):
+  def forward(self, x, x_mask=None, seq_index=None):
     (_, n), device = x.shape[:2], x.device
 
     x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim=-1)
@@ -1043,7 +1086,106 @@ class PairwiseEmbedding(nn.Module):
     if exists(self.relative_pos_emb):
       seq_index = default(seq_index, lambda: torch.arange(n, device=device))
       x = tensor_add(x, self.relative_pos_emb(seq_index))
-    return x, x_mask
+    if exists(x_mask):
+      return x, x_mask
+    return x
+
+
+class FourierEmbedding(nn.Module):
+  """FourierEmbedding
+    """
+  def __init__(self, dim, max_rel_dist=0):
+    super().__init__()
+
+    self.w = nn.Parameter(torch.randn(dim), requires_grad=False)
+    self.b = nn.Parameter(torch.randn(dim), requires_grad=False)
+
+  def forward(self, t):
+    v = t * self.w + b
+    return torch.cos(2 * torch.pi * v)
+
+
+class AttentionPairBias(nn.Module):
+  """AttentionPairBias
+    """
+  def __init__(self, dim, heads, dim_ada=None, **kwargs):
+    super().__init__()
+
+    dim_single, dim_edge = embedd_dim_get(dim)
+
+    if exists(dim_ada):
+      dim_node, dim_cond = dim_ada, dim_single
+    else:
+      dim_node, dim_cond = dim_single, None
+
+    self.norm = AdaLN(dim_node, dim_cond=dim_cond)
+    self.attn = Attention(dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
+    self.edges_to_attn_bias = nn.Sequential(
+        nn.LayerNorm(dim_edge),
+        nn.Linear(dim_edge, heads, bias=False),
+        Rearrange('... i j h -> ... h i j')
+    )
+    if exists(dim_ada):
+      self.gating = nn.Linear(dim_single, dim_node)
+      init_linear_(self.gating, b=-2.)
+
+    accept_kernel_fn = env('AttentionPairBias_accept_kernel_fn', defval=0, type=int)
+    if not kernel.is_available() and accept_kernel_fn:
+      logger.warning('kernel is not available! disabled it.')
+      accept_kernel_fn = 0
+    accept_kernel_dtype = env('AttentionPairBias_accept_kernel_dtype')
+    if accept_kernel_dtype in ('float16', 'f16'):
+      accept_kernel_dtype = torch.float16
+    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
+      accept_kernel_dtype = torch.bfloat16
+    self.attn_fn = functools.partial(
+        evoformer_attn, dtype=accept_kernel_dtype
+    ) if accept_kernel_fn else None
+
+  def forward(self, x, edges, cond=None, mask=None, edge_mask=None):
+    x = self.norm(x, cond=cond)
+
+    attn_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
+    if exists(edge_mask):
+      attn_bias = attn_bias.masked_fill(~attn_mask, max_neg_value(attn_bias))
+    x = self.attn(x, mask=mask, attn_bias=attn_bias, attn_fn=self.attn_fn)
+
+    if exists(cond):
+      x = tensor_mul(x, F.sigmoid(self.gating(cond)))
+
+    return x
+
+
+class DiffusionTransformerBlock(nn.Module):
+  def __init__(self, dim, dim_ada, heads, **kwargs):
+    super().__init__()
+
+    dim_single, dim_edge = embedd_dim_get(dim)
+
+    self.attn = AttentionPairBias(dim, heads=heads, dim_ada=dim_ada, **kwargs)
+    self.ff = SwigGLUForward(dim_ada, dim_single)
+
+  def forward(
+      self,
+      x,
+      single_repr,
+      pairwise_repr,
+      mask=None,
+      edge_mask=None,
+      shard_size=None
+  ):
+    # run attn and ff parallel
+    x = tensor_add(
+        self.attn(
+            x,
+            pairwise_repr,
+            mask=mask,
+            edge_mask=edge_mask,
+            cond=single_repr
+        ),
+        self.ff(x, single_repr, shard_size=shard_size)
+    )
+    return x
 
 
 def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
