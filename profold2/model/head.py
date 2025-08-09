@@ -20,7 +20,7 @@ def binary_focal_loss_weight(probs, labels, gammar):
   return (1. - p) ** gammar
 
 
-def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0, epsilon=1e-7):
+def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0):
   errors = F.binary_cross_entropy(probs, labels, reduction='none', pos_weight=alpha)
   if gammar > 0:  # focal loss enabled.
     errors = errors * binary_focal_loss_weight(probs, labels, gammar)
@@ -81,21 +81,23 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
   def _yield_tmscore(b):
     flat_cloud_mask = rearrange(coord_mask[b], 'i c -> (i c)')
 
-    # rotate / align
-    coords_aligned, labels_aligned = Kabsch(
-        rearrange(
-            rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-        ),
-        rearrange(
-            rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-        )
-    )
+    if torch.any(flat_cloud_mask):
+      # rotate / align
+      coords_aligned, labels_aligned = Kabsch(
+          rearrange(
+              rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
+          ),
+          rearrange(
+              rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
+          )
+      )
 
-    return TMscore(
-        rearrange(coords_aligned, 'd l -> () d l'),
-        rearrange(labels_aligned, 'd l -> () d l'),
-        L=torch.sum(mask[b], dim=-1)
-    )
+      return TMscore(
+          rearrange(coords_aligned, 'd l -> () d l'),
+          rearrange(labels_aligned, 'd l -> () d l'),
+          L=torch.sum(mask[b], dim=-1)
+      )
+    return torch.as_tensor([0.], device=flat_cloud_mask.device)
 
   # tms = sum(map(_yield_tmscore, range(pred_points.shape[0])))
   tms = torch.cat(list(map(_yield_tmscore, range(pred_points.shape[0]))))
@@ -399,14 +401,9 @@ class DistogramHead(nn.Module):
           gammar=self.focal_loss
       )
     else:
-      b, l, device = *batch['seq'].shape, batch['seq'].device
-      mask = torch.ones((b, l), device=device, dtype=torch.bool)
-
+      mask = torch.zeros_like(batch['seq'], dtype=torch.bool)
       with torch.no_grad():
-        labels = torch.zeros(
-            logits.shape, device=logits.device
-        )  #F.softmax(logits, dim=-1)
-
+        labels = F.softmax(logits, dim=-1)
       errors = softmax_kl_diversity(labels=labels, logits=logits)
 
     square_mask, square_weight = (
@@ -1456,6 +1453,7 @@ class ViolationHead(nn.Module):
   def loss(self, value, batch):
     assert 'coords' in value
     seq, mask = batch['seq'], batch['mask']
+    del mask
     seq_index = batch.get('seq_index')
     if not exists(seq_index):
       b, n = seq.shape[:2]
