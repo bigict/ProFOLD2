@@ -53,8 +53,8 @@ def _dataset_load(data_dir, data_idx='name.idx'):
   data = ProteinStructureDataset(data_dir, data_idx=data_idx)
   pid_dict = {}
   for idx, cluster in enumerate(data.pids):
-    for pid in cluster:
-      pid_dict[pid] = idx
+    for k, pid in enumerate(cluster):
+      pid_dict[pid] = (idx, k)
   return data, pid_dict
 
 

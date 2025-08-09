@@ -1168,10 +1168,13 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.__dict__ = d
 
   def __getitem__(self, idx):
-    with timing(f'ProteinStructureDataset.__getitem__ {idx}', logger.debug):
-      pids = self.pids[idx]
-      pid = pids[np.random.randint(len(pids))]
+    idx, k = idx if isinstance(idx, tuple) else (idx, None)
+    pids = self.pids[idx]
+    if not exists(k):
+      k = np.random.randint(len(pids))
+    pid = pids[k]
 
+    with timing(f'ProteinStructureDataset.__getitem__ {idx}', logger.debug):
       if np.random.random() < self.pseudo_linker_prob:
         chains = self.get_chain_list(pid)
       else:
