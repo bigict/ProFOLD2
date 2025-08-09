@@ -9,11 +9,7 @@ from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
-from profold2.model.commons import (embedd_dim_get, tensor_add, InvariantPointAttention)
-from profold2.model.functional import (
-    l2_norm, quaternion_multiply, quaternion_to_matrix, rigids_from_angles,
-    rigids_scale, rigids_to_positions
-)
+from profold2.model import commons, functional
 from profold2.utils import exists, torch_default_dtype
 
 logger = logging.getLogger(__name__)
@@ -45,10 +41,10 @@ class IPABlock(nn.Module):
     """
   def __init__(self, *, dim, ff_mult=1, ff_num_layers=3, dropout=.0, **kwargs):
     super().__init__()
-    dim_single, _ = embedd_dim_get(dim)
+    dim_single, _ = commons.embedd_dim_get(dim)
 
     self.attn_norm = nn.LayerNorm(dim_single)
-    self.attn = InvariantPointAttention(dim=dim, **kwargs)
+    self.attn = commons.InvariantPointAttention(dim=dim, **kwargs)
 
     self.ff_norm = nn.LayerNorm(dim_single)
     self.ff = Transition(dim_single, mult=ff_mult, num_layers=ff_num_layers)
@@ -56,10 +52,10 @@ class IPABlock(nn.Module):
     self.dropout_fn = functools.partial(F.dropout, p=dropout)
 
   def forward(self, x, **kwargs):
-    x = tensor_add(x, self.attn(x, **kwargs))
+    x = commons.tensor_add(x, self.attn(x, **kwargs))
     x = self.attn_norm(self.dropout_fn(x, training=self.training))
 
-    x = tensor_add(x, self.ff(x))
+    x = commons.tensor_add(x, self.ff(x))
     x = self.ff_norm(self.dropout_fn(x, training=self.training))
     return x
 
@@ -73,7 +69,7 @@ class AngleNetBlock(nn.Module):
     )
 
   def forward(self, x):
-    return tensor_add(x, self.net(x))
+    return commons.tensor_add(x, self.net(x))
 
 
 class AngleNet(nn.Module):
@@ -118,7 +114,7 @@ class StructureModule(nn.Module):
       **kwargs
   ):
     super().__init__()
-    dim_single, dim_pairwise = embedd_dim_get(dim)
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
 
     assert structure_module_depth >= 1
     self.structure_module_depth = structure_module_depth
@@ -166,7 +162,7 @@ class StructureModule(nn.Module):
         quaternions = torch.tensor([1., 0., 0., 0.], device=device)
         quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
         translations = torch.zeros((b, n, 3), device=device)
-      rotations = quaternion_to_matrix(quaternions).detach()
+      rotations = functional.quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
       # feedforward
@@ -187,29 +183,31 @@ class StructureModule(nn.Module):
                                                                      ).chunk(2, dim=-1)
         quaternion_update = F.pad(quaternion_update, (1, 0), value=1.)
         # FIX: make sure quaternion_update is standardized
-        quaternion_update = l2_norm(quaternion_update)
+        quaternion_update = functional.l2_norm(quaternion_update)
 
-        quaternions = quaternion_multiply(quaternions, quaternion_update)
+        quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
         translations = torch.einsum(
             'b n c, b n r c -> b n r', translation_update, rotations
         ) + translations
-        rotations = quaternion_to_matrix(quaternions)
+        rotations = functional.quaternion_to_matrix(quaternions)
         # No rotation gradients between iterations to stabilize training.
         if not is_last:
           rotations = rotations.detach()
 
         if self.training or is_last:
           angles = self.to_angles(single_repr, single_repr_init=single_repr_init)
-          frames = rigids_from_angles(
+          frames = functional.rigids_from_angles(
               batch['seq'],
-              rigids_scale((rotations, translations), self.position_scale),
-              l2_norm(angles)
+              functional.rigids_scale((rotations, translations), self.position_scale),
+              functional.l2_norm(angles)
           )
-          coords = rigids_to_positions(frames, batch['seq'])
+          coords = functional.rigids_to_positions(frames, batch['seq'])
           coords.type(original_dtype)
           outputs.append(
               dict(
-                  frames=rigids_scale((rotations, translations), self.position_scale),
+                  frames=functional.rigids_scale(
+                      (rotations, translations), self.position_scale
+                  ),
                   act=single_repr,
                   atoms=dict(frames=frames, coords=coords, angles=angles)
               )

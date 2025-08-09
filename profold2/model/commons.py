@@ -19,10 +19,10 @@ _tensor_inplace_op = env('profold2_tensor_inplace_op', defval=0, type=int)
 
 
 # helpers
-def init_zero_(layer):
-  nn.init.constant_(layer.weight, 0.)
+def init_linear_(layer, w=0., b=0.):
+  nn.init.constant_(layer.weight, w)
   if exists(layer.bias):
-    nn.init.constant_(layer.bias, 0.)
+    nn.init.constant_(layer.bias, b)
 
 
 def default_list_get(value, n):
@@ -162,7 +162,7 @@ class FeedForward(nn.Module):
         nn.Linear(dim, dim * mult * 2), GEGLU(), nn.Dropout(dropout),
         nn.Linear(dim * mult, dim)
     )
-    init_zero_(self.net[-1])
+    init_linear_(self.net[-1])
 
   def forward(self, x, shard_dim=-2, shard_size=None):
     x = self.norm(x)
@@ -203,12 +203,11 @@ class Attention(nn.Module):
 
     self.gating = nn.Linear(dim_kv, dim_inner) if gating else None
     if exists(self.gating):
-      nn.init.constant_(self.gating.weight, 0.)
-      nn.init.constant_(self.gating.bias, 1.)
+      init_linear_(self.gating, b=1.)
 
     self.dropout = nn.Dropout(dropout)
     self.global_query_attn = global_query_attn
-    init_zero_(self.to_out)
+    init_linear_(self.to_out)
 
   def forward(
       self,
@@ -420,8 +419,7 @@ class TriangleMultiplicativeModule(nn.Module):
     # initialize all gating to be identity
 
     for gate in (self.left_gate, self.right_gate, self.out_gate):
-      nn.init.constant_(gate.weight, 0.)
-      nn.init.constant_(gate.bias, 1.)
+      init_linear_(gate, b=1.)
 
     if mix == 'outgoing':
       self.mix_einsum_eq = '... i k d, ... j k d -> ... i j d'
@@ -763,8 +761,7 @@ class InvariantPointAttention(nn.Module):
 
     self.gating = nn.Linear(dim, scalar_value_dim * heads) if gating else None
     if exists(self.gating):
-      nn.init.constant_(self.gating.weight, 0.)
-      nn.init.constant_(self.gating.bias, 1.)
+      init_linear_(self.gating, b=1.)
 
     # qkv projection for point attention (coordinate and orientation aware)
     point_weight_init_value = torch.log(
@@ -804,7 +801,7 @@ class InvariantPointAttention(nn.Module):
             (3 + 1)
         ), dim
     )
-    init_zero_(self.to_out)
+    init_linear_(self.to_out)
 
   def forward(
       self, single_repr, pairwise_repr=None, *, rotations, translations, mask=None
@@ -1049,14 +1046,14 @@ class PairwiseEmbedding(nn.Module):
     return x, x_mask
 
 
-def checkpoint_sequential_nargs(functions, segments, inputs, **kwargs):
+def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   # Hack for keyword-only parameter in a python 2.7-compliant way
   preserve = kwargs.pop('preserve_rng_state', True)
 
   def run_function(start, end, functions):
     def forward(*inputs):
       for j in range(start, end + 1):
-        inputs = functions[j](inputs, **kwargs)
+        inputs = functions[j](*inputs, **kwargs)
       return inputs
 
     return forward
@@ -1084,3 +1081,18 @@ def checkpoint_sequential_nargs(functions, segments, inputs, **kwargs):
     else:
       inputs = run_function(start, end, functions)(*inputs)
   return run_function(end + 1, len(functions) - 1, functions)(*inputs)
+
+
+def layer_stack(moduleclass, depth, *args, **kwargs):
+  class _LayerStack(nn.Module):
+    def __init__(self, *args, **kwargs):
+      super().__init__()
+      self.layers = nn.ModuleList(moduleclass(*args, **kwargs) for _ in range(depth))  # pylint: disable=missing-kwargs
+
+    def forward(self, *args, **kwargs):
+      with profiler.record_function(moduleclass.__name__):
+        return checkpoint_sequential_nargs(
+            self.layers, len(self.layers), *args, **kwargs
+        )
+
+  return _LayerStack(*args, **kwargs)
