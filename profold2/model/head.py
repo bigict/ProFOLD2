@@ -8,8 +8,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import functional, folding
-from profold2.model.commons import embedd_dim_get
+from profold2.model import commons, functional, folding
 from profold2.utils import *
 
 logger = logging.getLogger(__name__)
@@ -218,7 +217,7 @@ class CoevolutionHead(nn.Module):
   ):
     super().__init__()
     del alpha, beta, gammar  # Deprecated
-    dim_single, dim_pairwise = embedd_dim_get(dim)
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
     self.single = nn.Sequential(
@@ -236,8 +235,7 @@ class CoevolutionHead(nn.Module):
           nn.LayerNorm(dim_pairwise), nn.Linear(dim_pairwise, num_states)
       )
 
-      nn.init.constant_(self.pairwise[1].weight, 0.)
-      nn.init.constant_(self.pairwise[1].bias, 1.)
+      commons.init_linear_(self.pairwise[1], b=1.)
     else:
       self.states = None
       self.pairwise = nn.Sequential(
@@ -347,7 +345,7 @@ class DistogramHead(nn.Module):
       self, dim, buckets_first_break, buckets_last_break, buckets_num, focal_loss=0
   ):
     super().__init__()
-    _, dim = embedd_dim_get(dim)
+    _, dim = commons.embedd_dim_get(dim)
 
     self.num_buckets = buckets_num
     buckets = torch.linspace(
@@ -729,7 +727,7 @@ class LDDTHead(nn.Module):
       max_resolution=sys.float_info.max
   ):
     super().__init__()
-    dim, _ = embedd_dim_get(dim)
+    dim, _ = commons.embedd_dim_get(dim)
     num_channels = default(num_channels, dim)
 
     self.net = nn.Sequential(
@@ -804,7 +802,7 @@ class PAEHead(nn.Module):
       max_resolution=sys.float_info.max
   ):
     super().__init__()
-    _, dim = embedd_dim_get(dim)
+    _, dim = commons.embedd_dim_get(dim)
 
     buckets = torch.linspace(
         buckets_first_break, buckets_last_break, steps=buckets_num - 1
@@ -966,7 +964,7 @@ class RobertaLMHead(nn.Module):
   def __init__(self, dim, loss_min=None, loss_max=None):
     super().__init__()
 
-    dim, _ = embedd_dim_get(dim)
+    dim, _ = commons.embedd_dim_get(dim)
     self.project = nn.Sequential(
         nn.Linear(dim, dim), nn.GELU(), nn.LayerNorm(dim),
         nn.Linear(dim, len(residue_constants.restypes_with_x))
@@ -1176,7 +1174,7 @@ class FitnessHead(nn.Module):
       shard_size=2048
   ):
     super().__init__()
-    dim_single, _ = embedd_dim_get(dim)
+    dim_single, _ = commons.embedd_dim_get(dim)
 
     self.task_num = task_num
     if not exists(task_weight):
@@ -1442,7 +1440,7 @@ class SequenceProfileHead(nn.Module):
     """
   def __init__(self, dim, input_dim=None, single_repr=None, num_pivot=None):
     super().__init__()
-    dim, _ = embedd_dim_get(dim)
+    dim, _ = commons.embedd_dim_get(dim)
 
     if not exists(input_dim):
       input_dim = dim

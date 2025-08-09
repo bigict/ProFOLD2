@@ -10,8 +10,7 @@ from torch import nn
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model.commons import Always, PairwiseEmbedding, tensor_add
-from profold2.model import functional
+from profold2.model import commons, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
 from profold2.utils import default, exists
@@ -89,10 +88,13 @@ class AlphaFold2(nn.Module):
     dim_single, dim_msa, dim_pairwise = dim
 
     # token embedding
-    self.token_emb = nn.Embedding(num_tokens +
-                                  1, dim_msa) if not disable_token_embed else Always(0)
+    self.token_emb = nn.Embedding(
+        num_tokens + 1, dim_msa
+    ) if not disable_token_embed else commons.Always(0)
     self.disable_token_embed = disable_token_embed
-    self.to_pairwise_repr = PairwiseEmbedding((dim_msa, dim_pairwise), max_rel_dist)
+    self.to_pairwise_repr = commons.PairwiseEmbedding(
+        (dim_msa, dim_pairwise), max_rel_dist
+    )
 
     # main trunk modules
     self.evoformer = Evoformer(
@@ -120,9 +122,10 @@ class AlphaFold2(nn.Module):
     ) if recycling_pos else None
     self.recycling_frames = recycling_frames
     if recycling_pos:
-      self.recycling_pos_breaks = torch.linspace(
+      recycling_pos_breaks = torch.linspace(
           recycling_pos_min_bin, recycling_pos_max_bin, steps=recycling_pos_num_bin
       )
+      self.register_buffer('recycling_pos_breaks', recycling_pos_breaks)
     self.recycling_msa_norm = nn.LayerNorm(dim_msa)
     self.recycling_pairwise_norm = nn.LayerNorm(dim_pairwise)
 
@@ -172,17 +175,17 @@ class AlphaFold2(nn.Module):
     x = self.token_emb(seq)
 
     if exists(seq_embed):
-      x = tensor_add(x, seq_embed)
+      x = commons.tensor_add(x, seq_embed)
 
     # embed multiple sequence alignment (msa)
     if exists(msa):
       m = self.token_emb(msa)
 
       if exists(msa_embed):
-        m = tensor_add(m, msa_embed)
+        m = commons.tensor_add(m, msa_embed)
 
       # add single representation to msa representation
-      m = tensor_add(m, rearrange(x, 'b i d -> b () i d'))
+      m = commons.tensor_add(m, rearrange(x, 'b i d -> b () i d'))
 
       # get msa_mask to all ones if none was passed
       msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
@@ -202,13 +205,12 @@ class AlphaFold2(nn.Module):
     if exists(recyclables):
       if exists(recyclables.coords) and exists(self.recycling_pos_linear):
         pseudo_beta = functional.pseudo_beta_fn(seq, recyclables.coords)
-        breaks = self.recycling_pos_breaks.to(pseudo_beta.device)
-        dgram = functional.distogram_from_positions(pseudo_beta, breaks)
-        x = tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
-      m[:, 0] = tensor_add(
+        dgram = functional.distogram_from_positions(pseudo_beta, self.recycling_pos_breaks)
+        x = commons.tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
+      m[:, 0] = commons.tensor_add(
           m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr)
       )
-      x = tensor_add(x, self.recycling_pairwise_norm(recyclables.pairwise_repr))
+      x = commons.tensor_add(x, self.recycling_pairwise_norm(recyclables.pairwise_repr))
 
     # add recyclables, if present
     if exists(recyclables) and exists(recyclables.frames):
@@ -222,9 +224,7 @@ class AlphaFold2(nn.Module):
 
     # trunk
     x, m, t = self.evoformer(
-        x,
-        m,
-        frames=(quaternions, translations),
+        x, m, (quaternions, translations),
         mask=x_mask,
         msa_mask=msa_mask,
         shard_size=shard_size
@@ -258,7 +258,7 @@ class AlphaFold2(nn.Module):
           ret.headers[name].update(loss)
           lossw = loss['loss'] * options.get('weight', 1.0)
           if exists(ret.loss):
-            ret.loss = tensor_add(ret.loss, lossw)
+            ret.loss = commons.tensor_add(ret.loss, lossw)
           else:
             ret.loss = lossw
 

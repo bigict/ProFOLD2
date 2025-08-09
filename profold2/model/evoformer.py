@@ -5,11 +5,7 @@ from torch import nn
 from torch.cuda.amp import autocast
 from einops import rearrange
 
-from profold2.model.commons import (
-    Attention, checkpoint_sequential_nargs, FeedForward, FrameAttentionBlock,
-    FrameUpdater, MsaAttentionBlock, PairwiseAttentionBlock, tensor_add
-)
-from profold2.model import profiler
+from profold2.model import commons, profiler
 from profold2.utils import exists
 
 
@@ -30,11 +26,11 @@ class TemplateEmbedding(nn.Module):
 
     self.to_template_embed = nn.Linear(templates_dim, dim)
     self.templates_embed_layers = templates_embed_layers
-    self.template_pairwise_embedder = PairwiseAttentionBlock(
+    self.template_pairwise_embedder = commons.PairwiseAttentionBlock(
         dim=dim, dim_head=dim_head, heads=heads
     )
 
-    self.template_pointwise_attn = Attention(
+    self.template_pointwise_attn = commons.Attention(
         dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout
     )
 
@@ -89,7 +85,7 @@ class TemplateEmbedding(nn.Module):
       template_pooled = template_pooled * template_pooled_mask
 
       template_pooled = rearrange(template_pooled, '(b i j) () d -> b i j d', i=n, j=n)
-      x = tensor_add(x, template_pooled)
+      x = commons.tensor_add(x, template_pooled)
 
     # add template angle features to MSAs by passing through MLP and then concat
     if exists(templates_angles):
@@ -120,16 +116,16 @@ class EvoformerBlock(nn.Module):
   ):
     super().__init__()
 
-    self.pair_attn = PairwiseAttentionBlock(
+    self.pair_attn = commons.PairwiseAttentionBlock(
         dim_msa=dim_msa,
         dim_pairwise=dim_pairwise,
         heads=heads,
         dim_head=dim_head,
         dropout=attn_dropout
     )
-    self.pair_ff = FeedForward(dim=dim_pairwise, dropout=ff_dropout)
+    self.pair_ff = commons.FeedForward(dim=dim_pairwise, dropout=ff_dropout)
     if accept_msa_attn:
-      self.msa_attn = MsaAttentionBlock(
+      self.msa_attn = commons.MsaAttentionBlock(
           dim_msa=dim_msa,
           dim_pairwise=dim_pairwise,
           heads=heads,
@@ -138,9 +134,9 @@ class EvoformerBlock(nn.Module):
           global_column_attn=global_column_attn,
           **kwargs
       )
-      self.msa_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
+      self.msa_ff = commons.FeedForward(dim=dim_msa, dropout=ff_dropout)
     if accept_frame_attn:
-      self.frame_attn = FrameAttentionBlock(
+      self.frame_attn = commons.FrameAttentionBlock(
           dim_msa=dim_msa,
           dim_pairwise=dim_pairwise,
           heads=heads,
@@ -151,13 +147,11 @@ class EvoformerBlock(nn.Module):
           point_weight_init=5e-3,
           require_pairwise_repr=False
       )
-      self.frame_ff = FeedForward(dim=dim_msa, dropout=ff_dropout)
+      self.frame_ff = commons.FeedForward(dim=dim_msa, dropout=ff_dropout)
     if accept_frame_update:
-      self.frame_update = FrameUpdater(dim=dim_msa, dropout=attn_dropout)
+      self.frame_update = commons.FrameUpdater(dim=dim_msa, dropout=attn_dropout)
 
-  def forward(self, inputs, shard_size=None):
-    x, m, t, mask, msa_mask = inputs
-
+  def forward(self, x, m, t, mask=None, msa_mask=None, shard_size=None):
     assert hasattr(self, 'msa_attn') or m.shape[1] == 1
 
     # msa attention and transition
@@ -170,7 +164,7 @@ class EvoformerBlock(nn.Module):
             pairwise_mask=mask,
             shard_size=shard_size
         )
-        m = tensor_add(m, self.msa_ff(m, shard_size=shard_size))
+        m = commons.tensor_add(m, self.msa_ff(m, shard_size=shard_size))
 
     # frame attention and transition
     if hasattr(self, 'frame_attn'):
@@ -179,7 +173,7 @@ class EvoformerBlock(nn.Module):
           # to default float
           m, x, t = m.float(), x.float(), tuple(map(lambda x: x.float(), t))
           s = self.frame_attn(m[:, 0], mask=msa_mask[:, 0], pairwise_repr=x, frames=t)
-          s = tensor_add(s, self.frame_ff(s, shard_size=shard_size))
+          s = commons.tensor_add(s, self.frame_ff(s, shard_size=shard_size))
         m = torch.cat((s[:, None, ...], m[:, 1:, ...]), dim=1)
 
     # frame update
@@ -196,22 +190,12 @@ class EvoformerBlock(nn.Module):
       x = self.pair_attn(
           x, mask=mask, msa_repr=m, msa_mask=msa_mask, shard_size=shard_size
       )
-      x = tensor_add(x, self.pair_ff(x, shard_size=shard_size))
+      x = commons.tensor_add(x, self.pair_ff(x, shard_size=shard_size))
 
-    return x, m, t, mask, msa_mask
+    return x, m, t
 
 
-class Evoformer(nn.Module):
+def Evoformer(depth, *args, **kwargs):
   """The Evoformer in AlphaFold2
    """
-  def __init__(self, *, depth, **kwargs):
-    super().__init__()
-    self.layers = nn.ModuleList([EvoformerBlock(**kwargs) for _ in range(depth)])  # pylint: disable=missing-kwoa
-
-  def forward(self, x, m, frames=None, mask=None, msa_mask=None, shard_size=None):
-    with profiler.record_function('evoformer'):
-      inp = (x, m, frames, mask, msa_mask)
-      x, m, t, *_ = checkpoint_sequential_nargs(
-          self.layers, len(self.layers), inp, shard_size=shard_size
-      )
-      return x, m, t
+  return commons.layer_stack(EvoformerBlock, depth, *args, **kwargs)
