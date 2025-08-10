@@ -414,7 +414,7 @@ def _make_seq_features(
       ),
       dtype=torch.int
   ).argmax(-1).to(torch.int)
-  #residue_index = torch.arange(len(sequence), dtype=torch.int)
+  # residue_index = torch.arange(len(sequence), dtype=torch.int)
   str_seq = ''.join(
       map(
           lambda a: a if a in residue_constants.restype_order_with_x else
@@ -1762,20 +1762,21 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           )
       )
 
-      pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
-      if (self.feat_flags & FEAT_PDB) and fs.exists(pdb_file):
-        with fs.open(pdb_file) as f:
-          structure = np.load(BytesIO(f.read()))
-          ret.update(
-              coord=torch.from_numpy(structure['coord']),
-              coord_mask=torch.from_numpy(structure['coord_mask'])
-          )
-          if 'bfactor' in structure:
-            ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
-          else:
+      if self.feat_flags & FEAT_PDB:
+        pdb_file = f'{self.pdb_dir}/{protein_id}.npz'
+        if fs.exists(pdb_file):
+          with fs.open(pdb_file) as f:
+            structure = np.load(BytesIO(f.read()))
             ret.update(
-                coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float)
+                coord=torch.from_numpy(structure['coord']),
+                coord_mask=torch.from_numpy(structure['coord_mask'])
             )
+            if 'bfactor' in structure:
+              ret.update(coord_plddt=torch.from_numpy(structure['bfactor']))
+            else:
+              ret.update(
+                  coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float32)
+              )
     else:  # from pdb_db file
       for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
         if exists(pdb_type):
