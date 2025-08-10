@@ -134,13 +134,14 @@ def pdb_from_prediction(batch, headers, idx=None):
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
     #aatype = batch['seq'][b,...].numpy()
-    aatype = np.array(
-        [
-            residue_constants.restype_order_with_x.get(
-                aa, residue_constants.unk_restype_index
-            ) for aa in str_seq
-        ]
-    )
+    # aatype = np.array(
+    #     [
+    #         residue_constants.restype_order_with_x.get(
+    #             aa, residue_constants.unk_restype_index
+    #         ) for aa in str_seq
+    #     ]
+    # )
+    aatype = tensor_to_numpy(batch['seq'][b])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
       seq_index = tensor_to_numpy(batch['seq_index'][b])
     else:
