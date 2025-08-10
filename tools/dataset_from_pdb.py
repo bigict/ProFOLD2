@@ -15,6 +15,7 @@ import logging
 import numpy as np
 
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
+from Bio.PDB.PDBExceptions import PDBConstructionException
 
 from profold2.common import residue_constants
 from profold2.utils import exists, timing
@@ -37,7 +38,24 @@ def mmcif_parse(filename):
   return MMCIF2Dict(filename)
 
 
-def mmcif_yield_chain(mmcif_dict, args):
+def mmcif_yield_chain_type(mmcif_dict):
+  for chain_type, chain_list in zip(
+      mmcif_dict['_entity_poly.type'], mmcif_dict['_entity_poly.pdbx_strand_id']
+  ):
+    # NOTE: 'polydeoxyribonucleotide/polyribonucleotide hybrid'
+    if chain_type.startswith('polypeptide'):
+      chain_type = 'mol:protein'
+    elif chain_type.find('polydeoxyribonucleotide') != -1:
+      chain_type = 'mol:dna'
+    elif chain_type.find('polyribonucleotide') != -1:
+      chain_type = 'mol:rna'
+    else:  # FIX: 3ok2, chain_type=other
+      continue
+    for chain in chain_list.split(','):
+      yield chain, chain_type
+
+
+def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
   # two special chars as placeholders in the mmCIF format
   # for item values that cannot be explicitly assigned
   # see: pdbx/mmcif syntax web page
@@ -45,6 +63,7 @@ def mmcif_yield_chain(mmcif_dict, args):
 
   atom_id_list = mmcif_dict['_atom_site.label_atom_id']
   residue_id_list = mmcif_dict['_atom_site.label_comp_id']
+  # label_seq_id_list = mmcif_dict['_atom_site.auth_seq_id']
   label_seq_id_list = mmcif_dict['_atom_site.label_seq_id']
   chain_id_list = mmcif_dict['_atom_site.auth_asym_id']
   x_list = [float(x) for x in mmcif_dict['_atom_site.Cartn_x']]
@@ -73,10 +92,35 @@ def mmcif_yield_chain(mmcif_dict, args):
       if parent_comp_id in residue_constants.restypes_with_x:
         mod_residue_id_list[(asym_id, seq_id, comp_id)].append(parent_comp_id)
 
-  def _get_residue(i):
-    if residue_id_list[i] == 'MSE':
+  chain_type_dict = dict(mmcif_yield_chain_type(mmcif_dict))
+
+  def _get_residue_id(residue_id, chain_type):
+    del chain_type
+    while len(residue_id) < 3:
+      residue_id = f' {residue_id}'
+    if residue_id == 'MSE':
       return 'MET'
-    return residue_id_list[i]
+    return residue_id
+
+  def _get_unktype(chain_type):
+    del chain_type
+    return residue_constants.unk_restype
+
+  def _get_residue_letter(residue_id, chain_type):
+    if residue_id not in residue_constants.restype_3to1:
+      unktype = _get_unktype(chain_type)
+      if unktype not in residue_constants.restype_3to1:
+        return residue_constants.restypes_with_x[-1]
+      letter = residue_constants.restype_3to1[unktype]
+    else:
+      letter = residue_constants.restype_3to1[residue_id]
+    return letter
+
+  def _get_atom_list(residue_id, chain_type):
+    if residue_id not in residue_constants.restype_name_to_atom14_names:
+      unktype = _get_unktype(chain_type)
+      return residue_constants.restype_name_to_atom14_names[unktype]
+    return residue_constants.restype_name_to_atom14_names[residue_id]
 
   def _make_npz(coord_list, coord_mask_list, bfactor_list):
     npz = dict(
@@ -117,12 +161,17 @@ def mmcif_yield_chain(mmcif_dict, args):
           coord_mask_list.append(label_mask)
           bfactor_list.append(bfactors)
         npz = _make_npz(coord_list, coord_mask_list, bfactor_list)
-        yield chain_id, seq, domains, npz
+        yield chain_id, chain_type_dict[chain_id], seq, domains, npz
       chain_id, seq, domains = chain_id_list[i], [], []
+      # assert chain_id in chain_type_dict
       int_resseq_start, int_resseq_end = None, None
       int_resseq_delta, int_resseq_offset = 0, 0
       coord_list, coord_mask_list, bfactor_list = [], [], []
       labels, label_mask, bfactors = None, None, None
+
+    chain_type = chain_type_dict.get(chain_id)
+    if chain_type != 'mod:protein':
+      continue
 
     int_resseq = label_seq_id_list[i]
     residue_id = residue_id_list[i]
@@ -135,11 +184,15 @@ def mmcif_yield_chain(mmcif_dict, args):
     else:
       continue
 
+    residue_id_arr = [
+        _get_residue_id(residue_id, chain_type) for residue_id in residue_id_arr
+    ]
+
     int_resseq = int(int_resseq)
     if not exists(int_resseq_start):
       int_resseq_start = int_resseq
       if int_resseq_start < 0:
-        int_resseq_delta = -int_resseq_start
+        int_resseq_delta = -int_resseq_start  # pylint: disable=invalid-unary-operand-type)
 
     if exists(int_resseq_end) and int_resseq - int_resseq_end > 1:
       domains += [
@@ -152,36 +205,29 @@ def mmcif_yield_chain(mmcif_dict, args):
 
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
       for j, residue_id in enumerate(residue_id_arr):
-        if residue_id == 'MSE':
-          residue_id = 'MET'
-
         int_resseq_offset += (1 if j > 0 else 0)
-        resname = residue_constants.restype_3to1.get(
-            residue_id, residue_constants.restypes_with_x[-1]
-        )
+        resname = _get_residue_letter(residue_id, chain_type)
         seq.append(resname)
 
         if exists(labels):
           coord_list.append(labels)
           coord_mask_list.append(label_mask)
           bfactor_list.append(bfactors)
-        labels = np.zeros((14, 3), dtype=np.float32)
-        label_mask = np.zeros((14, ), dtype=np.bool_)
-        bfactors = np.zeros((14, ), dtype=np.float32)
+        labels = np.zeros((residue_constants.atom14_type_num, 3), dtype=np.float32)
+        label_mask = np.zeros((residue_constants.atom14_type_num, ), dtype=np.bool_)
+        bfactors = np.zeros((residue_constants.atom14_type_num, ), dtype=np.float32)
 
     int_resseq_end = int_resseq
 
     if len(residue_id_arr) == 1:
-      if residue_id in residue_constants.restype_name_to_atom14_names:
-        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
-      else:
-        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
+      residue_id = residue_id_arr[0]
+      atom_list = _get_atom_list(residue_id, chain_type)
       try:
-        atom14idx = res_atom14_list.index(atom_id)
+        atom_idx = atom_list.index(atom_id)
         coord = np.asarray((x_list[i], y_list[i], z_list[i]))
         if np.any(np.isnan(coord)):
           continue
-        labels[atom14idx] = coord
+        labels[atom_idx] = coord
         if np.any(coord != 0):
           # occupancy & B factor
           tempfactor = 0.0
@@ -189,10 +235,12 @@ def mmcif_yield_chain(mmcif_dict, args):
             tempfactor = float(b_factor_list[i]) / 100.
           except ValueError as e:
             raise PDBConstructionException('Invalid or missing B factor') from e
-          bfactors[atom14idx] = tempfactor
-          label_mask[atom14idx] = True
+          bfactors[atom_idx] = tempfactor
+          label_mask[atom_idx] = True
       except ValueError as e:
-        logger.debug(e)
+        logger.debug(
+            'residue_id: %s, chain_type: %s, exception: %s', residue_id, chain_type, e
+        )
 
   if exists(chain_id) and seq:
     domains += [
@@ -205,10 +253,25 @@ def mmcif_yield_chain(mmcif_dict, args):
       coord_mask_list.append(label_mask)
       bfactor_list.append(bfactors)
     npz = _make_npz(coord_list, coord_mask_list, bfactor_list)
-    yield chain_id, seq, domains, npz
+    yield chain_id, chain_type_dict[chain_id], seq, domains, npz
 
 
-def process(input_file, args=None):
+_exptl_method_dict = {
+    'SOLUTION NMR': 'NMR',
+    'SOLID-STATE NMR': 'NMR',
+    'ELECTRON MICROSCOPY': 'EM',
+    'X-RAY DIFFRACTION': 'diffraction',
+    'FIBER DIFFRACTION': 'diffraction',
+    'NEUTRON DIFFRACTION': 'diffraction',
+    'FLUORESCENCE TRANSFER': 'NMR',
+}
+
+
+def exptl_method_fn(method):
+  return _exptl_method_dict.get(method)
+
+
+def process(input_file, args):  # pylint: disable=redefined-outer-name
   with timing(f'processing {input_file}', logger.info):
     mmcif_dict = mmcif_parse(input_file)
     assert mmcif_dict is not None
@@ -217,10 +280,20 @@ def process(input_file, args=None):
     if revision:
       revision = min(revision)
 
+    method = mmcif_dict.get('_exptl.method')
+    if method:
+      # assert method[0] in _exptl_method_dict, (
+      #     method,
+      #     input_file,
+      # )
+      method = exptl_method_fn(method[0])
+
     results = []
-    for chain, seq, domains, npz in mmcif_yield_chain(mmcif_dict, args):
-      npz['revision'] = revision
-      results.append((chain, seq, domains, npz))
+
+    if not args.exptl_method or method in args.exptl_method:
+      for chain, typ, seq, domains, npz in mmcif_yield_chain(mmcif_dict, args):
+        npz['revision'] = revision
+        results.append((chain, typ, seq, domains, npz))
   return input_file, results
 
 
@@ -240,11 +313,17 @@ def main(args):  # pylint: disable=redefined-outer-name
       for line in filter(lambda x: len(x) > 0, map(lambda x: x.strip(), f)):
         items = line.split()
         v, pk, sk_list = items[0], items[1], items[2:]
-        if v in mapping_dict:
-          assert pk == mapping_dict[v][0]
-          mapping_dict[v] = (pk, mapping_dict[v][1] | set(sk_list))
+        chain_type = 'mol:protein'
+        if sk_list and sk_list[-1] in ('mol:protein', 'mol:dna', 'mol:rna'):
+          chain_type = sk_list[-1]
+          sk_list.pop(-1)
+        if (v, chain_type) in mapping_dict:
+          assert pk == mapping_dict[(v, chain_type)][0]
+          mapping_dict[(v, chain_type)] = (
+              pk, mapping_dict[(v, chain_type)][1] | set(sk_list)
+          )
         else:
-          mapping_dict[v] = (pk, set(sk_list))
+          mapping_dict[(v, chain_type)] = (pk, set(sk_list))
 
   with timing('processing', logger.info):
     with mp.Pool() as p:
@@ -252,40 +331,39 @@ def main(args):  # pylint: disable=redefined-outer-name
           functools.partial(process, args=args), input_files
       ):
         pid = output_get_basename(input_file)
-        for chain, seq, domains, npz in results:
+        for chain, typ, seq, domains, npz in results:
           seq = ''.join(seq)
           if chain and chain != '.' and not args.ignore_chain:
             fid = f'{pid}_{chain}'
           else:
             fid = pid
 
-          if seq in mapping_dict:
-            pk, sk_list = mapping_dict[seq]
-            mapping_dict[seq] = (pk, sk_list | set([fid]))
+          if (seq, typ) in mapping_dict:
+            pk, sk_list = mapping_dict[(seq, typ)]
+            mapping_dict[(seq, typ)] = (pk, sk_list | set([fid]))
           else:
-            mapping_dict[seq] = (fid, set([fid]))
+            mapping_dict[(seq, typ)] = (fid, set([fid]))
             with open(os.path.join(args.output, 'fasta', f'{fid}.fasta'), 'w') as f:
-              if args.ignore_domain_parser:
-                f.write(f'>{fid}\n')
-              else:
+              f.write(f'>{fid} {typ}')
+              if not args.ignore_domain_parser:
                 l = sum(map(lambda x: x[1] - x[0] + 1, domains))
                 domain_str = ','.join(f'{i}-{j}' for i, j in domains)
-                f.write(f'>{fid} domains:{domain_str} length={l}\n')
-              f.write(seq)
+                f.write(f' domains:{domain_str} length={l}')
+              f.write(f'\n{seq}\n')
 
           np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
 
   with timing('writiing mapping.dict', logger.info):
     with open(os.path.join(args.output, 'mapping.dict'), 'w') as f:
-      for v, (pk, sk_list) in mapping_dict.items():
+      for (v, chain_type), (pk, sk_list) in mapping_dict.items():
         for sk in sk_list:
-          f.write(f'{v}\t{pk}\t{sk}\n')
+          f.write(f'{v}\t{pk}\t{sk}\t{chain_type}\n')
 
   with timing('writiing mapping.idx', logger.info):
     with open(os.path.join(args.output, 'mapping.idx'), 'w') as f:
-      for _, (pk, sk_list) in mapping_dict.items():
+      for (_, chain_type), (pk, sk_list) in mapping_dict.items():
         for sk in sk_list:
-          f.write(f'{pk}\t{sk}\n')
+          f.write(f'{pk}\t{sk}\t{chain_type}\n')
 
   with timing('writiing name.idx', logger.info):
     with open(os.path.join(args.output, 'name.idx'), 'w') as f:
@@ -308,6 +386,14 @@ if __name__ == '__main__':
       '--ignore_domain_parser', action='store_true', help='ignore domain parser'
   )
   parser.add_argument('--ignore_chain', action='store_true', help='ignore chain')
+  parser.add_argument(
+      '--exptl_method',
+      type=str,
+      default=None,
+      nargs='*',
+      choices=['NMR', 'EM', 'diffraction'],
+      help='exptl method filter'
+  )
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
   parser.add_argument(
       'input_files', metavar='file', type=str, nargs='+', help='input files'

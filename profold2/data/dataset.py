@@ -488,14 +488,16 @@ def _make_pdb_features(
       seq.append(resname)
 
       # cordinates
-      labels = np.zeros((14, 3), dtype=np.float32)
-      label_mask = np.zeros((14, ), dtype=np.bool_)
-      bfactors = np.zeros((14, ), dtype=np.float32)
+      labels = np.zeros((residue_constants.atom14_type_num, 3), dtype=np.float32)
+      label_mask = np.zeros((residue_constants.atom14_type_num, ), dtype=np.bool_)
+      bfactors = np.zeros((residue_constants.atom14_type_num, ), dtype=np.float32)
 
       if residue_id in residue_constants.restype_name_to_atom14_names:
         res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_id]  # pylint: disable=line-too-long
       else:
-        res_atom14_list = residue_constants.restype_name_to_atom14_names[residue_constants.unk_restype]  # pylint: disable=line-too-long
+        res_atom14_list = residue_constants.restype_name_to_atom14_names[
+            residue_constants.unk_restype
+        ]  # pylint: disable=line-too-long
       for atom in aa.get_atoms():
         try:
           atom14idx = res_atom14_list.index(atom.id)
@@ -807,8 +809,8 @@ def _protein_crop_fn(protein, clip):
   i, j = clip['i'], clip['j']
   protein['str_seq'] = protein['str_seq'][i:j]
   for field in (
-      'seq', 'seq_index', 'mask', 'coord', 'coord_mask', 'coord_plddt', 'seq_color',
-      'seq_entity', 'seq_sym'
+      'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
+      'coord', 'coord_mask', 'coord_plddt',
   ):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
@@ -894,7 +896,7 @@ class FileSystem(contextlib.AbstractContextManager):
 
 
 class FoldcompDB(object):
-  def __init__(self, fs, db_uri, db_idx, key_fmt=None, db_open=True):
+  def __init__(self, fs, db_uri, db_idx, key_fmt=None):
     super().__init__()
 
     self.db_uri = fs.abspath(db_uri)
@@ -1174,7 +1176,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       k = np.random.randint(len(pids))
     pid = pids[k]
 
-    with timing(f'ProteinStructureDataset.__getitem__ {idx}', logger.debug):
+    with timing(f'ProteinStructureDataset.__getitem__ {idx} {pid}', logger.debug):
       if np.random.random() < self.pseudo_linker_prob:
         chains = self.get_chain_list(pid)
       else:
@@ -1250,6 +1252,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               fs, pkey, pid, seq_color=seq_color, seq_entity=seq_entity, seq_sym=seq_sym
           )
       )
+
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
           ret.update(self.get_msa_features_new(fs, pkey))
@@ -1270,9 +1273,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       # CATH update pid
       ret['pid'] = compose_pid(pid, None, seq_index_join(domains))
 
-    if 'msa_idx' in ret and ret['msa_idx'] != 0:
+    if ret.get('msa_idx', 0) != 0:
       ret = _msa_as_seq(ret, ret['msa_idx'], str_key='msa')
-    elif 'var_idx' in ret and ret['var_idx'] != 0:
+    elif ret.get('var_idx', 0) != 0:
       ret = _msa_as_seq(ret, ret['var_idx'], str_key='var')
     elif exists(domains):
       pass
@@ -1437,7 +1440,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           else:
             ret[field] = torch.cat((ret[field], feat[field]), dim=1)
         # Update chain_id
-        if feat['msa_idx'] > 0:
+        if feat.get('msa_idx', 0) > 0:
           msa_idx = feat['msa_idx']
           chains[idx] = f'{chain}@{msa_idx}'
       # Var related
@@ -1677,8 +1680,6 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     return ret
 
   def get_var_features_new(self, fs, protein_id, clip=None):
-    k = int(np.random.randint(len(self.msa_list)))
-    source = self.msa_list[k]
     variant_path = f'{self.var_dir}/{protein_id}/msas/{protein_id}.a3m'
     if fs.exists(variant_path):
       with fs.open(variant_path) as f:
@@ -1803,7 +1804,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       if fs.exists(pae_file):
         with fs.open(pae_file) as f:
           try:
-            pae_obj = json.loads(f.read())
+            pae_obj = json.loads(fs.textise(f.read()))
             assert len(pae_obj) == 1
             pae_obj = torch.as_tensor(pae_obj[0]['predicted_aligned_error'])
             coord = ret['coord']
