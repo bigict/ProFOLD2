@@ -281,7 +281,7 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
       all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
   )
 
-  if all_atom_masks is not None:
+  if exists(all_atom_masks):
     pseudo_beta_mask = torch.where(
         is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
     )
