@@ -20,8 +20,8 @@ def binary_focal_loss_weight(probs, labels, gammar):
   return (1. - p) ** gammar
 
 
-def sigmoid_cross_entropy(probs, labels, alpha=None, gammar=0):
-  errors = F.binary_cross_entropy(probs, labels, reduction='none', pos_weight=alpha)
+def sigmoid_cross_entropy(probs, labels, gammar=0):
+  errors = F.binary_cross_entropy(probs, labels, reduction='none')
   if gammar > 0:  # focal loss enabled.
     errors = errors * binary_focal_loss_weight(probs, labels, gammar)
   return errors
