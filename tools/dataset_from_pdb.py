@@ -102,7 +102,10 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
     return fix_residue_id(residue_id)
 
   def _get_unktype(chain_type):
-    del chain_type
+    if chain_type == 'mol:dna':
+      return residue_constants.unk_dnatype
+    elif chain_type == 'mol:rna':
+      return residue_constants.unk_rnatype
     return residue_constants.unk_restype
 
   def _get_residue_letter(residue_id, chain_type):
@@ -113,6 +116,9 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       letter = residue_constants.restype_3to1[unktype]
     else:
       letter = residue_constants.restype_3to1[residue_id]
+    letter, _ = letter
+    if chain_type in ('mol:dna', 'mol:rna'):
+      letter = letter.upper()
     return letter
 
   def _get_atom_list(residue_id, chain_type):
@@ -169,7 +175,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       labels, label_mask, bfactors = None, None, None
 
     chain_type = chain_type_dict.get(chain_id)
-    if chain_type != 'mod:protein':
+    if not exists(chain_type):  # FIX: 146d
       continue
 
     int_resseq = label_seq_id_list[i]

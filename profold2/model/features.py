@@ -41,18 +41,20 @@ def _restype_atom14_mask(includes=None, excludes=None):
   if exists(includes) or exists(excludes):
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if exists(includes):
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[(restype, mol_type)]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) not in includes:
             restype_atom14_mask[i, j] = 0
     if exists(excludes):
-      for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+      for i, restype in enumerate(residue_constants.restypes):
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[(restype, mol_type)]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] in excludes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) in excludes:
             restype_atom14_mask[i, j] = 0
     return restype_atom14_mask
   return residue_constants.restype_atom14_mask
@@ -64,9 +66,9 @@ def make_coord_mask(protein, includes=None, excludes=None, is_training=True):
 
   # FIX: hashable
   if exists(includes):
-    includes = frozenset(includes)
+    includes = frozenset(map(tuple, includes))
   if exists(excludes):
-    excludes = frozenset(excludes)
+    excludes = frozenset(map(tuple, excludes))
 
   coord_exists = functional.batched_gather(
       _restype_atom14_mask(includes=includes, excludes=excludes), protein['seq']
