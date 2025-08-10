@@ -246,23 +246,9 @@ def make_bert_mask(
 
 def pseudo_beta_alphafold(aatype, all_atom_positions, all_atom_masks):
   """Create pseudo beta features (from AlphaFold)."""
-
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
-  ca_idx = residue_constants.atom_order['CA']
-  cb_idx = residue_constants.atom_order['CB']
-  pseudo_beta = torch.where(
-      torch.tile(is_gly[..., None], [1] * len(is_gly.shape) + [3]),
-      all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
+  return functional.pseudo_beta_fn(
+      aatype, all_atom_positions, all_atom_masks=all_atom_masks
   )
-
-  if exists(all_atom_masks):
-    pseudo_beta_mask = torch.where(
-        is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
-    )
-    pseudo_beta_mask = pseudo_beta_mask.float()
-    return pseudo_beta, pseudo_beta_mask
-
-  return pseudo_beta
 
 
 def pseudo_beta_rosetta(aatype, all_atom_positions, all_atom_masks):

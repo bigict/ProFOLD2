@@ -83,9 +83,9 @@ def parse_seq_index(description, input_sequence, seq_index):
       p, q = positions[i]
       m, n = positions[i + 1]
       assert p <= q and m <= n, (p, q, m, n, description)
-      assert q <= m
+      assert q <= m, (q, m, description)
     m, n = positions[-1]
-    assert m <= n
+    assert m <= n, (m, n, description)
     assert sum(map(lambda p: p[1] - p[0] + 1, positions)) == len(input_sequence)
 
   positions = list(yield_seq_index(description))
@@ -133,7 +133,6 @@ def pdb_from_prediction(batch, headers, idx=None):
   def to_pdb_str(b):
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
-    #aatype = batch['seq'][b,...].numpy()
     # aatype = np.array(
     #     [
     #         residue_constants.restype_order_with_x.get(
