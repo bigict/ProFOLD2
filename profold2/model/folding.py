@@ -9,6 +9,7 @@ from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
+from profold2.common import residue_constants
 from profold2.model import commons, functional
 from profold2.utils import exists, torch_default_dtype
 
@@ -85,7 +86,9 @@ class AngleNet(nn.Module):
         *[AngleNetBlock(channel, channel) for _ in range(num_blocks)]
     )
 
-    self.to_groups = nn.Linear(channel, 14)
+    self.to_groups = nn.Linear(
+        channel, (residue_constants.restype_rigid_group_num - 1) * 2
+    )
 
   def forward(self, single_repr, single_repr_init=None):
     act = self.projection(F.relu(single_repr))

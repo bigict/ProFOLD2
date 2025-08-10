@@ -28,58 +28,110 @@ ca_ca = 3.80209737096
 # Format: The list for each AA type contains chi1, chi2, chi3, chi4 in
 # this order (or a relevant subset from chi1 onwards). ALA and GLY don't have
 # chi angles so their chi angle lists are empty.
-chi_angles_atoms = {
-    'ALA': [],
+torsion_angles_atoms = {
+    'ALA': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O']],
     # Chi5 in arginine is always 0 +- 5 degrees, so ignore it.
-    'ARG': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
-            ['CB', 'CG', 'CD', 'NE'], ['CG', 'CD', 'NE', 'CZ']],
-    'ASN': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'OD1']],
-    'ASP': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'OD1']],
-    'CYS': [['N', 'CA', 'CB', 'SG']],
-    'GLN': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
+    'ARG': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'], ['CB', 'CG', 'CD', 'NE'],
+            ['CG', 'CD', 'NE', 'CZ']],
+    'ASN': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'OD1']],
+    'ASP': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'OD1']],
+    'CYS': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'SG']],
+    'GLN': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
             ['CB', 'CG', 'CD', 'OE1']],
-    'GLU': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
+    'GLU': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
             ['CB', 'CG', 'CD', 'OE1']],
-    'GLY': [],
-    'HIS': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'ND1']],
-    'ILE': [['N', 'CA', 'CB', 'CG1'], ['CA', 'CB', 'CG1', 'CD1']],
-    'LEU': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
-    'LYS': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
+    'GLY': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O']],
+    'HIS': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'ND1']],
+    'ILE': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG1'], ['CA', 'CB', 'CG1', 'CD1']],
+    'LEU': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
+    'LYS': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD'],
             ['CB', 'CG', 'CD', 'CE'], ['CG', 'CD', 'CE', 'NZ']],
-    'MET': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'SD'],
+    'MET': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'SD'],
             ['CB', 'CG', 'SD', 'CE']],
-    'PHE': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
-    'PRO': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD']],
-    'SER': [['N', 'CA', 'CB', 'OG']],
-    'THR': [['N', 'CA', 'CB', 'OG1']],
-    'TRP': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
-    'TYR': [['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
-    'VAL': [['N', 'CA', 'CB', 'CG1']],
+    'PHE': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
+    'PRO': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD']],
+    'SER': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'OG']],
+    'THR': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'OG1']],
+    'TRP': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
+    'TYR': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
+    'VAL': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
+            ['N', 'CA', 'CB', 'CG1']],
 }
 
 # If chi angles given in fixed-length array, this matrix determines how to mask
 # them for each AA type. The order is as per restype_order (see below).
-chi_angles_mask = [
-    [0.0, 0.0, 0.0, 0.0],  # ALA
-    [1.0, 1.0, 1.0, 1.0],  # ARG
-    [1.0, 1.0, 0.0, 0.0],  # ASN
-    [1.0, 1.0, 0.0, 0.0],  # ASP
-    [1.0, 0.0, 0.0, 0.0],  # CYS
-    [1.0, 1.0, 1.0, 0.0],  # GLN
-    [1.0, 1.0, 1.0, 0.0],  # GLU
-    [0.0, 0.0, 0.0, 0.0],  # GLY
-    [1.0, 1.0, 0.0, 0.0],  # HIS
-    [1.0, 1.0, 0.0, 0.0],  # ILE
-    [1.0, 1.0, 0.0, 0.0],  # LEU
-    [1.0, 1.0, 1.0, 1.0],  # LYS
-    [1.0, 1.0, 1.0, 0.0],  # MET
-    [1.0, 1.0, 0.0, 0.0],  # PHE
-    [1.0, 1.0, 0.0, 0.0],  # PRO
-    [1.0, 0.0, 0.0, 0.0],  # SER
-    [1.0, 0.0, 0.0, 0.0],  # THR
-    [1.0, 1.0, 0.0, 0.0],  # TRP
-    [1.0, 1.0, 0.0, 0.0],  # TYR
-    [1.0, 0.0, 0.0, 0.0],  # VAL
+torsion_angles_mask = [
+    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # ALA
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # ARG
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ASN
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ASP
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # CYS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # GLN
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # GLU
+    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # GLY
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # HIS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ILE
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # LEU
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # LYS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # MET
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # PHE
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # PRO
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # SER
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # THR
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # TRP
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # TYR
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # VAL
+]
+
+# chi angles dependencies:
+#
+# bb (0)
+# |------ \omega (1)
+# |------ \phi (2)
+# |------ \psi (3)
+# |------ \chi_1 (4)
+# |         |------ \chi_2 (5)
+# |                   |------- \chi_3 (6)
+# |                              |-------- \chi_4 (7)
+
+torsion_angles_depend = [
+    [0, 0, 0, 0, 4, 5, 6],  # ALA
+    [0, 0, 0, 0, 4, 5, 6],  # ARG
+    [0, 0, 0, 0, 4, 5, 6],  # ASN
+    [0, 0, 0, 0, 4, 5, 6],  # ASP
+    [0, 0, 0, 0, 4, 5, 6],  # CYS
+    [0, 0, 0, 0, 4, 5, 6],  # GLN
+    [0, 0, 0, 0, 4, 5, 6],  # GLU
+    [0, 0, 0, 0, 4, 5, 6],  # GLY
+    [0, 0, 0, 0, 4, 5, 6],  # HIS
+    [0, 0, 0, 0, 4, 5, 6],  # ILE
+    [0, 0, 0, 0, 4, 5, 6],  # LEU
+    [0, 0, 0, 0, 4, 5, 6],  # LYS
+    [0, 0, 0, 0, 4, 5, 6],  # MET
+    [0, 0, 0, 0, 4, 5, 6],  # PHE
+    [0, 0, 0, 0, 4, 5, 6],  # PRO
+    [0, 0, 0, 0, 4, 5, 6],  # SER
+    [0, 0, 0, 0, 4, 5, 6],  # THR
+    [0, 0, 0, 0, 4, 5, 6],  # TRP
+    [0, 0, 0, 0, 4, 5, 6],  # TYR
+    [0, 0, 0, 0, 4, 5, 6],  # VAL
 ]
 
 # The following chi angles are pi periodic: they can be rotated by a multiple
@@ -523,7 +575,6 @@ restype_name_to_atom14_names = {
     'TYR': ['N', 'CA', 'C', 'O', 'CB', 'CG',  'CD1', 'CD2', 'CE1', 'CE2', 'CZ',  'OH',  '',    ''],
     'VAL': ['N', 'CA', 'C', 'O', 'CB', 'CG1', 'CG2', '',    '',    '',    '',    '',    '',    ''],
     'UNK': ['N', 'CA', 'C', 'O',  '',   '',    '',   '',    '',    '',    '',    '',    '',    ''],
-
 }
 # pylint: enable=line-too-long
 # pylint: enable=bad-whitespace
@@ -709,92 +760,27 @@ def _make_standard_atom_mask() -> np.ndarray:
 STANDARD_ATOM_MASK = _make_standard_atom_mask()
 
 
-# A one hot representation for the first and second atoms defining the axis
-# of rotation for each chi-angle in each residue.
-def chi_angle_atom(atom_index: int) -> np.ndarray:
-  """Define chi-angle rigid groups via one-hot representations."""
-  chi_angles_index = {}
-  one_hots = []
-
-  for k, v in chi_angles_atoms.items():
-    indices = [atom_types.index(s[atom_index]) for s in v]
-    indices.extend([-1] * (4 - len(indices)))
-    chi_angles_index[k] = indices
-
-  for r in restypes:
-    res3 = restype_1to3[r]
-    one_hot = np.eye(atom_type_num)[chi_angles_index[res3]]
-    one_hots.append(one_hot)
-
-  one_hots.append(np.zeros([4, atom_type_num]))  # Add zeros for residue `X`.
-  one_hot = np.stack(one_hots, axis=0)
-  one_hot = np.transpose(one_hot, [0, 2, 1])
-
-  return one_hot
-
-
-chi_atom_1_one_hot = chi_angle_atom(1)
-chi_atom_2_one_hot = chi_angle_atom(2)
-
-# An array like chi_angles_atoms but using indices rather than names.
-chi_angles_atom_indices = [chi_angles_atoms[restype_1to3[r]] for r in restypes]
-chi_angles_atom_indices = list(
-    map(
-        lambda atom_name_index: list(
-            map(
-                lambda atom_name_list: list(
-                    map(lambda atom_name: atom_order[atom_name], atom_name_list)
-                ), atom_name_index
-            )
-        ), chi_angles_atom_indices
-    )
+chi_angles_num = 7
+chi_angles_atom14_indices = np.zeros(
+    (restype_num + 1, chi_angles_num, 4), dtype=np.int32
 )
-chi_angles_atom_indices = np.array(
-    [
-        chi_atoms + ([[0, 0, 0, 0]] * (4 - len(chi_atoms)))
-        for chi_atoms in chi_angles_atom_indices
-    ]
-)
-
-chi_angles_atom14_indices = np.zeros((21, 7, 4), dtype=np.int32)
-chi_angles_atom14_exists = np.zeros((21, 7), dtype=np.bool_)
-for res_name, res_chi_angles in chi_angles_atoms.items():
+chi_angles_atom14_exists = np.zeros((restype_num + 1, chi_angles_num), dtype=np.bool_)
+for res_name, res_chi_angles in torsion_angles_atoms.items():
   res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
 
-  # omega angles
-  for i, atom_name in enumerate(('CA', 'C', 'N', 'CA')):
-    atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[res_type, 0, i] = atom_idx
-  chi_angles_atom14_exists[res_type, 0] = 1
+  # base = 0
+  #
+  # omega/phi/psi(prot) = 1-3
+  # chi_1-4(prot) = 4-7
+  #
 
-  # phi angles
-  for i, atom_name in enumerate(('C', 'N', 'CA', 'C')):
-    atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[res_type, 1, i] = atom_idx
-  chi_angles_atom14_exists[res_type, 1] = 1
-
-  # psi angles
-  for i, atom_name in enumerate(('N', 'CA', 'C', 'O')):
-    atom_idx = atom_list.index(atom_name)
-    chi_angles_atom14_indices[res_type, 2, i] = atom_idx
-  chi_angles_atom14_exists[res_type, 2] = 1
-
-  # chi angles
-  for chi_idx, chi_angle in enumerate(res_chi_angles):
+  # torsion angles
+  for chi_idx, chi_angle in enumerate(res_chi_angles[:chi_angles_num]):
     for i, atom_name in enumerate(chi_angle):
       atom_idx = atom_list.index(atom_name)
-      chi_angles_atom14_indices[res_type, 3 + chi_idx, i] = atom_idx
-    chi_angles_atom14_exists[res_type, 3 + chi_idx] = 1
-
-# Mapping from (res_name, atom_name) pairs to the atom's chi group index
-# and atom index within that group.
-chi_groups_for_atom = collections.defaultdict(list)
-for res_name, chi_angle_atoms_for_res in chi_angles_atoms.items():
-  for chi_group_i, chi_group in enumerate(chi_angle_atoms_for_res):
-    for atom_i, atom in enumerate(chi_group):
-      chi_groups_for_atom[(res_name, atom)].append((chi_group_i, atom_i))
-chi_groups_for_atom = dict(chi_groups_for_atom)
+      chi_angles_atom14_indices[res_type, chi_idx, i] = atom_idx
+    chi_angles_atom14_exists[res_type, chi_idx] = 1
 
 
 def _make_rigid_transformation_4x4(ex, ey, translation):
@@ -817,16 +803,34 @@ def _make_rigid_transformation_4x4(ex, ey, translation):
 # and an array with (restype, atomtype, coord) for the atom positions
 # and compute affine transformation matrices (4,4) from one rigid group to the
 # previous group
-restype_atom37_to_rigid_group = np.zeros([21, 37], dtype=np.int32)
-restype_atom37_mask = np.zeros([21, 37], dtype=np.bool_)
-restype_atom37_rigid_group_positions = np.zeros([21, 37, 3], dtype=np.float32)
-restype_atom14_to_rigid_group = np.zeros([21, 14], dtype=np.int32)
-restype_atom14_mask = np.zeros([21, 14], dtype=np.bool_)
-restype_atom14_rigid_group_positions = np.zeros([21, 14, 3], dtype=np.float32)
-restype_rigid_group_default_frame = np.zeros([21, 8, 4, 4], dtype=np.float32)
-restype_rigid_group_atom37_idx = np.zeros([21, 8, 3], dtype=np.int32)
-restype_rigid_group_atom14_idx = np.zeros([21, 8, 3], dtype=np.int32)
-restype_rigid_group_mask = np.zeros([21, 8], dtype=np.bool_)
+restype_atom37_to_rigid_group = np.zeros([restype_num + 1, 37], dtype=np.int32)
+restype_atom37_mask = np.zeros([restype_num + 1, 37], dtype=np.bool_)
+restype_atom37_rigid_group_positions = np.zeros(
+    [restype_num + 1, 37, 3], dtype=np.float32
+)
+restype_atom14_to_rigid_group = np.zeros(
+    [restype_num + 1, atom14_type_num], dtype=np.int32
+)
+restype_atom14_mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.bool_)
+restype_atom14_rigid_group_positions = np.zeros(
+    [restype_num + 1, atom14_type_num, 3], dtype=np.float32
+)
+restype_rigid_group_num = chi_angles_num + 1
+restype_rigid_group_default_frame = np.zeros(
+    [restype_num + 1, restype_rigid_group_num, 4, 4], dtype=np.float32
+)
+restype_rigid_group_atom37_idx = np.zeros(
+    [restype_num + 1, restype_rigid_group_num, 3], dtype=np.int32
+)
+restype_rigid_group_atom14_idx = np.zeros(
+    [restype_num + 1, restype_rigid_group_num, 3], dtype=np.int32
+)
+restype_rigid_group_mask = np.zeros(
+    [restype_num + 1, restype_rigid_group_num], dtype=np.bool_
+)
+restype_rigid_group_depend = np.zeros(
+    [restype_num + 1, restype_rigid_group_num], dtype=np.int64
+)
 
 
 def _make_rigid_group_constants():
@@ -840,10 +844,13 @@ def _make_rigid_group_constants():
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
     for atomname, group_idx, atom_position in rigid_group_atom_positions[resname]:
-      atomtype = atom_order[atomname]
-      restype_atom37_to_rigid_group[restype, atomtype] = group_idx
-      restype_atom37_mask[restype, atomtype] = 1
-      restype_atom37_rigid_group_positions[restype, atomtype, :] = atom_position
+      if group_idx > chi_angles_num:
+        continue
+      atomtype = atom_order.get(atomname)
+      if atomname is not None:
+        restype_atom37_to_rigid_group[restype, atomtype] = group_idx
+        restype_atom37_mask[restype, atomtype] = 1
+        restype_atom37_rigid_group_positions[restype, atomtype, :] = atom_position
 
       atom14idx = restype_name_to_atom14_names[resname].index(atomname)
       restype_atom14_to_rigid_group[restype, atom14idx] = group_idx
@@ -863,6 +870,7 @@ def _make_rigid_group_constants():
         to_atom14_index(resname, ['C', 'CA', 'N'])
     )
     restype_rigid_group_mask[restype, 0] = True
+    restype_rigid_group_depend[restype, 0] = torsion_angles_depend[restype][0]
 
     # pre-omega-frame to backbone (currently dummy identity matrix)
     restype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
@@ -874,6 +882,7 @@ def _make_rigid_group_constants():
         translation=atom_positions['N']
     )
     restype_rigid_group_default_frame[restype, 2, :, :] = mat
+    restype_rigid_group_depend[restype, 2] = torsion_angles_depend[restype][1]
 
     # psi-frame to backbone
     mat = _make_rigid_transformation_4x4(
@@ -886,10 +895,11 @@ def _make_rigid_group_constants():
         to_atom14_index(resname, ['CA', 'C', 'O'])
     )
     restype_rigid_group_mask[restype, 3] = True
+    restype_rigid_group_depend[restype, 3] = torsion_angles_depend[restype][2]
 
     # chi1-frame to backbone
-    if chi_angles_mask[restype][0]:
-      base_atom_names = chi_angles_atoms[resname][0]
+    if torsion_angles_mask[restype][3]:
+      base_atom_names = torsion_angles_atoms[resname][3]
       base_atom_positions = [atom_positions[name] for name in base_atom_names]
       mat = _make_rigid_transformation_4x4(
           ex=base_atom_positions[2] - base_atom_positions[1],
@@ -900,31 +910,37 @@ def _make_rigid_group_constants():
       restype_rigid_group_atom14_idx[restype, 4, :] = np.array(
           to_atom14_index(resname, base_atom_names[1:])
       )
+      restype_rigid_group_depend[restype, 4] = torsion_angles_depend[restype][3]
 
     # chi2-frame to chi1-frame
     # chi3-frame to chi2-frame
     # chi4-frame to chi3-frame
     # luckily all rotation axes for the next frame start at (0,0,0) of the
     # previous frame
-    for chi_idx in range(1, 4):  # pylint: disable=redefined-outer-name
-      if chi_angles_mask[restype][chi_idx]:
-        axis_end_atom_name = chi_angles_atoms[resname][chi_idx][2]
+    for chi_idx in range(4, chi_angles_num):  # pylint: disable=redefined-outer-name
+      if torsion_angles_mask[restype][chi_idx]:
+        axis_end_atom_name = torsion_angles_atoms[resname][chi_idx][2]
         axis_end_atom_position = atom_positions[axis_end_atom_name]
         mat = _make_rigid_transformation_4x4(
             ex=axis_end_atom_position,
             ey=np.array([-1., 0., 0.]),
             translation=axis_end_atom_position
         )
-        restype_rigid_group_default_frame[restype, 4 + chi_idx, :, :] = mat
-        restype_rigid_group_atom14_idx[restype, 4 + chi_idx, :] = np.array(
-            to_atom14_index(resname, chi_angles_atoms[resname][chi_idx][1:])
+        restype_rigid_group_default_frame[restype, 1 + chi_idx, :, :] = mat
+        restype_rigid_group_atom14_idx[restype, 1 + chi_idx, :] = np.array(
+            to_atom14_index(resname, torsion_angles_atoms[resname][chi_idx][1:])
         )
-    restype_rigid_group_mask[restype, 4:] = chi_angles_mask[restype]
+        restype_rigid_group_mask[restype, 1 + chi_idx] = True
+        restype_rigid_group_depend[
+            restype, 1 + chi_idx
+        ] = torsion_angles_depend[restype][chi_idx]
 
 
 _make_rigid_group_constants()
 
-atom14_van_der_waals_radius = np.zeros((21, 14), dtype=np.float32)
+atom14_van_der_waals_radius = np.zeros(
+    (restype_num + 1, atom14_type_num), dtype=np.float32
+)
 
 
 def _make_atom14_van_der_waals_radius():
@@ -943,9 +959,15 @@ _make_atom14_van_der_waals_radius()
 
 def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor=15):
   """compute upper and lower bounds for bonds to assess violations."""
-  restype_atom14_bond_lower_bound = np.zeros([21, 14, 14], np.float32)
-  restype_atom14_bond_upper_bound = np.zeros([21, 14, 14], np.float32)
-  restype_atom14_bond_stddev = np.zeros([21, 14, 14], np.float32)
+  restype_atom14_bond_lower_bound = np.zeros(
+      [restype_num + 1, atom14_type_num, atom14_type_num], np.float32
+  )
+  restype_atom14_bond_upper_bound = np.zeros(
+      [restype_num + 1, atom14_type_num, atom14_type_num], np.float32
+  )
+  restype_atom14_bond_stddev = np.zeros(
+      [restype_num + 1, atom14_type_num, atom14_type_num], np.float32
+  )
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[restype_letter]
@@ -991,15 +1013,15 @@ def _make_renaming_matrices():
   # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
   # alternative groundtruth coordinates where the naming is swapped
   # Matrices for renaming ambiguous atoms.
-  all_matrices = {res: np.eye(14, dtype=np.float32) for res in resnames}
+  all_matrices = {res: np.eye(atom14_type_num, dtype=np.float32) for res in resnames}
   for resname, swap in residue_atom_renaming_swaps.items():
-    correspondences = np.arange(14)
+    correspondences = np.arange(atom14_type_num)
     for source_atom_swap, target_atom_swap in swap.items():
       source_index = restype_name_to_atom14_names[resname].index(source_atom_swap)
       target_index = restype_name_to_atom14_names[resname].index(target_atom_swap)
       correspondences[source_index] = target_index
       correspondences[target_index] = source_index
-    renaming_matrix = np.zeros((14, 14), dtype=np.float32)
+    renaming_matrix = np.zeros((atom14_type_num, atom14_type_num), dtype=np.float32)
     for index, correspondence in enumerate(correspondences):
       renaming_matrix[index, correspondence] = 1.
     all_matrices[resname] = renaming_matrix.astype(np.float32)
