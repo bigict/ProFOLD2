@@ -244,8 +244,8 @@ def make_bert_mask(
   return protein
 
 
-def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
-  """Create pseudo beta features."""
+def pseudo_beta_alphafold(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from AlphaFold)."""
 
   is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
   ca_idx = residue_constants.atom_order['CA']
@@ -255,7 +255,7 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
       all_atom_positions[..., ca_idx, :], all_atom_positions[..., cb_idx, :]
   )
 
-  if all_atom_masks is not None:
+  if exists(all_atom_masks):
     pseudo_beta_mask = torch.where(
         is_gly, all_atom_masks[..., ca_idx], all_atom_masks[..., cb_idx]
     )
@@ -265,9 +265,33 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
   return pseudo_beta
 
 
+def pseudo_beta_rosetta(aatype, all_atom_positions, all_atom_masks):
+  """Create pseudo beta features (from RoseTTAFold)."""
+
+  n_idx = residue_constants.atom_order['N']
+  ca_idx = residue_constants.atom_order['CA']
+  c_idx = residue_constants.atom_order['C']
+
+  b = all_atom_positions[..., ca_idx, :] - all_atom_positions[..., n_idx, :]
+  c = all_atom_positions[..., c_idx, :] - all_atom_positions[..., ca_idx, :]
+  a = torch.cross(b, c, dim=-1)
+  pseudo_beta = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + all_atom_positions[
+      ..., ca_idx, :]
+
+  if exists(all_atom_masks):
+    pseudo_beta_mask = all_atom_masks[..., n_idx] * all_atom_masks[
+        ..., ca_idx] * all_atom_masks[..., c_idx]
+    pseudo_beta_mask = pseudo_beta_mask.float()
+    return pseudo_beta, pseudo_beta_mask
+
+  return pseudo_beta
+
+
 @take1st
-def make_pseudo_beta(protein, prefix='', is_training=True):
+def make_pseudo_beta(protein, prefix='', type='alphafold', is_training=True):
   del is_training
+  assert type in ('alphafold', 'rosettafold')
+  pseudo_beta_fn = pseudo_beta_alphafold if type == 'alphafold' else pseudo_beta_rosetta
 
   if (
       prefix + 'seq' in protein and prefix + 'coord' in protein and
