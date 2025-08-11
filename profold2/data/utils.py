@@ -37,6 +37,43 @@ def compose_pid(pid, chain, domains=None):
   return pid
 
 
+def fix_residue_id(residue_id):
+  if residue_id == 'MSE':
+    residue_id = 'MET'
+  return residue_id
+
+
+def fix_atom_id(residue_id, atom_id):
+  if residue_id == 'MET':
+    if atom_id == 'SE':
+      atom_id = 'SD'
+  return atom_id
+
+
+def fix_coord(residue_id, coord, coord_mask, bfactors=None):
+  if residue_id == 'ARG':
+    # NH1 and NH2 in arginine will be swapped if needed so that NH1 is always
+    # closer to CD than NH2.
+    atom_list = residue_constants.restype_name_to_atom14_names[residue_id]
+    assert 'CD' in atom_list and 'NH1' in atom_list and 'NH2' in atom_list
+    cd_idx, nh1_idx, nh2_idx = map(
+        lambda atom: atom_list.index(atom), ('CD', 'NH1', 'NH2')
+    )
+    if np.all([coord_mask[cd_idx], coord_mask[nh1_idx], coord_mask[nh2_idx]]):
+      if np.sum((coord[nh1_idx] - coord[cd_idx])**2) > np.sum(
+          (coord[nh2_idx] - coord[cd_idx])**2
+      ):
+        t = coord[nh1_idx]
+        coord[nh1_idx] = coord[nh2_idx]
+        coord[nh2_idx] = t
+        if exists(bfactors):
+          t = bfactors[nh1_idx]
+          bfactors[nh1_idx] = bfactors[nh2_idx]
+          bfactors[nh2_idx] = t
+
+  return coord, bfactors
+
+
 _seq_index_pattern = '(\\d+)-(\\d+)'
 
 

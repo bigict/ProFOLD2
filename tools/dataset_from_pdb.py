@@ -18,6 +18,7 @@ from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from Bio.PDB.PDBExceptions import PDBConstructionException
 
 from profold2.common import residue_constants
+from profold2.data.utils import fix_residue_id, fix_atom_id, fix_coord
 from profold2.utils import exists, timing
 
 logger = logging.getLogger(__file__)
@@ -98,9 +99,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
     del chain_type
     while len(residue_id) < 3:
       residue_id = f' {residue_id}'
-    if residue_id == 'MSE':
-      return 'MET'
-    return residue_id
+    return fix_residue_id(residue_id)
 
   def _get_unktype(chain_type):
     del chain_type
@@ -210,6 +209,9 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
         seq.append(resname)
 
         if exists(labels):
+          labels, bfactors = fix_coord(
+              residue_id, coord, coord_mask_list, bfactors=bfactors
+          )
           coord_list.append(labels)
           coord_mask_list.append(label_mask)
           bfactor_list.append(bfactors)
@@ -223,9 +225,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       residue_id = residue_id_arr[0]
       atom_list = _get_atom_list(residue_id, chain_type)
       try:
-        if chain_type == 'mol:protein' and residue_id == 'MET' and atom_id == 'SE':
-          atom_id = 'SD'
-        atom_idx = atom_list.index(atom_id)
+        atom_idx = atom_list.index(fix_atom_id(residue_id, atom_id))
         coord = np.asarray((x_list[i], y_list[i], z_list[i]))
         if np.any(np.isnan(coord)):
           continue
