@@ -223,6 +223,8 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       residue_id = residue_id_arr[0]
       atom_list = _get_atom_list(residue_id, chain_type)
       try:
+        if chain_type == 'mol:protein' and residue_id == 'MET' and atom_id == 'SE':
+          atom_id = 'SD'
         atom_idx = atom_list.index(atom_id)
         coord = np.asarray((x_list[i], y_list[i], z_list[i]))
         if np.any(np.isnan(coord)):
