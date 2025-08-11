@@ -27,8 +27,8 @@ from profold2.common import residue_constants
 from profold2.data.parsers import parse_fasta
 from profold2.data.padding import pad_sequential, pad_rectangle
 from profold2.data.utils import (
-    compose_pid, decompose_pid, parse_seq_index, seq_index_join, seq_index_split,
-    str_seq_index
+    compose_pid, decompose_pid, fix_residue_id, fix_atom_id, fix_coord, parse_seq_index,
+    seq_index_join, seq_index_split, str_seq_index
 )
 from profold2.utils import default, env, exists, timing
 
@@ -471,9 +471,7 @@ def _make_pdb_features(
     if icode and icode != ' ':
       continue
 
-    residue_id = aa.get_resname()
-    if residue_id == 'MSE':
-      residue_id = 'MET'
+    residue_id = fix_residue_id(aa.get_resname())
 
     if not exists(int_resseq_start):
       int_resseq_start = int_resseq
@@ -500,7 +498,7 @@ def _make_pdb_features(
         ]  # pylint: disable=line-too-long
       for atom in aa.get_atoms():
         try:
-          atom14idx = res_atom14_list.index(atom.id)
+          atom14idx = res_atom14_list.index(fix_atom_id(residue_id, atom.id))
           coord = np.asarray(atom.get_coord())
           if np.any(np.isnan(coord)):
             continue
@@ -510,6 +508,7 @@ def _make_pdb_features(
           label_mask[atom14idx] = True
         except ValueError as e:
           logger.debug(e)
+      labels, bfactors = fix_coord(residue_id, labels, label_mask, bfactors=bfactors)
       coord_list.append(labels)
       coord_mask_list.append(label_mask)
       bfactor_list.append(bfactors)
@@ -1352,7 +1351,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         feat['seq_entity'] = torch.ones_like(feat['seq_entity']
                                             ) * seq_entity_map[feat['str_seq']]
         feat['seq_sym'] = torch.ones_like(feat['seq_sym']
-                                            ) * seq_sym_map[feat['str_seq']]
+                                         ) * seq_sym_map[feat['str_seq']]
       # Sequence related
       for field in ('str_seq', ):
         ret[field] = ret.get(field, '') + feat[field]
