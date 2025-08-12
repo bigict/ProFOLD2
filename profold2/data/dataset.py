@@ -774,7 +774,7 @@ def _protein_clips_fn(
     if (min_crop_pae and 'coord_pae' in protein) or (
         max_crop_plddt and 'coord_plddt' in protein and
         torch.any(protein['coord_plddt'] < 1.0)
-    ) or n > env('profold2_data_knn_sampler_max_length', defval=65536, type=int):
+    ) or n > env('profold2_data_knn_sampler_max_length', defval=65536, dtype=int):
       return _random_sampler(protein, n)
     return _knn_sampler(protein, n)
 
@@ -1064,17 +1064,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     self.msa_as_seq_min_ident = msa_as_seq_min_ident
     self.var_task_num = var_task_num
     self.var_as_seq_prob = env(
-        'profold2_data_var_as_seq_prob', defval=var_as_seq_prob, type=float
+        'profold2_data_var_as_seq_prob', defval=var_as_seq_prob, dtype=float
     )
     self.var_as_seq_clustering = var_as_seq_clustering
     self.var_as_seq_min_alr = env(
-        'profold2_data_var_as_seq_min_alr', defval=var_as_seq_min_alr, type=float
+        'profold2_data_var_as_seq_min_alr', defval=var_as_seq_min_alr, dtype=float
     )
     self.var_as_seq_min_ident = env(
-        'profold2_data_var_as_seq_min_ident', defval=var_as_seq_min_ident, type=float
+        'profold2_data_var_as_seq_min_ident', defval=var_as_seq_min_ident, dtype=float
     )
     self.var_as_seq_min_label = env(
-        'profold2_data_var_as_seq_min_label', defval=var_as_seq_min_label, type=float
+        'profold2_data_var_as_seq_min_label', defval=var_as_seq_min_label, dtype=float
     )
     self.feat_flags = feat_flags
     with FileSystem(self.data_dir) as fs:
@@ -1292,7 +1292,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         yield var_pid, c
 
   @functools.lru_cache(
-      maxsize=env('profold2_data_build_chain_lru_maxsize', defval=0, type=int)
+      maxsize=env('profold2_data_build_chain_lru_maxsize', defval=0, dtype=int)
   )
   def _multimer_build_chain_list(self, protein_id, var_list):
     def _is_aligned(k, chain_list):

@@ -1147,8 +1147,8 @@ class FitnessHead(nn.Module):
       self.pos_weight = None
     self.alpha = alpha
     self.focal_loss = focal_loss
-    self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, type=int)
-    self.return_motifs = env('profold2_fitness_return_motifs', defval=True, type=bool)
+    self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, dtype=int)
+    self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
 
   def predict(self, variant_logit, variant_mask, gating=None):
     variant_logit, variant_mask = variant_logit[..., None], variant_mask

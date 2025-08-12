@@ -139,13 +139,13 @@ class WorkerXPU(object):
     return env(
         'RANK',
         defval=WorkerXPU.device_count() * self.args.node_rank + self.local_rank,
-        type=int
+        dtype=int
     )
 
   @staticmethod
   def world_size(nnodes=None):
     return env(
-        'WORLD_SIZE', defval=WorkerXPU.device_count() * default(nnodes, 1), type=int
+        'WORLD_SIZE', defval=WorkerXPU.device_count() * default(nnodes, 1), dtype=int
     )
 
   def memory_summary(self):
@@ -155,7 +155,7 @@ class WorkerXPU(object):
 
   def init_process_group(self):
     if self.is_available():
-      timeout = env('NCCL_TIMEOUT', defval=1800, type=int)
+      timeout = env('NCCL_TIMEOUT', defval=1800, dtype=int)
       logging.info(
           'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
           'init_method=%s, timeout=%s(s)',
