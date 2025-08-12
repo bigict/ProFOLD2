@@ -6,7 +6,7 @@ import logging
 import torch
 from torch.utils.cpp_extension import BuildExtension, CUDA_HOME, CUDAExtension, load
 
-from profold2.utils import package_dir
+from profold2.utils import env, package_dir
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,7 @@ version_dependent_macros = [
 def extra_compile_args(jit_mode=True):
   cxx_args = ['-O3', '-std=c++17'] + version_dependent_macros
 
-  nvcc_threads = min(os.cpu_count(), 8)
-  if 'PF_NVCC_THREADS' in os.environ:
-    nvcc_threads = int(os.environ['PF_NVCC_THREADS'])
+  nvcc_threads = env('PF_NVCC_THREADS', defval=min(os.cpu_count(), 8), dtype=int)
 
   nvcc_args = [
       '-O3',
@@ -69,7 +67,7 @@ def extra_compile_args(jit_mode=True):
     cuda_major, _ = installed_cuda_version()
     if cuda_major >= 11:
       cross_compile_archs = f'{cross_compile_archs};8.0'
-    cross_compile_archs_env = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
+    cross_compile_archs_env = env('TORCH_CUDA_ARCH_LIST')
     if cross_compile_archs_env is not None:
       logger.warning(
           'env var `TORCH_CUDA_ARCH_LIST=%s` overrides `cross_compile_archs=%s`',  # pylint: disable=line-too-long
@@ -113,17 +111,11 @@ ATTENTION_CORE_SRC = [
     os.path.join('csrc', 'attention_cu.cu'),
 ]
 
-if 'CUTLASS_PATH' not in os.environ:
-  def_cutlass_path = os.path.join(package_dir(), 'cutlass')
-  logger.warning(
-      'You can specify the environment variable $CUTLASS_PATH to override `%s`',
-      def_cutlass_path
-  )
-  os.environ['CUTLASS_PATH'] = def_cutlass_path
+cutlass_path = env('CUTLASS_PATH', defval=os.path.join(package_dir(), 'cutlass'))
 
 ATTENTION_CORE_INC = [
-    os.path.join(os.environ['CUTLASS_PATH'], 'include'),
-    os.path.join(os.environ['CUTLASS_PATH'], 'tools/util/include'),
+    os.path.join(cutlass_path, 'include'),
+    os.path.join(cutlass_path, 'tools/util/include'),
 ]
 
 _loaded_ops = {}
