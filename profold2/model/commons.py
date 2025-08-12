@@ -16,7 +16,7 @@ from profold2.utils import default, env, exists, version_cmp
 
 logger = logging.getLogger(__name__)
 
-_tensor_inplace_op = env('profold2_tensor_inplace_op', defval=0, type=int)
+_tensor_inplace_op = env('profold2_tensor_inplace_op', defval=0, dtype=int)
 
 
 @contextlib.contextmanager
@@ -355,13 +355,13 @@ class AxialAttention(nn.Module):
     self.norm = nn.LayerNorm(dim_node)
     self.attn = Attention(dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     # FIX: to be backward compatible
-    accept_edge_norm = env('AxialAttention_accept_edge_norm', defval=1, type=int)
+    accept_edge_norm = env('AxialAttention_accept_edge_norm', defval=1, dtype=int)
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
         nn.Linear(dim_edge, heads, bias=not accept_edge_norm),
         Rearrange('... i j h -> ... h i j')
     ) if accept_edges else None
-    accept_kernel_fn = env('AxialAttention_accept_kernel_fn', defval=0, type=int)
+    accept_kernel_fn = env('AxialAttention_accept_kernel_fn', defval=0, dtype=int)
     if not kernel.is_available() and accept_kernel_fn:
       logger.warning('kernel is not available! disabled it.')
       accept_kernel_fn = 0

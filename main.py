@@ -24,19 +24,19 @@ def create_args():
   parser.add_argument(
       '--nnodes',
       type=int,
-      default=env('SLURM_NNODES', defval=None, type=int),
+      default=env('SLURM_NNODES', defval=None, dtype=int),
       help='number of nodes.'
   )
   parser.add_argument(
       '--node_rank',
       type=int,
-      default=env('SLURM_NODEID', defval=0, type=int),
+      default=env('SLURM_NODEID', defval=0, dtype=int),
       help='rank of the node.'
   )
   parser.add_argument(
       '--local_rank',
       type=int,
-      default=int(env('LOCAL_RANK', defval=0, type=int)),
+      default=int(env('LOCAL_RANK', defval=0, dtype=int)),
       help='local rank of xpu.'
   )
   parser.add_argument(
