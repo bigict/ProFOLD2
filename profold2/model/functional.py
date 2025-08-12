@@ -1322,6 +1322,50 @@ def symmetric_ground_truth_rename(
   )
 
 
+def contact_precision(
+    pred: torch.Tensor,
+    truth: torch.Tensor,
+    ratios: Optional[list[float]] = None,
+    ranges: Optional[list[tuple[int, int | None]]] = None,
+    mask: Optional[torch.Tensor] = None,
+    cutoff: Optional[float] = 8.
+):
+  if not exists(ratios):
+    ratios = [1, .5, .2, .1]
+  if not exists(ranges):
+    ranges = [(6, 12), (12, 24), (24, None)]
+
+  # (..., l, l)
+  assert truth.shape[-1] == truth.shape[-2]
+  assert pred.shape == truth.shape
+
+  seq_len = truth.shape[-1]
+  mask1s = torch.ones_like(truth, dtype=torch.int8)
+  if exists(mask):
+    mask1s = mask1s * (mask[..., :, None] * mask[..., None, :])
+  mask_ranges = map(
+      lambda r: torch.triu(mask1s, default(r[0], 0)) - torch.
+      triu(mask1s, default(r[1], seq_len)), ranges
+  )
+
+  pred_truth = torch.stack((pred, truth), dim=-1)
+  for (i, j), m in zip(ranges, mask_ranges):
+    masked_pred_truth = pred_truth[m.bool()]
+    sorter_idx = (-masked_pred_truth[:, 0]).argsort()
+    sorted_pred_truth = masked_pred_truth[sorter_idx]
+
+    num_corrects = (
+        (0 < sorted_pred_truth[:, 1]) & (sorted_pred_truth[:, 1] <= cutoff)
+    ).sum()
+    for ratio in ratios:
+      num_tops = max(1, min(num_corrects, int(seq_len * ratio)))
+      assert 0 < num_tops <= seq_len
+      top_labels = sorted_pred_truth[:num_tops, 1]
+      pred_corrects = ((0 < top_labels) & (top_labels <= cutoff))
+      pred_corrects = torch.sum(pred_corrects, dim=-1, keepdim=True)
+      yield (i, j), ratio, pred_corrects / float(num_tops)
+
+
 def rmsd(
     x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None, eps=1e-8
 ):
@@ -1369,6 +1413,35 @@ def kabsch_rotation(
     # Create Rotation matrix U
     r = v @ w
   return r
+
+
+def kabsch_align(x: torch.Tensor, y: torch.Tensor):
+  """ Kabsch alignment of x into y. Assumes x, y are both (num_res, 3).
+    """
+  # center x and y to the origin
+  x_ = x - x.mean(dim=-2, keepdim=True)
+  y_ = y - y.mean(dim=-2, keepdim=True)
+
+  # calculate rotations
+  r = kabsch_rotation(x_, y_)
+
+  # apply rotations
+  x_ = x_ @ r
+
+  # return centered and aligned
+  return x_, y_
+
+
+def tmscore(x: torch.Tensor, y: torch.Tensor, n: Optional[int] = None):
+  """ Assumes x, y are both (..., num_res, 3). """
+  n = default(n, x.shape[-2])
+
+  n = max(21, n)
+  d0 = 1.24 * (n - 15)**(1.0 / 3.0) - 1.8
+  # get distance
+  dist = torch.sqrt(torch.sum((x - y)**2, dim=-1))
+  # formula (see wrapper for source):
+  return torch.nanmean(1.0 / (1.0 + (dist / d0)**2), dim=-1)
 
 
 def optimal_transform_create(pred_points, true_points, points_mask):

@@ -14,7 +14,8 @@ import torch.multiprocessing as mp
 from torch import nn
 
 from profold2.model import AlphaFold2
-from profold2.utils import default, env, exists, torch_allow_tf32, version_cmp
+from profold2.model.commons import torch_allow_tf32
+from profold2.utils import default, env, exists, version_cmp
 
 
 @contextlib.contextmanager

@@ -1,5 +1,6 @@
 """A lot of modules in AlphaFold2
   """
+import contextlib
 import functools
 import logging
 
@@ -11,11 +12,36 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 from profold2.model import functional, kernel, profiler
-from profold2.utils import default, env, exists, torch_allow_tf32, version_cmp
+from profold2.utils import default, env, exists, version_cmp
 
 logger = logging.getLogger(__name__)
 
 _tensor_inplace_op = env('profold2_tensor_inplace_op', defval=0, type=int)
+
+
+@contextlib.contextmanager
+def torch_default_dtype(dtype):
+  prev_dtype = torch.get_default_dtype()
+  torch.set_default_dtype(dtype)
+  yield
+  torch.set_default_dtype(prev_dtype)
+
+
+@contextlib.contextmanager
+def torch_allow_tf32(allow=True):
+  if hasattr(torch.backends,
+             'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+    matmul_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = allow
+  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
+    cudnn_allow_tf32 = torch.backends.cudnn.allow_tf32
+    torch.backends.cudnn.allow_tf32 = allow
+  yield
+  if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
+    torch.backends.cudnn.allow_tf32 = cudnn_allow_tf32
+  if hasattr(torch.backends,
+             'cuda') and hasattr(torch.backends.cuda.matmul, 'allow_tf32'):
+    torch.backends.cuda.matmul.allow_tf32 = matmul_allow_tf32
 
 
 # helpers
