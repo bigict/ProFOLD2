@@ -14,8 +14,8 @@ from einops import rearrange
 # models & data
 from profold2.data import dataset
 from profold2.data.utils import tensor_to_numpy
-from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
-from profold2.utils import Kabsch, TMscore, exists, timing
+from profold2.model import functional, profiler, snapshot, FeatureBuilder, ReturnValues
+from profold2.utils import exists, timing
 
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
@@ -150,19 +150,13 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         )
 
         # rotate / align
-        coords_aligned, labels_aligned = Kabsch(
-            rearrange(
-                rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'
-            ),
-            rearrange(
-                rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask], 'c d -> d c'
-            )
+        coords_aligned, labels_aligned = functional.kabsch_align(
+            rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask],
+            rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask]
         )
 
-        tms = TMscore(
-            rearrange(coords_aligned, 'd l -> () d l'),
-            rearrange(labels_aligned, 'd l -> () d l'),
-            L=torch.sum(batch['mask'], dim=-1)
+        tms = functional.tmscore(
+            coords_aligned, labels_aligned, n=torch.sum(batch['mask'], dim=-1)
         )
         metric_dict['tmscore'] = tms.item()
         logging.debug('%d pid: %s TM-score: %f', idx, fasta_name, tms.item())

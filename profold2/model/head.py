@@ -83,19 +83,13 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
 
     if torch.any(flat_cloud_mask):
       # rotate / align
-      coords_aligned, labels_aligned = Kabsch(
-          rearrange(
-              rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-          ),
-          rearrange(
-              rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask], 'c d -> d c'
-          )
+      coords_aligned, labels_aligned = functional.kabsch_align(
+          rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask],
+          rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask]
       )
 
-      return TMscore(
-          rearrange(coords_aligned, 'd l -> () d l'),
-          rearrange(labels_aligned, 'd l -> () d l'),
-          L=torch.sum(mask[b], dim=-1)
+      return functional.tmscore(
+          coords_aligned, labels_aligned, n=torch.sum(mask[b], dim=-1)
       )
     return torch.as_tensor([0.], device=flat_cloud_mask.device)
 

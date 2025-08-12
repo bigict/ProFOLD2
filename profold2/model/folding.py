@@ -11,7 +11,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import commons, functional
-from profold2.utils import exists, torch_default_dtype
+from profold2.utils import exists
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class StructureModule(nn.Module):
     assert structure_module_depth >= 1
     self.structure_module_depth = structure_module_depth
     self.position_scale = position_scale
-    with torch_default_dtype(torch.float32):
+    with commons.torch_default_dtype(torch.float32):
       self.ipa_block = IPABlock(
           dim=dim_single,
           pairwise_repr_dim=dim_pairwise,
@@ -157,7 +157,7 @@ class StructureModule(nn.Module):
     outputs = []
 
     # iterative refinement with equivariant transformer in high precision
-    with torch_default_dtype(torch.float32):
+    with commons.torch_default_dtype(torch.float32):
       # initial frames
       if 'frames' in representations and exists(representations['frames']):
         quaternions, translations = representations['frames']
