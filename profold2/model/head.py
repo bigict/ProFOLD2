@@ -91,10 +91,10 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
       return functional.tmscore(
           coords_aligned, labels_aligned, n=torch.sum(mask[b], dim=-1)
       )
-    return torch.as_tensor([0.], device=flat_cloud_mask.device)
+    return torch.as_tensor(0., device=flat_cloud_mask.device)
 
   # tms = sum(map(_yield_tmscore, range(pred_points.shape[0])))
-  tms = torch.cat(list(map(_yield_tmscore, range(pred_points.shape[0]))))
+  tms = torch.stack(list(map(_yield_tmscore, range(pred_points.shape[0]))))
   return tms
 
 
