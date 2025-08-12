@@ -1056,20 +1056,22 @@ class PairwiseEmbedding(nn.Module):
   def embeddings(self):
     return {'position': self.relative_pos_emb.embedding.weight}
 
-  def forward(self, x, x_mask, seq_index=None):
+  def forward(self, x, x_mask=None, seq_index=None):
     (_, n), device = x.shape[:2], x.device
 
     x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim=-1)
     x = rearrange(x_left, '... i d -> ... i () d') + rearrange(
         x_right, '... j d-> ... () j d'
     )  # create pair-wise residue embeds
-    x_mask = rearrange(x_mask, '... i -> ... i ()') * rearrange(
-        x_mask, '... j -> ... () j'
-    ) if exists(x_mask) else None
     if exists(self.relative_pos_emb):
       seq_index = default(seq_index, lambda: torch.arange(n, device=device))
       x = tensor_add(x, self.relative_pos_emb(seq_index))
-    return x, x_mask
+    if exists(x_mask):
+      x_mask = rearrange(x_mask, '... i -> ... i ()') * rearrange(
+          x_mask, '... j -> ... () j'
+      )
+      return x, x_mask
+    return x
 
 
 def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):

@@ -2,9 +2,14 @@
 """
 import os
 import contextlib
+import functools
 from inspect import isfunction
+import tempfile
 import time
+import urllib
 import uuid
+
+from tqdm.auto import tqdm
 
 
 # helpers
@@ -55,3 +60,23 @@ def timing(msg, print_fn, prefix='', callback_fn=None):
   if exists(callback_fn):
     callback_fn(tic, toc)
   print_fn(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
+
+
+def wget(url, filename=None, chunk_size=(1 << 20)):
+  with urllib.request.urlopen(url) as f:
+    kwargs = {
+        'total': int(f.headers.get('Content-Length', 0)),
+        'desc': os.path.basename(filename) if exists(filename) else None,
+    }
+    with tqdm.wrapattr(f, 'read', **kwargs) as r:
+      if exists(filename):
+        writer = functools.partial(open, filename, mode='wb')
+      else:
+        writer = functools.partial(tempfile.NamedTemporaryFile, delete=False)
+      with writer() as w:
+        while True:
+          chunk = r.read(chunk_size)
+          if not chunk:
+            break
+          w.write(chunk)
+        return w.name
