@@ -967,7 +967,7 @@ class MetricDictHead(nn.Module):
         truth = torch.cdist(positions, positions, p=2)
         metrics['contact'] = MetricDict()
         for b in range(truth.shape[0]):
-          precision_list = contact_precision(
+          precision_list = functional.contact_precision(
               pred[b],
               truth[b],
               mask=mask[b],
