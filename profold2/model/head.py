@@ -9,7 +9,7 @@ from einops import rearrange, repeat
 
 from profold2.common import residue_constants
 from profold2.model import commons, functional, folding
-from profold2.utils import *
+from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
 
@@ -1128,7 +1128,6 @@ class FitnessHead(nn.Module):
     self.softplus = softplus
     self.prior_b = prior_b
 
-    num_class = len(residue_constants.restypes_with_x_and_gap)
     m = functional.make_mask(residue_constants.restypes_with_x_and_gap, mask)
     self.register_buffer('mask', m, persistent=False)
 
@@ -1151,7 +1150,7 @@ class FitnessHead(nn.Module):
     self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
 
   def predict(self, variant_logit, variant_mask, gating=None):
-    variant_logit, variant_mask = variant_logit[..., None], variant_mask
+    variant_logit = variant_logit[..., None]
     if exists(gating):
       variant_logit = variant_logit * gating
     if self.pooling == 'sum':
