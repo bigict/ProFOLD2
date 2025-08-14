@@ -1464,7 +1464,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             )
 
     ret['pid'] = compose_pid(pid, ','.join(chains))
-    if self.feat_flags & FEAT_VAR and 'var' in ret:
+    if self.feat_flags & FEAT_VAR and 'var' in ret and ret['var']:
       assert 'length' in ret
       var_dict = ret['var']
       del ret['var']
