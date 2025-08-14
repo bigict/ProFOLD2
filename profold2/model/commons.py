@@ -115,9 +115,10 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
   if exists(broadcast_dim) and 0 < p < 1.0:
     if training:
       shape = list(x.shape)
-      assert len(shape) == 4  # (b m i d)
-      assert broadcast_dim in (0, 1)  # (# shared across rows and columns)
-      shape[broadcast_dim + 1] = 1
+      assert len(shape) >= 3  # (... m i d)
+      # (shared across rows and columns)
+      assert (broadcast_dim % len(shape) - len(shape)) in (-3, -2)
+      shape[broadcast_dim] = 1
       m = torch.bernoulli(torch.full(shape, 1 - p, device=x.device))
       return m * x / (1 - p)
     return x
@@ -605,10 +606,10 @@ class PairwiseAttentionBlock(nn.Module):
 
     _, dropout = embedd_dropout_get(dropout)
     self.dropout_rowwise_fn = functools.partial(
-        shared_dropout, broadcast_dim=0, p=dropout
+        shared_dropout, broadcast_dim=-3, p=dropout
     )
     self.dropout_column_fn = functools.partial(
-        shared_dropout, broadcast_dim=1, p=dropout
+        shared_dropout, broadcast_dim=-2, p=dropout
     )
 
   def forward(self, x, mask=None, msa_repr=None, msa_mask=None, shard_size=None):
@@ -726,7 +727,7 @@ class MsaAttentionBlock(nn.Module):
     )
 
     dropout, _ = embedd_dropout_get(dropout)
-    self.dropout_fn = functools.partial(shared_dropout, broadcast_dim=0, p=dropout)
+    self.dropout_fn = functools.partial(shared_dropout, broadcast_dim=-3, p=dropout)
 
   def forward(
       self, x, mask=None, pairwise_repr=None, pairwise_mask=None, shard_size=None

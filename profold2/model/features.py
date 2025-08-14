@@ -135,9 +135,11 @@ def make_seq_profile(protein, mask=None, density=False, epsilon=1e-8, is_trainin
     # num_msa = p.shape[1]
     # Shape (b, l, c)
     if 'msa_mask' in protein:
-      p = torch.einsum('b m i c,b m i -> b i c', p.float(), protein['msa_mask'].float())
+      p = torch.einsum(
+          '... m i c,... m i -> ... i c', p.float(), protein['msa_mask'].float()
+      )
     else:
-      p = torch.sum(p.float(), dim=1)
+      p = torch.sum(p.float(), dim=-3)
   else:
     # num_msa = 1
     p = F.one_hot(
@@ -181,15 +183,15 @@ def make_seq_profile_pairwise(
     del msa
   else:
     q = F.one_hot(
-        rearrange(protein['seq'].long(), 'b ... -> b () ...'),
+        rearrange(protein['seq'].long(), '... i -> ... () i'),
         num_classes=len(residue_constants.restypes_with_x_and_gap)
     )
   b, m, l, c = q.shape
   p = torch.zeros((b, l, l, c, c), device=q.device)
   for i in range(0, m, chunk):
     p += torch.sum(
-        rearrange(q[:, i:i + chunk, ...], 'b m i c -> b m i () c ()') *
-        rearrange(q[:, i:i + chunk, ...], 'b m j d -> b m () j () d'),
+        rearrange(q[:, i:i + chunk, ...], '... m i c -> ... m i () c ()') *
+        rearrange(q[:, i:i + chunk, ...], '... m j d -> ... m () j () d'),
         dim=1
     )
   if exists(mask) and len(mask) > 0:
@@ -199,7 +201,7 @@ def make_seq_profile_pairwise(
     )
     m = rearrange(m, 'c -> c ()') * rearrange(m, 'd -> () d')
     protein['sequence_profile_pairwise_mask'] = rearrange(m, 'c d -> (c d)')
-    p = p * rearrange(m, 'c d -> () () () c d')
+    p = p * m
   # Shape (b, l, l, c, c)
   if density:
     p = p / (torch.sum(p, dim=(-2, -1), keepdim=True) + epsilon)
@@ -352,7 +354,7 @@ def make_esm_embedd(
   data_out = esm_extractor.extract(data_in, repr_layer=repr_layer, device=device)
 
   if len(data_out.shape) == 3:
-    data_out = rearrange(data_out, 'b l c -> b () l c')
+    data_out = rearrange(data_out, '... l c -> ... () l c')
   assert len(data_out.shape) == 4
   protein[field] = data_out
 
