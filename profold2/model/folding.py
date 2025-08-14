@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
-from einops import rearrange, repeat
+from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.model import commons, functional
@@ -140,7 +140,7 @@ class StructureModule(nn.Module):
     self.to_angles = AngleNet(dim_single)
 
   def forward(self, representations, batch):
-    b, n, device = *batch['seq'].shape[:2], batch['seq'].device
+    b, n, device = batch['seq'].shape[:-2], batch['seq'].shape[-2], batch['seq'].device
 
     single_repr, pairwise_repr = representations['single'], representations['pair']
 
@@ -163,8 +163,8 @@ class StructureModule(nn.Module):
         quaternions, translations = representations['frames']
       else:
         quaternions = torch.tensor([1., 0., 0., 0.], device=device)
-        quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
-        translations = torch.zeros((b, n, 3), device=device)
+        quaternions = torch.tile(quaternions, b + (n, 1))
+        translations = torch.zeros(b + (n, 3), device=device)
       rotations = functional.quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
@@ -190,7 +190,7 @@ class StructureModule(nn.Module):
 
         quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
         translations = torch.einsum(
-            'b n c, b n r c -> b n r', translation_update, rotations
+            '... i c, ... i r c -> ... i r', translation_update, rotations
         ) + translations
         rotations = functional.quaternion_to_matrix(quaternions)
         # No rotation gradients between iterations to stabilize training.

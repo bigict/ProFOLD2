@@ -324,8 +324,8 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
 
   cdist_to_score = (
       (true_cdist < cutoff) * (
-          rearrange(points_mask, 'b i -> b i ()') *
-          rearrange(points_mask, 'b j -> b () j')
+          rearrange(points_mask, '... i -> ... i ()') *
+          rearrange(points_mask, '... j -> ... () j')
       ) * (1.0 - torch.eye(true_cdist.shape[1], device=points_mask.device))
   )  # Exclude self-interaction
 
@@ -674,9 +674,9 @@ def rigids_slice(frames, start=0, end=None):
   return rotations[..., start:end, :, :], translations[..., start:end, :]
 
 
-def rigids_rearrange(frames, ops):
+def rigids_rearrange(frames, ops1, ops2=None):
   rotations, translations = frames
-  return rearrange(rotations, ops), rearrange(translations, ops)
+  return rearrange(rotations, ops1), rearrange(translations, default(ops2, ops1))
 
 
 def rigids_multiply(a, b):
@@ -733,7 +733,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
           rearrange(
               torch.stack(
                   (torch.zeros_like(aatypes), torch.ones_like(aatypes)), dim=-1
-              ), 'b l r -> b l () r'
+              ), '... i r -> ... i () r'
           ), angles
       ),
       dim=-2
@@ -766,10 +766,10 @@ def rigids_from_angles(aatypes, backb_frames, angles):
     ri, ti = rigids_multiply(
         (
             torch.gather(
-                rotations, -3, repeat(depend[..., idx], '... l -> ... l () c d', c=3, d=3)
+                rotations, -3, repeat(depend[..., idx], '... i -> ... i () c d', c=3, d=3)
             ),
             torch.gather(
-                translations, -2, repeat(depend[..., idx], '... l -> ... l () d', d=3)
+                translations, -2, repeat(depend[..., idx], '... i -> ... i () d', d=3)
             ),
         ),
         (rotations[..., idx:idx + 1, :, :], translations[..., idx:idx + 1, :])
@@ -784,7 +784,10 @@ def rigids_from_angles(aatypes, backb_frames, angles):
     atom_frames = to_prev_frames(atom_frames, i)
 
   return rigids_multiply(
-      rigids_rearrange(backb_frames, 'b l ... -> b l () ...'), atom_frames
+      rigids_rearrange(
+          backb_frames, '... i c d -> ... i () c d', '... i d -> ... i () d'
+      ),
+      atom_frames
   )
 
 
