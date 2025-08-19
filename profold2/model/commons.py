@@ -250,8 +250,6 @@ class Attention(nn.Module):
 
     q, k, v = (self.to_q(x), *self.to_kv(m).chunk(2, dim=-1))
 
-    b, i, n = q.shape[0], q.shape[-2], k.shape[-2]
-
     q, k, v = map(lambda t: rearrange(t, '... i (h d) -> ... h i d', d=d), (q, k, v))
 
     # query / key similarities
@@ -271,9 +269,8 @@ class Attention(nn.Module):
     # masking
     attn_mask, mask_value = None, max_neg_value(q)
     if exists(mask):
-      mask = default(mask, lambda: torch.ones(b, i, device=device))
       context_mask = mask if not exists(context) else default(
-          context_mask, lambda: torch.ones(b, k.shape[-2], device=device)
+          context_mask, torch.ones(*m.shape[:-1], dtype=torch.bool, device=device)
       )
       attn_mask = rearrange(mask.bool(), '... i -> ... () i ()'
                            ) * rearrange(context_mask.bool(), '... j -> ... () () j')
@@ -323,7 +320,7 @@ class Attention(nn.Module):
 
     # gating
     if exists(self.gating):
-      gates = self.gating(m)
+      gates = self.gating(x)
       out = tensor_mul(out, gates.sigmoid())
 
     # combine to out
