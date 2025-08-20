@@ -7,7 +7,7 @@ import random
 
 import torch
 from torch import nn
-from einops import rearrange, repeat
+from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.model import commons, functional
@@ -164,8 +164,8 @@ class AlphaFold2(nn.Module):
 
     # if MSA is not passed in, just use the sequence itself
     if not exists(embedds) and not exists(msa):
-      msa = rearrange(seq, 'b i -> b () i')
-      msa_mask = rearrange(mask, 'b i -> b () i')
+      msa = rearrange(seq, '... i -> ... () i')
+      msa_mask = rearrange(mask, '... i -> ... () i')
 
     # assert on sequence length
     assert not exists(msa) or msa.shape[-1] == seq.shape[
@@ -185,7 +185,7 @@ class AlphaFold2(nn.Module):
         m = commons.tensor_add(m, msa_embed)
 
       # add single representation to msa representation
-      m = commons.tensor_add(m, rearrange(x, 'b i d -> b () i d'))
+      m = commons.tensor_add(m, rearrange(x, '... i d -> ... () i d'))
 
       # get msa_mask to all ones if none was passed
       msa_mask = default(msa_mask, lambda: torch.ones_like(msa).bool())
@@ -205,7 +205,9 @@ class AlphaFold2(nn.Module):
     if exists(recyclables):
       if exists(recyclables.coords) and exists(self.recycling_pos_linear):
         pseudo_beta = functional.pseudo_beta_fn(seq, recyclables.coords)
-        dgram = functional.distogram_from_positions(pseudo_beta, self.recycling_pos_breaks)
+        dgram = functional.distogram_from_positions(
+            pseudo_beta, self.recycling_pos_breaks
+        )
         x = commons.tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
       m[:, 0] = commons.tensor_add(
           m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr)
@@ -217,10 +219,10 @@ class AlphaFold2(nn.Module):
       quaternions, translations = recyclables.frames
     else:
       # black hole frames
-      b, _, n, device = *m.shape[:3], m.device
+      b, n, device = m.shape[:-3], m.shape[-2], m.device
       quaternions = torch.tensor([1., 0., 0., 0.], device=device)
-      quaternions = repeat(quaternions, 'd -> b n d', b=b, n=n)
-      translations = torch.zeros((b, n, 3), device=device)
+      quaternions = torch.tile(quaternions, b + (n, 1))
+      translations = torch.zeros(b + (n, 3), device=device)
 
     # trunk
     x, m, t = self.evoformer(
@@ -295,14 +297,14 @@ class AlphaFold2WithRecycling(nn.Module):
 
     # variables
     seq = batch['seq']
-    b, n, device = *seq.shape[:2], seq.device
+    b, n, device = seq.shape[:-2], seq.shape[-2], seq.device
     # FIXME: fake recyclables
     if 'recyclables' not in batch:
       _, dim_msa, dim_pairwise = self.impl.dim  # embedd_dim_get(self.impl.dim)
       batch['recyclables'] = Recyclables(
-          msa_first_row_repr=torch.zeros(b, n, dim_msa, device=device),
-          pairwise_repr=torch.zeros(b, n, n, dim_pairwise, device=device),
-          coords=torch.zeros(b, n, residue_constants.atom_type_num, 3, device=device)
+          msa_first_row_repr=torch.zeros(b + (n, dim_msa), device=device),
+          pairwise_repr=torch.zeros(b + (n, n, dim_pairwise), device=device),
+          coords=torch.zeros(b + (n, residue_constants.atom_type_num, 3), device=device)
       )
 
     if self.training:
