@@ -262,8 +262,7 @@ class Attention(nn.Module):
       k, v = map(lambda t: repeat(t, '... r i d-> ... (r h) i d', h=h), (k, v))
       n = q.shape[-2]
       if exists(mask):
-        q = torch.sum(q * mask[..., None, :, None],
-                      dim=-2) / (torch.sum(mask[..., None, :, None], dim=-2) + 1e-10)
+        q = functional.masked_mean(value=q, mask=mask[..., None, : None], dim=-2)
       else:
         q = q.mean(dim=-2)
       q = repeat(q, '... h d -> ... h i d', i=n)
