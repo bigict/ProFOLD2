@@ -209,8 +209,8 @@ class AlphaFold2(nn.Module):
             pseudo_beta, self.recycling_pos_breaks
         )
         x = commons.tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
-      m[:, 0] = commons.tensor_add(
-          m[:, 0], self.recycling_msa_norm(recyclables.msa_first_row_repr)
+      m[..., 0, :, :] = commons.tensor_add(
+          m[..., 0, :, :], self.recycling_msa_norm(recyclables.msa_first_row_repr)
       )
       x = commons.tensor_add(x, self.recycling_pairwise_norm(recyclables.pairwise_repr))
 
@@ -232,7 +232,7 @@ class AlphaFold2(nn.Module):
         shard_size=shard_size
     )
 
-    s = self.to_single_repr(m[:, 0])
+    s = self.to_single_repr(m[..., 0, :, :])
 
     # ready output container
     ret = ReturnValues()
@@ -265,7 +265,7 @@ class AlphaFold2(nn.Module):
             ret.loss = lossw
 
     if return_recyclables:
-      msa_first_row_repr, pairwise_repr = m[:, 0], representations['pair']
+      msa_first_row_repr, pairwise_repr = m[..., 0, :, :], representations['pair']
       if exists(self.recycling_to_msa_repr):
         msa_first_row_repr = self.recycling_to_msa_repr(representations['single'])
       msa_first_row_repr, pairwise_repr = map(
@@ -297,7 +297,7 @@ class AlphaFold2WithRecycling(nn.Module):
 
     # variables
     seq = batch['seq']
-    b, n, device = seq.shape[:-2], seq.shape[-2], seq.device
+    b, n, device = seq.shape[:-1], seq.shape[-1], seq.device
     # FIXME: fake recyclables
     if 'recyclables' not in batch:
       _, dim_msa, dim_pairwise = self.impl.dim  # embedd_dim_get(self.impl.dim)

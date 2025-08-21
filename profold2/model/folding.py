@@ -140,7 +140,7 @@ class StructureModule(nn.Module):
     self.to_angles = AngleNet(dim_single)
 
   def forward(self, representations, batch):
-    b, n, device = batch['seq'].shape[:-2], batch['seq'].shape[-2], batch['seq'].device
+    b, n, device = batch['seq'].shape[:-1], batch['seq'].shape[-1], batch['seq'].device
 
     single_repr, pairwise_repr = representations['single'], representations['pair']
 
