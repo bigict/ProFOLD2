@@ -125,8 +125,8 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
   return F.dropout(x, p=p, training=training)
 
 
-def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
-  del dropout_p
+def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
+  del dropout_p, scale
   assert kernel.is_available()
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
   if not exists(dtype) and hasattr(torch.cuda, 'is_bf16_supported'):
@@ -135,7 +135,7 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
   q, k, v = map(
       lambda t: rearrange(t.to(dtype=dtype_to), '... h i d -> ... i h d'), (q, k, v)
   )
-  mask, attn_bias = attn_mask
+  mask, _, attn_bias = attn_mask
   # HACK: experience value
   mask_value = 1e4 if dtype == torch.float16 else 1e6  # max_neg_value(q)
   if exists(mask):
@@ -145,6 +145,29 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, dtype=None):
     attn_bias = torch.clamp(attn_bias, min=-mask_value).to(dtype=dtype_to)
   o = kernel.evoformer_attn(q, k, v, [mask, attn_bias])
   return rearrange(o.to(dtype=dtype_from), '... i h d -> ... h i d')
+
+
+def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
+  assert hasattr(F, 'scaled_dot_product_attention')
+  dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
+  if not exists(dtype) and hasattr(torch.cuda, 'is_bf16_supported'):
+    if torch.cuda.is_bf16_supported():
+      dtype_to = torch.bfloat16
+  q, k, v = map(lambda t: t.to(dtype=dtype_to), (q, k, v))
+  _, attn_mask, attn_bias = attn_mask
+  # HACK: experience value
+  mask_value = 1e4 if dtype == torch.float16 else 1e6  # max_neg_value(q)
+  if exists(attn_mask) and exists(attn_bias):
+    attn_mask = torch.clamp(
+        attn_bias.masked_fill(~attn_mask, mask_value), min=-mask_value
+    ).to(dtype=dtype_to)
+  elif exists(attn_bias):
+    attn_mask = attn_bias
+  # See https://github.com/pytorch/pytorch/issues/96099
+  o = F.scaled_dot_product_attention(
+      q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, scale=scale
+  )
+  return o.to(dtype=dtype_from)
 
 
 # helper classes
@@ -262,7 +285,7 @@ class Attention(nn.Module):
       k, v = map(lambda t: repeat(t, '... r i d-> ... (r h) i d', h=h), (k, v))
       n = q.shape[-2]
       if exists(mask):
-        q = functional.masked_mean(value=q, mask=mask[..., None, : None], dim=-2)
+        q = functional.masked_mean(value=q, mask=mask[..., None, :, None], dim=-2)
       else:
         q = q.mean(dim=-2)
       q = repeat(q, '... h d -> ... h i d', i=n)
@@ -280,17 +303,14 @@ class Attention(nn.Module):
     # pytorch 2.0+
     if exists(attn_fn):
       dropout_p = self.dropout.p if self.training else 0.0
-      out = attn_fn(q, k, v, attn_mask=[mask, attn_bias], dropout_p=dropout_p)
-    # elif hasattr(F, 'scaled_dot_product_attention') and (
-    #       not exists(attn_bias) or not self.training):
-    #   if exists(attn_mask) and exists(attn_bias):
-    #     attn_mask = attn_bias.masked_fill(~attn_mask, mask_value)
-    #   elif exists(attn_bias):
-    #     attn_mask = attn_bias
-    #   # See: https://github.com/pytorch/pytorch/issues/96099
-    #   dropout_p = self.dropout.p if self.training else 0.0
-    #   out = F.scaled_dot_product_attention(
-    #       q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
+      out = attn_fn(
+          q,
+          k,
+          v,
+          attn_mask=[mask, attn_mask, attn_bias],
+          dropout_p=dropout_p,
+          scale=self.scale
+      )
     else:
       # scale
       q = tensor_mul(q, self.scale)
