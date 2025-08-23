@@ -331,6 +331,134 @@ def plddt_add_argument(parser):  # pylint: disable=redefined-outer-name
   return parser
 
 
+def chain_file_parse(f, chain_num=1):
+  for line in filter(lambda x: x, map(lambda x: x.strip(), f)):
+    entry_id, chains = decompose_pid(line)
+    chains = chains.split(',')
+    if len(chains) >= chain_num:
+      yield entry_id.lower(), chains
+
+
+def _rebuild(datum, pid_to_idx, entry_id, chains, seq_index_gap=128):
+  str_seq, seq_idx = '', []
+  seq_color, seq_entity, seq_sym = [], [], []
+  coord, coord_mask = [], []
+
+  seq_entity_map, seq_sym_map = defaultdict(int), defaultdict(int)
+
+  for i, asym_id in enumerate(chains):
+    pid = compose_pid(entry_id, asym_id)
+    data = datum[pid_to_idx[pid]]
+
+    str_seq += data['str_seq']
+    seq_idx.append(data['seq_index'] + i * seq_index_gap)
+
+    if data['str_seq'] not in seq_entity_map:
+      seq_entity_map[data['str_seq']] = len(seq_entity_map) + 1
+    seq_sym_map[data['str_seq']] += 1
+    seq_color.append(data['seq_color'] * (i + 1))
+    seq_entity.append(
+        torch.ones_like(data['seq_entity']) * seq_entity_map[data['str_seq']]
+    )
+    seq_sym.append(torch.ones_like(data['seq_sym']) * seq_sym_map[data['str_seq']])
+
+    coord.append(data['coord'])
+    coord_mask.append(data['coord_mask'])
+
+  for i, asym_id in enumerate(chains[1:]):
+    seq_idx[i + 1] += seq_idx[i][-1]
+
+  seq_idx = torch.cat(seq_idx, dim=0)
+  coord, coord_mask, seq_color, seq_entity, seq_sym = map(
+      lambda x: torch.cat(x, dim=0), (coord, coord_mask, seq_color, seq_entity, seq_sym)
+  )
+
+  domains = str_seq_index(seq_idx)
+  chains = ','.join(chains)
+  desc = f'chains:{chains} domains:{domains} length={len(str_seq)}'
+
+  return str_seq.upper(), desc, dict(
+      coord=coord,
+      coord_mask=coord_mask,
+      seq_color=seq_color,
+      seq_entity=seq_entity,
+      seq_sym=seq_sym
+  )
+
+
+def rebuild(data, args):  # pylint: disable=redefined-outer-name
+  logger.info('args - %s', args)
+  assert args.data_rm_mask_prob == 0.0
+  assert args.msa_as_seq_prob == 0.0
+  assert args.pseudo_linker_prob == 0.0
+
+  # feat_flags = dataset.FEAT_ALL & (~dataset.FEAT_MSA)
+  # if args.msa_required:
+  #   feat_flags = feat_flags | dataset.FEAT_MSA
+
+  pid_to_idx = {}
+  for idx, pid_list in enumerate(data.pids):
+    for k, pid in enumerate(pid_list):
+      pid_to_idx[pid] = (idx, k)
+
+  os.makedirs(os.path.join(args.output, 'fasta'), exist_ok=True)
+  os.makedirs(os.path.join(args.output, 'npz'), exist_ok=True)
+
+  mapping_dict = {}
+
+  for chain_file in args.chain_file:
+    with timing(f'processing {chain_file}', logger.info):
+      with open(chain_file, 'r') as f:
+        for entry_id, chains in chain_file_parse(f, args.chain_num):
+          seq, desc, npz = _rebuild(data, pid_to_idx, entry_id, chains)
+          fid = f'{args.entry_id_prefix}{entry_id}_{chains[0]}'
+          typ = f'mol:{args.chain_type}'
+          print(f'>{fid} {typ} {desc}')
+          print(f'{seq}\n')
+          if (seq, typ) in mapping_dict:
+            pk, sk_list = mapping_dict[(seq, typ)]
+            mapping_dict[(seq, typ)] = (pk, sk_list | set([fid]))
+          else:
+            mapping_dict[(seq, typ)] = (fid, set([fid]))
+            with open(os.path.join(args.output, 'fasta', f'{fid}.fasta'), 'w') as f:
+              f.write(f'>{fid} {typ} {desc}')
+              f.write(f'\n{seq}\n')
+
+          np.savez(os.path.join(args.output, 'npz', f'{fid}.npz'), **npz)
+
+  with timing('writiing mapping.idx', logger.info):
+    with open(os.path.join(args.output, 'mapping.idx'), 'w') as f:
+      for (_, chain_type), (pk, sk_list) in mapping_dict.items():
+        for sk in sk_list:
+          f.write(f'{pk}\t{sk}\t{chain_type}\n')
+
+  with timing('writiing name.idx', logger.info):
+    with open(os.path.join(args.output, 'name.idx'), 'w') as f:
+      for _, (_, sk_list) in mapping_dict.items():
+        sk_list = ' '.join(sk_list)
+        f.write(f'{sk_list}\n')
+
+
+def rebuild_add_argument(parser):  # pylint: disable=redefined-outer-name
+  parser.add_argument('chain_file', type=str, nargs='+', help='chain file.')
+
+  parser.add_argument(
+      '--chain_type',
+      type=str,
+      default='rna',
+      choices=['dna', 'rna'],
+      help='chain type.'
+  )
+  parser.add_argument('-o', '--output', type=str, default='.', help='output dir.')
+  parser.add_argument(
+      '--entry_id_prefix', type=str, default='', help='add `prefix` to pid.'
+  )
+  parser.add_argument(
+      '--chain_num', type=int, default=1, help='ignore #chains -lt CHAIN_NUM.'
+  )
+  return parser
+
+
 def contacts_func(args, feat, data, idx):  # pylint: disable=redefined-outer-name
   prot = data[idx]
   pid = prot['pid']
@@ -478,6 +606,7 @@ if __name__ == '__main__':
       'contacts': (contacts, contacts_add_argument),
       'plddt': (plddt, plddt_add_argument),
       'to_chain_group': (to_chain_group, to_chain_group_add_argument),
+      'rebuild': (rebuild, rebuild_add_argument),
       'to_fasta': (to_fasta, to_fasta_add_argument),
       'to_pdb': (to_pdb, to_pdb_add_argument),
   }

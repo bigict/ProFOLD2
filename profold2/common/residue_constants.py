@@ -16,11 +16,18 @@
 import os
 import collections
 import functools
+import json
 from typing import Mapping, List, Tuple
 
 import numpy as np
 
 # Internal import (35fd).
+from profold2.utils import env
+
+# molecule type
+PROT = 1
+DNA = 2
+RNA = 3
 
 # Distance from one CA to next CA [trans configuration: omega = 180].
 ca_ca = 3.80209737096
@@ -73,31 +80,92 @@ torsion_angles_atoms = {
             ['N', 'CA', 'CB', 'CG'], ['CA', 'CB', 'CG', 'CD1']],
     'VAL': [['CA', 'C', 'N', 'CA'], ['C', 'N', 'CA', 'C'], ['N', 'CA', 'C', 'O'],
             ['N', 'CA', 'CB', 'CG1']],
+    ' DA': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N9', 'C2']],
+    ' DC': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N1', 'C2']],
+    ' DG': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N9', 'C2']],
+    ' DT': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N1', 'C2']],
+    ' DX': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            []],
+    '  A': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N9', 'C2'], ['O4\'', 'C1\'', 'C2\'', 'C3\'']],
+    '  C': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N1', 'C2'], ['O4\'', 'C1\'', 'C2\'', 'C3\'']],
+    '  G': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N9', 'C2'], ['O4\'', 'C1\'', 'C2\'', 'C3\'']],
+    '  U': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            ['O4\'', 'C1\'', 'N1', 'C2'], ['O4\'', 'C1\'', 'C2\'', 'C3\'']],
+    '  X': [['P', 'OP2', 'OP1', 'P'], ['OP2', 'OP1', 'P', 'OP2'], [],
+            ['OP1', 'P', 'O5\'', 'C5\''], ['P', 'O5\'', 'C5\'', 'C4\''],
+            ['O5\'', 'C5\'', 'C4\'', 'C3\''], ['C5\'', 'C4\'', 'C3\'', 'O3\''],
+            ['C5\'', 'C4\'', 'O4\'', 'C1\''], ['C4\'', 'O4\'', 'C1\'', 'C2\''],
+            [],['O4\'', 'C1\'', 'C2\'', 'C3\'']],
 }
 
 # If chi angles given in fixed-length array, this matrix determines how to mask
 # them for each AA type. The order is as per restype_order (see below).
 torsion_angles_mask = [
-    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # ALA
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # ARG
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ASN
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ASP
-    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # CYS
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # GLN
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # GLU
-    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # GLY
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # HIS
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # ILE
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # LEU
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # LYS
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  # MET
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # PHE
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # PRO
-    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # SER
-    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # THR
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # TRP
-    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  # TYR
-    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],  # VAL
+    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ALA
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # ARG
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ASN
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ASP
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # CYS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLN
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLU
+    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLY
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # HIS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ILE
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # LEU
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # LYS
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # MET
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # PHE
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # PRO
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # SER
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # THR
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # TRP
+    [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # TYR
+    [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # VAL
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  #  DA
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  #  DC
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  #  DG
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],  #  DT
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],  #  DX
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #   A
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #   C
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #   G
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #   U
+    [1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0],  #   X
+    [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # UNK
 ]
 
 # chi angles dependencies:
@@ -110,54 +178,84 @@ torsion_angles_mask = [
 # |         |------ \chi_2 (5)
 # |                   |------- \chi_3 (6)
 # |                              |-------- \chi_4 (7)
+# |------ \alpha (4)
+#           |------ \beta (5)
+#                     |------- \gamma (6)
+#                                |-------- \eta (7)
+#                                |-------- \nu_2 (8)
+#                                            |-------- \nu_1 (9)
+#                                                        |-------- \chi (10)
+#                                                        |-------- \nu_0 (11)
+#
 
 torsion_angles_depend = [
-    [0, 0, 0, 0, 4, 5, 6],  # ALA
-    [0, 0, 0, 0, 4, 5, 6],  # ARG
-    [0, 0, 0, 0, 4, 5, 6],  # ASN
-    [0, 0, 0, 0, 4, 5, 6],  # ASP
-    [0, 0, 0, 0, 4, 5, 6],  # CYS
-    [0, 0, 0, 0, 4, 5, 6],  # GLN
-    [0, 0, 0, 0, 4, 5, 6],  # GLU
-    [0, 0, 0, 0, 4, 5, 6],  # GLY
-    [0, 0, 0, 0, 4, 5, 6],  # HIS
-    [0, 0, 0, 0, 4, 5, 6],  # ILE
-    [0, 0, 0, 0, 4, 5, 6],  # LEU
-    [0, 0, 0, 0, 4, 5, 6],  # LYS
-    [0, 0, 0, 0, 4, 5, 6],  # MET
-    [0, 0, 0, 0, 4, 5, 6],  # PHE
-    [0, 0, 0, 0, 4, 5, 6],  # PRO
-    [0, 0, 0, 0, 4, 5, 6],  # SER
-    [0, 0, 0, 0, 4, 5, 6],  # THR
-    [0, 0, 0, 0, 4, 5, 6],  # TRP
-    [0, 0, 0, 0, 4, 5, 6],  # TYR
-    [0, 0, 0, 0, 4, 5, 6],  # VAL
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # ALA
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # ARG
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # ASN
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # ASP
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # CYS
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # GLN
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # GLU
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # GLY
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # HIS
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # ILE
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # LEU
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # LYS
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # MET
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # PHE
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # PRO
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # SER
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # THR
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # TRP
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # TYR
+    [0, 0, 0, 0, 4, 5, 6, 0, 0, 0, 0],  # VAL
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 0],  #  DA
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 0],  #  DC
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 0],  #  DG
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 0],  #  DT
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 0, 0],  #  DX
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 9],  #   A
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 9],  #   C
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 9],  #   G
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 9, 9],  #   U
+    [0, 0, 0, 0, 4, 5, 6, 6, 8, 0, 9],  #   X
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # UNK
 ]
 
 # The following chi angles are pi periodic: they can be rotated by a multiple
 # of pi without affecting the structure.
 chi_pi_periodic = [
-    [0.0, 0.0, 0.0, 0.0],  # ALA
-    [0.0, 0.0, 0.0, 0.0],  # ARG
-    [0.0, 0.0, 0.0, 0.0],  # ASN
-    [0.0, 1.0, 0.0, 0.0],  # ASP
-    [0.0, 0.0, 0.0, 0.0],  # CYS
-    [0.0, 0.0, 0.0, 0.0],  # GLN
-    [0.0, 0.0, 1.0, 0.0],  # GLU
-    [0.0, 0.0, 0.0, 0.0],  # GLY
-    [0.0, 0.0, 0.0, 0.0],  # HIS
-    [0.0, 0.0, 0.0, 0.0],  # ILE
-    [0.0, 0.0, 0.0, 0.0],  # LEU
-    [0.0, 0.0, 0.0, 0.0],  # LYS
-    [0.0, 0.0, 0.0, 0.0],  # MET
-    [0.0, 1.0, 0.0, 0.0],  # PHE
-    [0.0, 0.0, 0.0, 0.0],  # PRO
-    [0.0, 0.0, 0.0, 0.0],  # SER
-    [0.0, 0.0, 0.0, 0.0],  # THR
-    [0.0, 0.0, 0.0, 0.0],  # TRP
-    [0.0, 1.0, 0.0, 0.0],  # TYR
-    [0.0, 0.0, 0.0, 0.0],  # VAL
-    [0.0, 0.0, 0.0, 0.0],  # UNK
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ALA
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ARG
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ASN
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ASP
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # CYS
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLN
+    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLU
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # GLY
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # HIS
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # ILE
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # LEU
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # LYS
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # MET
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # PHE
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # PRO
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # SER
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # THR
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # TRP
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # TYR
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # VAL
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #  DA
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #  DC
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #  DG
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #  DT
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #  DX
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #   A
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #   C
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #   G
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #   U
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  #   X
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # UNK
 ]
 
 # Atoms positions relative to the 8 rigid groups, defined by the pre-omega, phi,
@@ -381,6 +479,216 @@ rigid_group_atom_positions = {
         ['CG1', 4, (0.540, 1.429, -0.000)],
         ['CG2', 4, (0.533, -0.776, 1.203)],
     ],
+    ' DA': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559,  1.2489)],
+        ['C5\'', 4, (0.7411, -1.2354, 0.000)],
+        ['C4\'', 5, (0.5207,  1.4178, 0.000)],
+        ['O4\'', 6, (0.4804, -0.6610, -1.1947)],
+        ['C3\'', 6, (0.6388, 1.3889, 0.000)],
+        ['O3\'', 7, (0.4966, 1.3432, 0.000)],
+        ['C1\'', 8, (0.4913, 1.3316, 0.0000)],
+        ['C2\'', 9, (0.4167, 1.4603, 0.0000)],
+        ['N9', 9, (0.4467, -0.7474, -1.1746)],
+        ['N1', 10, (2.7960, 2.8816, 0.0000)],
+        ['C4', 10, (0.8119, 1.1084, 0.0000)],
+        ['N3', 10, (0.4328, 2.3976, 0.0000)],
+        ['C2', 10, (1.4957, 3.1983, 0.0000)],
+        ['C6', 10, (3.1433, 1.5760, 0.0000)],
+        ['C5', 10, (2.1084, 0.6255, 0.0000)],
+        ['N7', 10, (2.1145, -0.7627, 0.0000)],
+        ['C8', 10, (0.8438, -1.0825, 0.0000)],
+        ['N6', 10, (4.4402, 1.2598, 0.0000)],
+    ],
+    ' DC': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559,  1.2489)],
+        ['C5\'', 4, (0.7411, -1.2354, 0.000)],
+        ['C4\'', 5, (0.5207,  1.4178, 0.000)],
+        ['O4\'', 6, (0.4804, -0.6610, -1.1947)],
+        ['C3\'', 6, (0.6388, 1.3889, 0.000)],
+        ['O3\'', 7, (0.4966, 1.3432, 0.000)],
+        ['C1\'', 8, (0.4913, 1.3316, 0.0000)],
+        ['C2\'', 9, (0.4167, 1.4603, 0.0000)],
+        ['N1', 9, (0.4467, -0.7474, -1.1746)],
+        ['C2', 10, (0.6758, 1.2249, 0.0000)],
+        ['O2', 10, (0.0158, 2.2756, 0.0000)],
+        ['N3', 10, (2.0283, 1.2334, 0.0000)],
+        ['C4', 10, (2.7022, 0.0815, 0.0000)],
+        ['N4', 10, (4.0356, 0.1372, 0.0000)],
+        ['C5', 10, (2.0394, -1.1794, 0.0000)],
+        ['C6', 10, (0.7007, -1.1745, 0.0000)],
+    ],
+    ' DG': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7411, -1.2354, 0.000)],
+        ['C4\'', 5, (0.5207,  1.4178, 0.000)],
+        ['O4\'', 6, (0.4804, -0.6610, -1.1947)],
+        ['C3\'', 6, (0.6388, 1.3889, 0.000)],
+        ['O3\'', 7, (0.4966, 1.3432, 0.000)],
+        ['C1\'', 8, (0.4913, 1.3316, 0.0000)],
+        ['C2\'', 9, (0.4167, 1.4603, 0.0000)],
+        ['N9', 9, (0.4467, -0.7474, -1.1746)],
+        ['N1', 10, (2.7493, 2.8397, 0.0000)],
+        ['C4', 10, (0.8171, 1.1043, 0.0000)],
+        ['N3', 10, (0.4110, 2.3918, 0.0000)],
+        ['C2', 10, (1.4330, 3.2319, 0.0000)],
+        ['C6', 10, (3.1894, 1.5195, 0.0000)],
+        ['C5', 10, (2.1029, 0.6070, 0.0000)],
+        ['N7', 10, (2.0942, -0.7800, 0.0000)],
+        ['C8', 10, (0.8285, -1.0956, 0.0000)],
+        ['N2', 10, (1.2085, 4.5537, 0.0000)],
+        ['O6', 10, (4.4017, 1.2743, 0.0000)],
+    ],
+    ' DT': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559,  1.2489)],
+        ['C5\'', 4, (0.7411, -1.2354, 0.000)],
+        ['C4\'', 5, (0.5207,  1.4178, 0.000)],
+        ['O4\'', 6, (0.4804, -0.6610, -1.1947)],
+        ['C3\'', 6, (0.6388, 1.3889, 0.000)],
+        ['O3\'', 7, (0.4966, 1.3432, 0.000)],
+        ['C1\'', 8, (0.4913, 1.3316, 0.0000)],
+        ['C2\'', 9, (0.4167, 1.4603, 0.0000)],
+        ['N1', 9, (0.4467, -0.7474, -1.1746)],
+        ['C2', 10, (0.6495, 1.2140, 0.0000)],
+        ['O2', 10, (0.0636, 2.2854, 0.0000)],
+        ['N3', 10, (2.0191, 1.1297, 0.0000)],
+        ['C4', 10, (2.7859, -0.0198, 0.0000)],
+        ['O4', 10, (4.0113, 0.0622, 0.0000)],
+        ['C5', 10, (2.0397, -1.2580, 0.0000)],
+        ['C7', 10, (2.7845, -2.5550, 0.0000)],
+        ['C6', 10, (0.7021, -1.1863, 0.0000)],
+    ],
+    ' DX': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7411, -1.2354, 0.000)],
+        ['C4\'', 5, (0.5207, 1.4178, 0.000)],
+        ['O4\'', 6, (0.4804, -0.6610, -1.1947)],
+        ['C3\'', 6, (0.6388, 1.3889, 0.000)],
+        ['O3\'', 7, (0.4966, 1.3432, 0.000)],
+        ['C1\'', 8, (0.4913, 1.3316, 0.0000)],
+        ['C2\'', 9, (0.4167, 1.4603, 0.0000)],
+    ],
+    '  A': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7289, 1.2185, 0.000)],
+        ['C4\'', 5, (0.5541,  1.4027, 0.000)],
+        ['O4\'', 6, (0.4914, -0.6338, -1.2098)],
+        ['C3\'', 6, (0.6673, 1.3669, 0.000)],
+        ['O3\'', 7, (0.5548, 1.3039, 0.000)],
+        ['C1\'', 8, (0.4828, 1.3277, 0.0000)],
+        ['C2\'', 9, (0.4641, 1.4573, 0.0000)],
+        ['O2\'', 11, (0.4613, -0.6189, 1.1921)],
+        ['N9', 9, (0.4722, -0.7339, -1.1894)],
+        ['N1', 10, (2.7963, 2.8824, 0.0000)],
+        ['C2', 10, (1.4955, 3.2007, 0.0000)],
+        ['N3', 10, (0.4333, 2.3980, 0.0000)],
+        ['C4', 10, (0.8127, 1.1078, 0.0000)],
+        ['C5', 10, (2.1082, 0.6254, 0.0000)],
+        ['C6', 10, (3.1432, 1.5774, 0.0000)],
+        ['N6', 10, (4.4400, 1.2609, 0.0000)],
+        ['N7', 10, (2.1146, -0.7630, 0.0000)],
+        ['C8', 10, (0.8442, -1.0830, 0.0000)],
+    ],
+    '  C': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7289, 1.2185, 0.000)],
+        ['C4\'', 5, (0.5541,  1.4027, 0.000)],
+        ['O4\'', 6, (0.4914, -0.6338, -1.2098)],
+        ['C3\'', 6, (0.6673, 1.3669, 0.000)],
+        ['O3\'', 7, (0.5548, 1.3039, 0.000)],
+        ['C1\'', 8, (0.4828, 1.3277, 0.0000)],
+        ['C2\'', 9, (0.4641, 1.4573, 0.0000)],
+        ['O2\'', 11, (0.4613, -0.6189, 1.1921)],
+        ['N1', 9, (0.4722, -0.7339, -1.1894)],
+        ['C2', 10, (0.6650, 1.2325, 0.0000)],
+        ['O2', 10, (-0.0001, 2.2799, 0.0000)],
+        ['N3', 10, (2.0175, 1.2603, 0.0000)],
+        ['C4', 10, (2.7090, 0.1210, 0.0000)],
+        ['N4', 10, (4.0423, 0.1969, 0.0000)],
+        ['C5', 10, (2.0635, -1.1476, 0.0000)],
+        ['C6', 10, (0.7250, -1.1627, 0.0000)],
+    ],
+    '  G': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7289, 1.2185, 0.000)],
+        ['C4\'', 5, (0.5541,  1.4027, 0.000)],
+        ['O4\'', 6, (0.4914, -0.6338, -1.2098)],
+        ['C3\'', 6, (0.6673, 1.3669, 0.000)],
+        ['O3\'', 7, (0.5548, 1.3039, 0.000)],
+        ['C1\'', 8, (0.4828, 1.3277, -0.0000)],
+        ['C2\'', 9, (0.4641, 1.4573, 0.0000)],
+        ['O2\'', 11, (0.4613, -0.6189, 1.1921)],
+        ['N9', 9, (0.4722, -0.7339, -1.1894)],
+        ['N1', 10, (2.7458, 2.8461, 0.0000)],
+        ['C2', 10, (1.4286, 3.2360, 0.0000)],
+        ['N2', 10, (1.1989, 4.5575, 0.0000)],
+        ['N3', 10, (0.4087, 2.3932, 0.0000)],
+        ['C4', 10, (0.8167, 1.1068, 0.0000)],
+        ['C5', 10, (2.1036, 0.6115, 0.0000)],
+        ['C6', 10, (3.1883, 1.5266, 0.0000)],
+        ['O6', 10, (4.4006, 1.2842, 0.0000)],
+        ['N7', 10, (2.0980, -0.7759, 0.0000)],
+        ['C8', 10, (0.8317, -1.0936, 0.0000)],
+    ],
+    '  U': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7289, 1.2185, 0.000)],
+        ['C4\'', 5, (0.5541,  1.4027, 0.000)],
+        ['O4\'', 6, (0.4914, -0.6338, -1.2098)],
+        ['C3\'', 6, (0.6673, 1.3669, 0.000)],
+        ['O3\'', 7, (0.5548, 1.3039, 0.000)],
+        ['C1\'', 8, (0.4828, 1.3277, 0.0000)],
+        ['C2\'', 9, (0.4641, 1.4573, 0.0000)],
+        ['O2\'', 11, (0.4613, -0.6189, 1.1921)],
+        ['N1', 9, (0.4722, -0.7339, -1.1894)],
+        ['C2', 10, (0.6307, 1.2305, 0.0000)],
+        ['O2', 10, (0.0260, 2.2886, 0.0000)],
+        ['N3', 10, (2.0031, 1.1816, 0.0000)],
+        ['C4', 10, (2.7953, 0.0532, 0.0000)],
+        ['O4', 10, (4.0212, 0.1751, 0.0000)],
+        ['C5', 10, (2.0746, -1.1833, 0.0000)],
+        ['C6', 10, (0.7378, -1.1648, 0.0000)],
+    ],
+    '  X': [
+        ['OP1', 0, (-0.7319, 1.2920, 0.000)],
+        ['P', 0, (0.000, 0.000, 0.000)],
+        ['OP2', 0, (1.4855, 0.000, 0.000)],
+        ['O5\'', 0, (-0.4948, -0.8559, 1.2489)],
+        ['C5\'', 4, (0.7289, 1.2185, 0.000)],
+        ['C4\'', 5, (0.5541,  1.4027, 0.000)],
+        ['O4\'', 6, (0.4914, -0.6338, -1.2098)],
+        ['C3\'', 6, (0.6673, 1.3669, 0.000)],
+        ['O3\'', 7, (0.5548, 1.3039, 0.000)],
+        ['C1\'', 8, (0.4828, 1.3277, 0.0000)],
+        ['C2\'', 9, (0.4641, 1.4573, 0.0000)],
+        ['O2\'', 11, (0.4613, -0.6189, 1.1921)],
+    ],
 }
 
 # A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -548,7 +856,7 @@ atom_types = [
 ]
 atom_order = {atom_type: i for i, atom_type in enumerate(atom_types)}
 atom_type_num = len(atom_types)  # := 37.
-atom14_type_num = 14  # := 14.
+atom14_type_num = env('profold2_atom14_type_num', defval=23, dtype=int)  # := 14.
 
 # A compact atom encoding with 14 columns
 # pylint: disable=line-too-long
@@ -574,28 +882,120 @@ restype_name_to_atom14_names = {
     'TRP': ['N', 'CA', 'C', 'O', 'CB', 'CG',  'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2'],
     'TYR': ['N', 'CA', 'C', 'O', 'CB', 'CG',  'CD1', 'CD2', 'CE1', 'CE2', 'CZ',  'OH',  '',    ''],
     'VAL': ['N', 'CA', 'C', 'O', 'CB', 'CG1', 'CG2', '',    '',    '',    '',    '',    '',    ''],
+    ' DA': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','C1\'','N1',  'C2', 'N3', 'C4', 'C5', 'C6', 'N6', 'N7', 'C8', 'N9', '',   ''],
+    ' DC': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','C1\'','N1',  'C2', 'O2', 'N3', 'C4', 'C5', 'C6', 'N4', '',   '',   '',   ''],
+    ' DG': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','C1\'','N1',  'C2', 'N2', 'N3', 'C4', 'C5', 'C6', 'O6', 'N7', 'C8', 'N9', ''],
+    ' DT': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','C1\'','N1',  'C2', 'O2', 'N3', 'C4', 'O4', 'C5', 'C6', 'C7', '',   '',   ''],
+    ' DX': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','C1\'','N1',  'C2', '',   '',   '',   '',   '',   '',   '',   '',   '',   ''],
+    '  A': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','O2\'','C1\'','N1', 'C2', 'N3', 'C4', 'C5', 'C6', 'N6', 'N7', 'C8', 'N9', ''],
+    '  C': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','O2\'','C1\'','N1', 'C2', 'O2', 'N3', 'C4', 'C5', 'C6', 'N4', '',   '',   ''],
+    '  G': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','O2\'','C1\'','N1', 'C2', 'N2', 'N3', 'C4', 'C5', 'C6', 'O6', 'N7', 'C8', 'N9'],
+    '  U': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','O2\'','C1\'','N1', 'C2', 'O2', 'N3', 'C4', 'O4', 'C5', 'C6', '',   '',   ''],
+    '  X': ['OP1', 'P', 'OP2', 'O5\'', 'C5\'','C4\'','O4\'','C3\'','O3\'','C2\'','O2\'','C1\'','N1', 'C2', '',   '',   '',   '',   '',   '',   '',   '',   ''],
     'UNK': ['N', 'CA', 'C', 'O',  '',   '',    '',   '',    '',    '',    '',    '',    '',    ''],
 }
 # pylint: enable=line-too-long
 # pylint: enable=bad-whitespace
 
+restype_list = set(
+    env(
+        'profold2_restype_list', defval=[PROT, DNA, RNA], dtype=json.loads
+    )
+)
+assert restype_list
+
 # This is the standard residue order when coding AA type as a number.
 # Reproduce it by taking 3-letter AA codes and sorting them alphabetically.
 restypes = (
     'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
-    'S', 'T', 'W', 'Y', 'V'
+    'S', 'T', 'W', 'Y', 'V', 'A', 'C', 'G', 'T', 'X', 'A', 'C', 'G', 'U', 'X'
 )
-restype_order = {restype: i for i, restype in enumerate(restypes)}
+restypes = ()
+if PROT in restype_list:
+  restypes = restypes + (
+    'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
+    'S', 'T', 'W', 'Y', 'V'
+  )
+if DNA in restype_list:
+  restypes = restypes + ('A', 'C', 'G', 'T', 'X')
+if RNA in restype_list:
+  restypes = restypes + ('A', 'C', 'G', 'U', 'X')
+
+restype_from_idx = -1
+if PROT in restype_list:
+  prot_from_idx, prot_to_idx = restype_from_idx + 1, restype_from_idx + 20
+  restype_from_idx = prot_to_idx
+else:
+  prot_from_idx, prot_to_idx = -1, -1
+
+if DNA in restype_list:
+  dna_from_idx, dna_to_idx = restype_from_idx + 1, restype_from_idx + 5  # with X
+  restype_from_idx = dna_to_idx
+else:
+  dna_from_idx, dna_to_idx = -1, -1
+
+if RNA in restype_list:
+  rna_from_idx, rna_to_idx = restype_from_idx + 1, restype_from_idx + 5  # with X
+  restype_from_idx = rna_to_idx
+else:
+  rna_from_idx, rna_to_idx = -1, -1
+
+if PROT in restype_list:
+  restype_from_idx += 1  # with X
+
+if PROT in restype_list:
+  prot_gap_idx = restype_from_idx + 1
+  restype_from_idx = prot_gap_idx
+else:
+  prot_gap_idx = -1
+
+if DNA in restype_list:
+  dna_gap_idx = restype_from_idx + 1
+  restype_from_idx = dna_gap_idx
+else:
+  dna_gap_idx = -1
+
+if RNA in restype_list:
+  rna_gap_idx = restype_from_idx + 1
+  restype_from_idx = rna_gap_idx
+else:
+  rna_gap_idx = -1
+del restype_from_idx
+
+def moltype(mol_idx):
+  if dna_from_idx <= mol_idx <= dna_to_idx or mol_idx == dna_gap_idx:    # dna gap .
+    return DNA
+  elif rna_from_idx <= mol_idx <= rna_to_idx or mol_idx == rna_gap_idx:  # rna gap *
+    return RNA
+  return PROT
+
+
+restype_order = {(restype, moltype(i)): i for i, restype in enumerate(restypes)}
 restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
-restypes_with_x = restypes + ('X', )
-restype_order_with_x = {restype: i for i, restype in enumerate(restypes_with_x)}
+
+def is_aa(restype):
+  return moltype(restype) == PROT
+
+
+restypes_with_x = restypes + ('X', ) if PROT in restype_list else restypes
+restype_order_with_x = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x)
+}
+
+
+bptypes = (
+    'cWW', 'tWW', 'cWH', 'tWH', 'cWS', 'tWS', 'cHH', 'tHH', 'cHS', 'tHS', 'cSS', 'tSS'
+)
+bptype_order = {bptype: i for i, bptype in enumerate(bptypes)}
 
 
 def sequence_to_onehot(
     sequence: str,
     mapping: Mapping[str, int],
+    mol_type: int = PROT,
     map_unknown_to_x: bool = False
 ) -> np.ndarray:
   """Maps the given sequence into a one-hot encoded matrix.
@@ -629,37 +1029,47 @@ def sequence_to_onehot(
   for aa_index, aa_type in enumerate(sequence):
     if map_unknown_to_x:
       if aa_type.isalpha() and aa_type.isupper():
-        aa_id = mapping.get(aa_type, mapping['X'])
+        aa_id = mapping.get((aa_type, mol_type), mapping[('X', mol_type)])
       else:
         raise ValueError(f'Invalid character in the sequence: {aa_type}')
     else:
-      aa_id = mapping[aa_type]
+      aa_id = mapping[(aa_type, mol_type)]
     one_hot_arr[aa_index, aa_id] = 1
 
   return one_hot_arr
 
 
 restype_1to3 = {
-    'A': 'ALA',
-    'R': 'ARG',
-    'N': 'ASN',
-    'D': 'ASP',
-    'C': 'CYS',
-    'Q': 'GLN',
-    'E': 'GLU',
-    'G': 'GLY',
-    'H': 'HIS',
-    'I': 'ILE',
-    'L': 'LEU',
-    'K': 'LYS',
-    'M': 'MET',
-    'F': 'PHE',
-    'P': 'PRO',
-    'S': 'SER',
-    'T': 'THR',
-    'W': 'TRP',
-    'Y': 'TYR',
-    'V': 'VAL',
+    ('A', PROT): 'ALA',
+    ('R', PROT): 'ARG',
+    ('N', PROT): 'ASN',
+    ('D', PROT): 'ASP',
+    ('C', PROT): 'CYS',
+    ('Q', PROT): 'GLN',
+    ('E', PROT): 'GLU',
+    ('G', PROT): 'GLY',
+    ('H', PROT): 'HIS',
+    ('I', PROT): 'ILE',
+    ('L', PROT): 'LEU',
+    ('K', PROT): 'LYS',
+    ('M', PROT): 'MET',
+    ('F', PROT): 'PHE',
+    ('P', PROT): 'PRO',
+    ('S', PROT): 'SER',
+    ('T', PROT): 'THR',
+    ('W', PROT): 'TRP',
+    ('Y', PROT): 'TYR',
+    ('V', PROT): 'VAL',
+    ('A', DNA ): ' DA',
+    ('C', DNA ): ' DC',
+    ('G', DNA ): ' DG',
+    ('T', DNA ): ' DT',
+    ('X', DNA ): ' DX',
+    ('A', RNA ): '  A',
+    ('C', RNA ): '  C',
+    ('G', RNA ): '  G',
+    ('U', RNA ): '  U',
+    ('X', RNA ): '  X',
 }
 
 # NB: restype_3to1 differs from Bio.PDB.protein_letters_3to1 by being a simple
@@ -670,8 +1080,11 @@ restype_3to1 = {v: k for k, v in restype_1to3.items()}
 
 # Define a restype name for all unknown residues.
 unk_restype = 'UNK'
+unk_dnatype = ' DX'
+unk_rnatype = '  X'
 
-resnames = [restype_1to3[r] for r in restypes] + [unk_restype]
+resnames = [restype_1to3[(r, moltype(i))]
+            for i, r in enumerate(restypes)] + [(unk_restype, PROT)]
 resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 
 # The mapping here uses hhblits convention, so that B is mapped to D, J and O
@@ -681,65 +1094,140 @@ resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 # "-" representing a missing amino acid in an alignment.  The id for these
 # codes is put at the end (20 and 21) so that they can easily be ignored if
 # desired.
-HHBLITS_AA_TO_ID = {
-    'A': 0,
-    'B': 2,
-    'C': 1,
-    'D': 2,
-    'E': 3,
-    'F': 4,
-    'G': 5,
-    'H': 6,
-    'I': 7,
-    'J': 20,
-    'K': 8,
-    'L': 9,
-    'M': 10,
-    'N': 11,
-    'O': 20,
-    'P': 12,
-    'Q': 13,
-    'R': 14,
-    'S': 15,
-    'T': 16,
-    'U': 1,
-    'V': 17,
-    'W': 18,
-    'X': 20,
-    'Y': 19,
-    'Z': 3,
-    '-': 21,
-}
+HHBLITS_AA_TO_ID = {}
+if PROT in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', PROT): prot_from_idx + 0,
+    ('B', PROT): prot_from_idx + 2,
+    ('C', PROT): prot_from_idx + 1,
+    ('D', PROT): prot_from_idx + 2,
+    ('E', PROT): prot_from_idx + 3,
+    ('F', PROT): prot_from_idx + 4,
+    ('G', PROT): prot_from_idx + 5,
+    ('H', PROT): prot_from_idx + 6,
+    ('I', PROT): prot_from_idx + 7,
+    ('J', PROT): unk_restype_index,
+    ('K', PROT): prot_from_idx + 8,
+    ('L', PROT): prot_from_idx + 9,
+    ('M', PROT): prot_from_idx + 10,
+    ('N', PROT): prot_from_idx + 11,
+    ('O', PROT): unk_restype_index,
+    ('P', PROT): prot_from_idx + 12,
+    ('Q', PROT): prot_from_idx + 13,
+    ('R', PROT): prot_from_idx + 14,
+    ('S', PROT): prot_from_idx + 15,
+    ('T', PROT): prot_from_idx + 16,
+    ('U', PROT): prot_from_idx + 1,
+    ('V', PROT): prot_from_idx + 17,
+    ('W', PROT): prot_from_idx + 18,
+    ('X', PROT): unk_restype_index,
+    ('Y', PROT): prot_from_idx + 19,
+    ('Z', PROT): prot_from_idx + 3,
+    ('-', PROT): prot_gap_idx,
+  })
+if DNA in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', DNA ): dna_from_idx + 0,
+    ('C', DNA ): dna_from_idx + 1,
+    ('G', DNA ): dna_from_idx + 2,
+    ('T', DNA ): dna_from_idx + 3,
+    ('U', DNA ): dna_from_idx + 3,
+    ('X', DNA ): dna_from_idx + 4,
+    ('B', DNA ): dna_from_idx + 4,
+    ('D', DNA ): dna_from_idx + 4,
+    ('H', DNA ): dna_from_idx + 4,
+    ('K', DNA ): dna_from_idx + 4,
+    ('M', DNA ): dna_from_idx + 4,
+    ('N', DNA ): dna_from_idx + 4,
+    ('R', DNA ): dna_from_idx + 4,
+    ('S', DNA ): dna_from_idx + 4,
+    ('V', DNA ): dna_from_idx + 4,
+    ('W', DNA ): dna_from_idx + 4,
+    ('Y', DNA ): dna_from_idx + 4,
+    ('-', DNA ): dna_gap_idx,
+  })
+if RNA in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', RNA ): rna_from_idx + 0,
+    ('C', RNA ): rna_from_idx + 1,
+    ('G', RNA ): rna_from_idx + 2,
+    ('U', RNA ): rna_from_idx + 3,
+    ('T', RNA ): rna_from_idx + 3,
+    ('X', RNA ): rna_from_idx + 4,
+    ('B', RNA ): rna_from_idx + 4,
+    ('D', RNA ): rna_from_idx + 4,
+    ('H', RNA ): rna_from_idx + 4,
+    ('K', RNA ): rna_from_idx + 4,
+    ('M', RNA ): rna_from_idx + 4,
+    ('N', RNA ): rna_from_idx + 4,
+    ('R', RNA ): rna_from_idx + 4,
+    ('S', RNA ): rna_from_idx + 4,
+    ('V', RNA ): rna_from_idx + 4,
+    ('W', RNA ): rna_from_idx + 4,
+    ('Y', RNA ): rna_from_idx + 4,
+    ('-', RNA ): rna_gap_idx,
+  })
 
 # Partial inversion of HHBLITS_AA_TO_ID.
-ID_TO_HHBLITS_AA = {
-    0: 'A',
-    1: 'C',  # Also U.
-    2: 'D',  # Also B.
-    3: 'E',  # Also Z.
-    4: 'F',
-    5: 'G',
-    6: 'H',
-    7: 'I',
-    8: 'K',
-    9: 'L',
-    10: 'M',
-    11: 'N',
-    12: 'P',
-    13: 'Q',
-    14: 'R',
-    15: 'S',
-    16: 'T',
-    17: 'V',
-    18: 'W',
-    19: 'Y',
-    20: 'X',  # Includes J and O.
-    21: '-',
-}
+ID_TO_HHBLITS_AA = {}
+if PROT in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    prot_from_idx +  0: ('A', PROT),
+    prot_from_idx +  1: ('C', PROT),  # Also U.
+    prot_from_idx +  2: ('D', PROT),  # Also B.
+    prot_from_idx +  3: ('E', PROT),  # Also Z.
+    prot_from_idx +  4: ('F', PROT),
+    prot_from_idx +  5: ('G', PROT),
+    prot_from_idx +  6: ('H', PROT),
+    prot_from_idx +  7: ('I', PROT),
+    prot_from_idx +  8: ('K', PROT),
+    prot_from_idx +  9: ('L', PROT),
+    prot_from_idx + 10: ('M', PROT),
+    prot_from_idx + 11: ('N', PROT),
+    prot_from_idx + 12: ('P', PROT),
+    prot_from_idx + 13: ('Q', PROT),
+    prot_from_idx + 14: ('R', PROT),
+    prot_from_idx + 15: ('S', PROT),
+    prot_from_idx + 16: ('T', PROT),
+    prot_from_idx + 17: ('V', PROT),
+    prot_from_idx + 18: ('W', PROT),
+    prot_from_idx + 19: ('Y', PROT),
+    unk_restype_index:  ('X', PROT),  # Includes J and O.
+    prot_gap_idx:       ('-', PROT),
+  })
+if DNA in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    dna_from_idx + 0: ('A', DNA),
+    dna_from_idx + 1: ('C', DNA),  # Also U.
+    dna_from_idx + 2: ('G', DNA),  # Also B.
+    dna_from_idx + 3: ('T', DNA),  # Also T.
+    dna_from_idx + 4: ('X', DNA),
+    dna_gap_idx:      ('.', DNA),
+  })
+if RNA in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    rna_from_idx + 0: ('A', RNA),
+    rna_from_idx + 1: ('C', RNA),  # Also U.
+    rna_from_idx + 2: ('G', RNA),  # Also B.
+    rna_from_idx + 3: ('U', RNA),  # Also T.
+    rna_from_idx + 4: ('X', RNA),
+    rna_gap_idx:      ('*', RNA),
+  })
 
-restypes_with_x_and_gap = restypes + ('X', '-')
+restypes_gap = ()
+if PROT in restype_list:
+  restypes_gap = restypes_gap + ('-', )
+if DNA in restype_list:
+  restypes_gap = restypes_gap + ('.', )
+if RNA in restype_list:
+  restypes_gap = restypes_gap + ('*', )
+restypes_with_x_and_gap = restypes_with_x + restypes_gap
+restype_order_with_x_and_gap = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x_and_gap)
+}
 MAP_HHBLITS_AATYPE_TO_OUR_AATYPE = tuple(
-    restypes_with_x_and_gap.index(ID_TO_HHBLITS_AA[i])
+    restype_order_with_x_and_gap[ID_TO_HHBLITS_AA[i]]
     for i in range(len(restypes_with_x_and_gap))
 )
 
@@ -749,9 +1237,9 @@ def _make_standard_atom_mask() -> np.ndarray:
   # +1 to account for unknown (all 0s).
   mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.int32)
   for restype, restype_letter in enumerate(restypes):
-    restype_name = restype_1to3[restype_letter]
+    restype_name = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[restype_name]  # pylint: disable=redefined-outer-name
-    for atom_type, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
+    for atom_type, atom_name in enumerate(atom_list[:atom14_type_num]):  # pylint: disable=redefined-outer-name
       if atom_name:
         mask[restype, atom_type] = 1
   return mask
@@ -760,12 +1248,14 @@ def _make_standard_atom_mask() -> np.ndarray:
 STANDARD_ATOM_MASK = _make_standard_atom_mask()
 
 
-chi_angles_num = 7
+chi_angles_num = env('profold2_chi_angles_num', defval=11, dtype=int)
 chi_angles_atom14_indices = np.zeros(
     (restype_num + 1, chi_angles_num, 4), dtype=np.int32
 )
 chi_angles_atom14_exists = np.zeros((restype_num + 1, chi_angles_num), dtype=np.bool_)
 for res_name, res_chi_angles in torsion_angles_atoms.items():
+  if res_name not in resname_to_idx:
+    continue
   res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
 
@@ -773,6 +1263,9 @@ for res_name, res_chi_angles in torsion_angles_atoms.items():
   #
   # omega/phi/psi(prot) = 1-3
   # chi_1-4(prot) = 4-7
+  #
+  # alpha/beta/gamma/delta(na) = 4-7
+  # nu2/nu1/chi/nu0(na) = 8-11
   #
 
   # torsion angles
@@ -842,7 +1335,7 @@ def _make_rigid_group_constants():
 
   # Fill the arrays above.
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     for atomname, group_idx, atom_position in rigid_group_atom_positions[resname]:
       if group_idx > chi_angles_num:
         continue
@@ -858,7 +1351,7 @@ def _make_rigid_group_constants():
       restype_atom14_rigid_group_positions[restype, atom14idx, :] = atom_position
 
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_positions = {
         name: np.array(pos)
         for name, _, pos in rigid_group_atom_positions[resname]
@@ -866,9 +1359,14 @@ def _make_rigid_group_constants():
 
     # backbone to backbone is the identity transform
     restype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
-    restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
-        to_atom14_index(resname, ['C', 'CA', 'N'])
-    )
+    if moltype(restype) == PROT:
+      restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
+          to_atom14_index(resname, ['C', 'CA', 'N'])
+      )
+    else:
+      restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
+          to_atom14_index(resname, ['OP2', 'P', 'OP1'])
+      )
     restype_rigid_group_mask[restype, 0] = True
     restype_rigid_group_depend[restype, 0] = torsion_angles_depend[restype][0]
 
@@ -876,28 +1374,30 @@ def _make_rigid_group_constants():
     restype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
 
     # phi-frame to backbone
-    mat = _make_rigid_transformation_4x4(
-        ex=atom_positions['N'] - atom_positions['CA'],
-        ey=np.array([1., 0., 0.]),
-        translation=atom_positions['N']
-    )
-    restype_rigid_group_default_frame[restype, 2, :, :] = mat
+    if moltype(restype) == PROT:
+      mat = _make_rigid_transformation_4x4(
+          ex=atom_positions['N'] - atom_positions['CA'],
+          ey=np.array([1., 0., 0.]),
+          translation=atom_positions['N']
+      )
+      restype_rigid_group_default_frame[restype, 2, :, :] = mat
     restype_rigid_group_depend[restype, 2] = torsion_angles_depend[restype][1]
 
     # psi-frame to backbone
-    mat = _make_rigid_transformation_4x4(
-        ex=atom_positions['C'] - atom_positions['CA'],
-        ey=atom_positions['CA'] - atom_positions['N'],
-        translation=atom_positions['C']
-    )
-    restype_rigid_group_default_frame[restype, 3, :, :] = mat
-    restype_rigid_group_atom14_idx[restype, 3, :] = np.array(
-        to_atom14_index(resname, ['CA', 'C', 'O'])
-    )
-    restype_rigid_group_mask[restype, 3] = True
-    restype_rigid_group_depend[restype, 3] = torsion_angles_depend[restype][2]
+    if moltype(restype) == PROT and torsion_angles_mask[restype][2]:
+      mat = _make_rigid_transformation_4x4(
+          ex=atom_positions['C'] - atom_positions['CA'],
+          ey=atom_positions['CA'] - atom_positions['N'],
+          translation=atom_positions['C']
+      )
+      restype_rigid_group_atom14_idx[restype, 3, :] = np.array(
+          to_atom14_index(resname, ['CA', 'C', 'O'])
+      )
+      restype_rigid_group_default_frame[restype, 3, :, :] = mat
+      restype_rigid_group_mask[restype, 3] = True
+      restype_rigid_group_depend[restype, 3] = torsion_angles_depend[restype][2]
 
-    # chi1-frame to backbone
+    # chi_1(prot),alpha(na)-frame to backbone
     if torsion_angles_mask[restype][3]:
       base_atom_names = torsion_angles_atoms[resname][3]
       base_atom_positions = [atom_positions[name] for name in base_atom_names]
@@ -945,7 +1445,10 @@ atom14_van_der_waals_radius = np.zeros(
 
 def _make_atom14_van_der_waals_radius():
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
     for atom_idx, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if not atom_name:
@@ -970,7 +1473,10 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor
   )
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
 
     # create lower and upper bounds for clashes

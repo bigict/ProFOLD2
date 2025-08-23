@@ -75,6 +75,11 @@ def fix_coord(residue_id, coord, coord_mask, bfactors=None):
 
 
 _seq_index_pattern = '(\\d+)-(\\d+)'
+_seq_type_pattern = 'mol:((protein|rna|dna)(,(protein|rna|dna))*)'
+seq_type_dict = {
+    'protein': residue_constants.PROT,
+    'rna': residue_constants.RNA,
+    'dna': residue_constants.DNA}
 
 
 def seq_index_split(text):
@@ -137,6 +142,18 @@ def parse_seq_index(description, input_sequence, seq_index):
       p, q = m, n
 
   return seq_index
+
+
+def parse_seq_type(description):
+  fields = description.split()
+  for f in fields[1:]:
+    r = re.match(f'.*{_seq_type_pattern}.*', f)
+    if r:
+      seq_types = r.group(1).split(',')
+      if len(seq_types) == 1:
+        return seq_types[0]
+      return seq_types
+  return 'protein'
 
 
 def weights_from_file(filename_list):
