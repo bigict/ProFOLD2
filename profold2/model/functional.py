@@ -40,9 +40,10 @@ def squared_cdist(x, y, keepdim=False):
   )
 
 
-def masked_mean(mask, value, dim=None, epsilon=1e-10):
+def masked_mean(mask, value, dim=None, keepdim=False, epsilon=1e-10):
   if exists(dim):
-    return torch.sum(mask * value, dim=dim) / (epsilon + torch.sum(mask, dim=dim))
+    return torch.sum(mask * value, dim=dim, keepdim=keepdim
+                    ) / (epsilon + torch.sum(mask, dim=dim, keepdim=keepdim))
   return torch.sum(mask * value) / (epsilon + torch.sum(mask))
 
 
@@ -370,7 +371,7 @@ def pae(logits, breaks, mask=None, return_mae=False):
 
   expected_align_error = torch.sum(probs * bin_centers, dim=-1)
   if exists(mask):
-    pair_mask = mask[..., : None] * mask[..., None, :]
+    pair_mask = mask[..., :, None] * mask[..., None, :]
     expected_align_error = expected_align_error * pair_mask
 
   if return_mae:  # return max aligned error
