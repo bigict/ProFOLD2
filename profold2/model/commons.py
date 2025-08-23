@@ -117,7 +117,7 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
       shape = list(x.shape)
       assert len(shape) >= 3  # (... m i d)
       # shared across rows(-3) and columns(-2)
-      assert broadcast_dim % len(shape - len(shape)) in (-3, -2)
+      assert broadcast_dim % len(shape) - len(shape) in (-3, -2)
       shape[broadcast_dim] = 1
       m = torch.bernoulli(torch.full(shape, 1 - p, device=x.device))
       return m * x / (1 - p)
