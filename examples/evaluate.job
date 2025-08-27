@@ -9,10 +9,14 @@
 #SBATCH --gpus-per-task=2                 # every process wants one GPU!
 #SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
 
+CWD=`realpath -s $0`
+CWD=`dirname ${CWD}`
+PWD=`dirname ${CWD}`
+
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [eval_opt ...]"
   echo "positional arguments:"
-  echo "    eval_opt   evaluate option. \`python ../main.py evaluate -h\` for further help."
+  echo "    eval_opt   evaluate option. \`python ${PWD}/main.py evaluate -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
@@ -75,7 +79,7 @@ runner=""
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun"
 fi
-${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} evaluate \
+${runner} python ${PWD}/main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} evaluate \
     --prefix=${exp}.eval${model_suffix} \
     \
     --model=${exp}.folding/model.pth${model_suffix} \

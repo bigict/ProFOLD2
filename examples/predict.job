@@ -9,10 +9,14 @@
 #SBATCH --gpus-per-task=2                 # every process wants one GPU!
 #SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
 
+CWD=`realpath -s $0`
+CWD=`dirname ${CWD}`
+PWD=`dirname ${CWD}`
+
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [pred_opt ...] fasta_file [fasta_file ...]"
   echo "positional arguments:"
-  echo "    pred_opt   predict option. \`python ../main.py predict -h\` for further help."
+  echo "    pred_opt   predict option. \`python ${PWD}/main.py predict -h\` for further help."
   echo "    fasta_file fasta format protein sequence file."
   echo "options:"
   echo "    -h, --help show this help message and exit"
@@ -69,7 +73,7 @@ runner=""
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun"
 fi
-${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} predict \
+${runner} python ${PWD}/main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} predict \
     --prefix=${exp}.pred${model_suffix} \
     \
     --models ${exp}.folding/model.pth${model_suffix} \
