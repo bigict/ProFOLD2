@@ -12,7 +12,7 @@
 # check if script is started via SLURM or bash
 # if with SLURM: there variable '$SLURM_JOBID' will exist
 CWD=$0
-if [ -n ${SLURM_JOBID} ]; then
+if [ -n "${SLURM_JOBID}" ]; then
   CWD=`scontrol show job ${SLURM_JOBID}|awk -F= '/Command=/{print $2}'`
 fi
 CWD=`dirname ${CWD}`
