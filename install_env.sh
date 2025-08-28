@@ -2,7 +2,7 @@ set -e
 
 cuda_version=${cuda_version:-"12.1.1"}
 gcc_version=${gcc_version:-"12.4.0"}
-openmm_version=${openmm_version:-"8.1.2"}
+openmm_version=${openmm_version:-"8.0.0"}
 pytorch_version=${pytorch_version:-"2.3.1"}
 pytorch_cuda=$(echo ${cuda_version}|cut -d. -f1-2)
 
