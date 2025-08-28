@@ -69,7 +69,11 @@ def create_fn(args):  # pylint: disable=redefined-outer-name
   return None
 
 
-if __name__ == '__main__':
+def main():
   args = create_args()
   work_fn = create_fn(args)
   worker.main(args, work_fn)
+
+
+if __name__ == '__main__':
+  main()

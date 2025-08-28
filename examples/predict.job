@@ -9,14 +9,21 @@
 #SBATCH --gpus-per-task=2                 # every process wants one GPU!
 #SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
 
-CWD=`realpath -s $0`
+# check if script is started via SLURM or bash
+# if with SLURM: there variable '$SLURM_JOBID' will exist
+CWD=$0
+if [ -n ${SLURM_JOBID} ]; then
+  CWD=`scontrol show job ${SLURM_JOBID}|awk -F= '/Command=/{print $2}'`
+fi
+CWD=`realpath -s ${CWD}`
 CWD=`dirname ${CWD}`
 PWD=`dirname ${CWD}`
 
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [pred_opt ...] fasta_file [fasta_file ...]"
   echo "positional arguments:"
-  echo "    pred_opt   predict option. \`python ${PWD}/main.py predict -h\` for further help."
+  echo "    pred_opt   predict option."
+  echo "               \`PYTHONPATH=${PWD} python ${PWD}/profold2/command/main.py predict -h\` for further help."
   echo "    fasta_file fasta format protein sequence file."
   echo "options:"
   echo "    -h, --help show this help message and exit"
@@ -54,6 +61,7 @@ fi
 master_port=${master_port:-23456}
 echo "MasterAddr=${master_addr}:${master_port}"
 echo "==================================="
+node_opts="${node_opts} --init_method=tcp://${master_addr}:${master_port}"
 
 ## init virtual environment if needed
 conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
@@ -69,14 +77,14 @@ export AxialAttention_accept_kernel_fn=${AxialAttention_accept_kernel_fn:-"1"}
 export NCCL_SOCKET_FAMILY=AF_INET
 export NCCL_TIMEOUT=3600
 
-runner=""
+runner="python"
 if [ x"${platform}" = x"slurm" ]; then
-  runner="srun"
+  runner="srun ${runner}"
 fi
-${runner} python ${PWD}/main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} predict \
-    --prefix=${exp}.pred${model_suffix} \
+PYTHONPATH=${PWD} ${runner} ${PWD}/profold2/command/main.py ${node_opts} predict \
+    --prefix=${CWD}/${exp}.pred${model_suffix} \
     \
-    --models ${exp}.folding/model.pth${model_suffix} \
+    --models ${CWD}/${exp}.folding/model.pth${model_suffix} \
     --map_location=cpu \
     --model_recycles=2 \
     --model_shard_size=256 \
