@@ -9,10 +9,14 @@
 #SBATCH --gpus-per-task=2                 # every process wants one GPU!
 #SBATCH --gpu-bind=none                   # NCCL can't deal with task-binding...
 
+CWD=`realpath -s $0`
+CWD=`dirname ${CWD}`
+PWD=`dirname ${CWD}`
+
 help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [train_opt ...]"
   echo "positional arguments:"
-  echo "    train_opt  train option. \`python ../main.py train -h\` for further help."
+  echo "    train_opt  train option. \`python ${PWD}/main.py train -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
@@ -58,7 +62,7 @@ data_home="${HOME}/shared_hosts"
 
 train_data="${data_home}/train.zip"
 train_idx="${data_home}/train_name.idx_100_casp"
-train_data_weights="./model_weights_2022111102_casp_contact_length_cluster"
+train_data_weights="${CWD}/model_weights_2022111102_casp_contact_length_cluster"
 train_data_opts="--train_data=${train_data} --train_idx=${train_idx} --train_data_weights=${train_data_weights} --train_msa_as_seq_prob=0.25 --train_msa_as_seq_topn=256 --train_msa_as_seq_min_alr=0.85"
 
 eval_data="--eval_data=${data_home}/casp14/test-msa.zip"
@@ -77,7 +81,7 @@ runner=""
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun"
 fi
-${runner} python ../main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} train \
+${runner} python ${PWD}/main.py ${node_opts} --init_method=tcp://${master_addr}:${master_port} train \
     --prefix=${exp}.folding \
     --checkpoint_max_to_keep=10 \
     --num_batches=${num_batches:-10000} \

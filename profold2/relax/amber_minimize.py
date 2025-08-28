@@ -21,8 +21,9 @@ import logging
 import numpy as np
 import torch
 import openmm
-from openmm import unit
 from openmm import app as openmm_app
+from openmm import unit
+from openmm import version
 from openmm.app.internal.pdbstructure import PdbStructure
 
 from profold2.common import protein
@@ -30,6 +31,7 @@ from profold2.common import residue_constants
 from profold2.model import functional
 from profold2.relax import cleanup
 from profold2.relax import utils
+from profold2.utils import version_cmp
 
 ENERGY = unit.kilocalories_per_mole
 LENGTH = unit.angstroms
@@ -464,7 +466,13 @@ def _run_one_iteration(
   exclude_residues = exclude_residues or []
 
   # Assign physical dimensions.
-  tolerance = tolerance * ENERGY
+  # FIX: Unit "kilocalorie/mole" is not compatible with Unit
+  # "kilojoule/(nanometer*mole)"
+  if version_cmp(version.short_version, "8.0.0") > 0:
+    tolerance = tolerance * ENERGY.conversion_factor_to(unit.kilojoules_per_mole)
+    tolerance = tolerance * unit.kilojoules_per_mole / unit.nanometer
+  else:
+    tolerance = tolerance * ENERGY
   stiffness = stiffness * ENERGY / (LENGTH**2)
 
   start = time.time()
