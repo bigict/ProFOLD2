@@ -19,6 +19,7 @@ import weakref
 from Bio import PDB
 import numpy as np
 import torch
+from torch.nn import functional as F
 from torch.utils.data import WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange, repeat
@@ -150,6 +151,30 @@ def _msa_as_seq(item, idx, str_key='msa'):
               ('C',    residue_constants.PROT),
               ('CB',   residue_constants.PROT),
               ('O',    residue_constants.PROT),
+              ('OP1',  residue_constants.DNA),
+              ('P',    residue_constants.DNA),
+              ('OP2',  residue_constants.DNA),
+              ('O5\'', residue_constants.DNA),
+              ('C5\'', residue_constants.DNA),
+              ('C4\'', residue_constants.DNA),
+              ('O4\'', residue_constants.DNA),
+              ('C3\'', residue_constants.DNA),
+              ('O3\'', residue_constants.DNA),
+              ('C2\'', residue_constants.DNA),
+              ('O2\'', residue_constants.DNA),
+              ('C1\'', residue_constants.DNA),
+              ('OP1',  residue_constants.RNA),
+              ('P',    residue_constants.RNA),
+              ('OP2',  residue_constants.RNA),
+              ('O5\'', residue_constants.RNA),
+              ('C5\'', residue_constants.RNA),
+              ('C4\'', residue_constants.RNA),
+              ('O4\'', residue_constants.RNA),
+              ('C3\'', residue_constants.RNA),
+              ('O3\'', residue_constants.RNA),
+              ('C2\'', residue_constants.RNA),
+              ('O2\'', residue_constants.RNA),
+              ('C1\'', residue_constants.RNA),
           ]
       )
       for i in range(residue_constants.restype_num):
@@ -455,6 +480,70 @@ def _make_seq_features(
   )
 
 
+def _make_sta_features(sequence, seq_type, seq_idx, bpseq_string):
+  bpseq = torch.zeros(
+      (len(sequence), len(residue_constants.bptypes)), dtype=torch.int32
+  )
+  bptype_mask = torch.zeros(len(sequence), dtype=torch.bool)
+
+  if not exists(bpseq_string):
+    return bpseq, bptype_mask
+
+  seq_idx_start = int(seq_idx[0])
+  seq_idx_order = {int(idx): i for i, idx in enumerate(seq_idx)}
+
+  def restype_order_get(s):
+    if (s, seq_type) in residue_constants.restype_order_with_x:
+      return residue_constants.restype_order_with_x[(s, seq_type)]
+    return residue_constants.restype_order_with_x[('X', seq_type)]
+
+  # NOTE: bpseq_idx starts from 1 always
+  has_bptype = False
+  for bpseq_line in filter(
+      lambda x: x, map(lambda x: x.strip(), bpseq_string.splitlines())
+  ):
+    if bpseq_line.startswith('#'):  # comment
+      continue
+    fields = bpseq_line.split()
+
+    x, b, y = fields[:3]
+    x, y = int(x), int(y)
+    assert x > 0 and y >= 0
+    assert x + seq_idx_start - 1 in seq_idx_order, (
+        x, seq_idx_start, seq_idx_order, bpseq_line, bpseq_string
+    )
+
+    bptype_idx = 0
+    if len(fields) > 4:
+      bptype_idx = residue_constants.bptype_order.get(fields[4], 0)
+      has_bptype = True
+
+    if has_bptype and y > 0:
+      assert len(fields) > 4, (fields, )
+    assert restype_order_get(
+        sequence[seq_idx_order[x + seq_idx_start - 1]]
+    ) == restype_order_get(b), (
+        f'_make_sta: {x}, {b}, {y}, {sequence[x + seq_idx_start - 1]}',
+        residue_constants.restype_order_with_x.get(
+            (sequence[seq_idx_order[x + seq_idx_start - 1]], seq_type)
+        ),
+        residue_constants.restype_order_with_x.get((b, seq_type)),
+        seq_idx_start,
+        seq_idx_order,
+        bpseq_line,
+        bpseq_string
+    )
+
+    x = seq_idx_order[x + seq_idx_start - 1]
+    if y > 0 and y + seq_idx_start - 1 in seq_idx_order:
+      y = seq_idx_order[y + seq_idx_start - 1]
+      bpseq[x, bptype_idx] = y + 1  # paired seq_idx starts from 1
+    if has_bptype:
+      bptype_mask[x] = True
+
+  return bpseq, bptype_mask
+
+
 def _make_pdb_features(
     pdb_id,
     pdb_string,
@@ -641,7 +730,7 @@ def _make_feats_shrinked(
   for field in default(
       seq_feats, (
           'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
-          'coord', 'coord_mask', 'coord_plddt'
+          'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask'
       )
   ):
     if field in item:
@@ -650,6 +739,15 @@ def _make_feats_shrinked(
     if field in item:
       item[field] = torch.index_select(item[field], 0, new_order)
       item[field] = torch.index_select(item[field], 1, new_order)
+  for field in ('sta', ):
+    if field in item:
+      l = item[field].shape[0]
+      item[field] = F.one_hot(item[field].long(), l + 1)  # shape: i c j
+      item[field] = torch.index_select(item[field], 0, new_order)
+      item[field] = torch.index_select(
+          item[field], 2, torch.cat((torch.as_tensor([0]), new_order + 1), dim=0)
+      )
+      item[field] = torch.argmax(item[field], dim=-1)  # shape: i c
   for field in default(msa_feats, ('msa', 'msa_mask', 'del_msa')):
     if field in item:
       item[field] = torch.index_select(item[field], 1, new_order)
@@ -827,17 +925,26 @@ def _protein_crop_fn(protein, clip):
   if 'd' in clip:
     return _make_feats_shrinked(protein, clip['d'])
 
+  # sequential clip
   i, j = clip['i'], clip['j']
   protein['str_seq'] = protein['str_seq'][i:j]
   for field in (
       'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
-      'coord', 'coord_mask', 'coord_plddt',
+      'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask'
   ):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
   for field in ('coord_pae', ):
     if field in protein:
       protein[field] = protein[field][i:j, i:j]
+  for field in ('sta', ):
+    if field in protein:
+      l = protein[field].shape[0]
+      protein[field] = F.one_hot(protein[field].long(), l + 1)  # shape: i c j
+      protein[field] = torch.cat(
+          (protein[field][i:j, :, :1], protein[field][i:j, :, i + 1:j + 1]), dim=-1
+      )
+      protein[field] = torch.argmax(protein[field], dim=-1)  # shapre: i c
   for field in ('str_msa', ):
     if field in protein:
       protein[field] = [v[i:j] for v in protein[field]]
@@ -1179,6 +1286,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
     self.fasta_dir = env('profold2_data_fasta_dir', defval='fasta')
     self.pdb_dir = env('profold2_data_pdb_dir', defval='npz')
+    self.sta_dir = env('profold2_data_sta_dir', defval='sta')
 
     self.msa_list = ['BFD30_E-3']
     self.var_dir = env('profold2_data_var_dir', defval=default(var_dir, 'var'))
@@ -1291,10 +1399,20 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret.update(self.get_var_features_new(fs, pkey, seq_type=ret['seq_type']))
         ret = self.data_from_domain(ret, domains)
       if exists(crop_fn):
+        # FIX: RNA duplexes
+        for field in ('seq_index', 'seq_color', 'seq_entity', 'coord', 'coord_mask'):
+          if field in ret:
+            ret[f'{field}_fgt'] = ret[field]
+
         clip = crop_fn(ret)
         if exists(clip):
           ret = _protein_crop_fn(ret, clip)
           ret['clip'] = clip
+
+        # FIX: RNA duplexes
+        ret.update(
+            _make_anchor_features(ret['seq_color_fgt'], ret['seq_entity_fgt'], ret)
+        )
       if not exists(domains) and (self.feat_flags & FEAT_MSA):
         assert isinstance(ret['seq_type'], int)
         ret.update(
@@ -1842,6 +1960,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 ret[field] = torch.cat((ret[field], pad), dim=1)
               elif ret[field].shape[1] > residue_constants.atom14_type_num:
                 ret[field] = ret[field][:, :residue_constants.atom14_type_num, ...]
+
+          # FIX: RNA duplexes
+          for field in ('seq_color', 'seq_entity', 'seq_sym'):
+            if field in structure:
+              ret[field] = torch.from_numpy(structure[field]) + ret[field] - 1
         else:
           l = ret['seq'].shape[0]
           ret.update(
@@ -1891,6 +2014,19 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               ret.update(coord_pae=pae_obj)
           except json.decoder.JSONDecodeError as e:
             logger.error('get_structure_label_npz.pae: %s|%s', protein_id, e)
+
+    bpseq_file = f'{self.sta_dir}/{protein_id}.bpseq'
+    if fs.exists(bpseq_file):
+      assert ret['seq_type'] == residue_constants.RNA  # load base pairing
+      with fs.open(bpseq_file) as f:
+        bpseq_string = fs.textise(f.read())
+    else:
+      bpseq_string = None
+    sta, sta_type_mask = _make_sta_features(
+        ret['str_seq'], ret['seq_type'], ret['seq_index'], bpseq_string
+    )
+    ret.update(sta=sta, sta_type_mask=sta_type_mask)
+
     return ret
 
   @staticmethod
@@ -1927,6 +2063,10 @@ def _collate_fn(batch, feat_flags=None):
 
   if _any('resolu'):
     ret['resolution'] = _to_tensor('resolu', -1.0)
+
+  if _any('sta'):
+    for field in ('sta', 'sta_type_mask'):
+      ret[field] = pad_sequential(_to_list(field), max_batch_len)
 
   feat_flags = default(feat_flags, FEAT_ALL)
   if feat_flags & FEAT_PDB and _any('coord'):

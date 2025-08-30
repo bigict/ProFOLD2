@@ -882,6 +882,122 @@ class PAEHead(nn.Module):
     return dict(loss=loss)
 
 
+class PairingHead(nn.Module):
+  """Head to predict a nucleic acid base pairing.
+    """
+  def __init__(self, dim, alpha=0.5, focal_loss=0):
+    super().__init__()
+    _, dim = commons.embedd_dim_get(dim)
+
+    # NOTE: 0 for unpaired
+    self.net = nn.Sequential(
+        nn.LayerNorm(dim), nn.Linear(dim, len(residue_constants.bptypes))
+    )
+    # NOTE: https://nakb.org/ndbmodule/bp-catalog/
+    # pairing = torch.zeros(
+    #     len(residue_constants.restypes_with_x), 3, dtype=torch.float32
+    # )
+    # a, c, g, u = [
+    #     residue_constants.restype_order_with_x[(b, residue_constants.RNA)]
+    #     for b in 'acgu'
+    # ]
+    # for i, (b1, b2) in enumerate([(a, u), (c, g), (g, u)]):
+    #   pairing[b1, i] = 1.0
+    #   pairing[b2, i] = 1.0
+    # self.register_buffer('pairing', pairing, persistent=False)
+
+    self.alpha = alpha
+    self.focal_loss = focal_loss
+
+  def forward(self, headers, representations, batch):
+    """Builds ParingHead module.
+
+        Arguments:
+         representations: Dictionary of representations, must contain:
+           * 'pair': pair representation, shape [N_res, N_res, c_z].
+         batch: Batch, unused.
+
+        Returns:
+         Dictionary containing:
+           * logits: logits for distogram, shape [N_res, N_res, N_bins].
+        """
+    x = self.net(representations['pair'])
+    x = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
+
+    # build constrains
+    # 1. Only three types of nucleotide combinations can form base pairs
+    # 2. No sharp loop within three bases. For any adjacent bases within a
+    #    distance of three nucleotides, they cannot form pairs with each
+    #    other. for all |i - j| < 4, M_ij = 0
+    # m = F.one_hot(batch['seq'].long(), len(residue_constants.restypes_with_x)).float()
+    # m = rearrange(m, '... i d -> ... i () d') + rearrange(m, '... j d -> ... () j d')
+    # m = torch.any(
+    #     torch.einsum('... i j d,d c -> ... i j c', m, self.pairing) >= 2, dim=-1
+    # )
+    m = torch.abs(
+        rearrange(batch['seq_index'], '... i -> ... i ()') -
+        rearrange(batch['seq_index'], '... j -> ... () j')
+    ) > 3
+    # HACK: experience value
+    mask_value = 1e4 if x.dtype == torch.float16 else 1e6  # max_neg_value(q)
+    x = x.masked_fill(~m[..., None], -mask_value)
+
+    l, d = x.shape[-2:]
+    u = torch.zeros(x.shape[:-3] + (l, 1, d), dtype=x.dtype, device=x.device)
+    v = torch.zeros(x.shape[:-3] + (1, l, d), dtype=x.dtype, device=x.device)
+    w = torch.zeros(x.shape[:-3] + (l, l, 1), dtype=x.dtype, device=x.device)
+
+    x = F.log_softmax(torch.cat((u, x), dim=-2), dim=-2)[..., 1:, :] + F.log_softmax(
+        torch.cat((v, x), dim=-3), dim=-3
+    )[..., 1:, :, :] + 2 * F.log_softmax(torch.cat((w, x), dim=-1), dim=-1)[..., 1:]
+
+    return dict(logits=x)
+
+  def loss(self, value, batch):
+    """Log loss of a base pairing."""
+    x = value['logits']
+    assert len(x.shape) == 4
+    l, eps = x.shape[-2], 1e-6
+
+    # x = rearrange(x, '... i j d -> ... i (j d)')
+    if 'sta' in batch:
+      y = rearrange(
+          F.one_hot(batch['sta'].long(), l + 1)[..., 1:], '... i d j -> ... i j d'
+      )
+      with autocast(enabled=False):
+        probs = torch.clamp(
+            1. - torch.exp(
+                torch.sum(
+                    torch.log(
+                        torch.clamp(1. - torch.exp(x.float()), min=eps, max=1.)
+                    ),
+                    dim=-1
+                )
+            ),
+            min=eps,
+            max=1.
+        )
+        targets = torch.any(y, dim=-1).float()
+        errors = sigmoid_cross_entropy(probs, targets, gammar=self.focal_loss)
+
+        assert 'sta_type_mask' in batch
+        if torch.any(batch['sta_type_mask']):
+          assert y.shape[-1] == x.shape[-1]
+          errors = (1. - self.alpha) * errors + self.alpha * torch.sum(
+              y.float() * x.float(), dim=-1
+          ) * batch['sta_type_mask']
+    else:
+      with torch.no_grad():
+        y = torch.exp(x)
+      errors = torch.sum(F.kl_div(x, y, reduction='none'), dim=-1)
+
+    errors = torch.sum(errors, dim=-1)
+
+    avg_error = functional.masked_mean(value=errors, mask=batch['mask'], epsilon=1e-6)
+    logger.debug('PairingHead.loss: %s', avg_error)
+    return dict(loss=avg_error)
+
+
 class RobertaLMHead(nn.Module):
   """Head for Masked Language Modeling
     """
@@ -1502,6 +1618,7 @@ class HeaderBuilder:
       lddt=LDDTHead,
       metric=MetricDictHead,
       pae=PAEHead,
+      pairing=PairingHead,
       profile=SequenceProfileHead,
       roberta=RobertaLMHead,
       tmscore=TMscoreHead,
