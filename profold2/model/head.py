@@ -1048,6 +1048,10 @@ class MetricDictHead(nn.Module):
         assert exists(point_mask)
 
         seq_index = batch.get('seq_index')
+        point_mask = point_mask * torch.logical_and(  # protein only
+            batch['seq'] >= residue_constants.prot_from_idx,
+            batch['seq'] <= residue_constants.prot_to_idx
+        )[..., None]
         ca_ca_distance_error = functional.between_ca_ca_distance_loss(
             points, point_mask, seq_index
         )
@@ -1456,6 +1460,10 @@ class ViolationHead(nn.Module):
           'coord_exists', batch.get('coord_mask')
       )
       assert exists(point_mask)
+      point_mask = point_mask * torch.logical_and(  # protein only
+          batch['seq'] >= residue_constants.prot_from_idx,
+          batch['seq'] <= residue_constants.prot_to_idx
+      )[..., None]
 
       # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
       #         points, point_mask, seq_index))

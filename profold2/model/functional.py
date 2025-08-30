@@ -274,7 +274,9 @@ def quaternion_multiply(a, b):
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   """Create pseudo beta features."""
 
-  is_gly = torch.eq(aatype, residue_constants.restype_order['G'])
+  is_gly = torch.eq(
+      aatype, residue_constants.restype_order[('G', residue_constants.PROT)]
+  )
   ca_idx = residue_constants.atom_order['CA']
   cb_idx = residue_constants.atom_order['CB']
   pseudo_beta = torch.where(
