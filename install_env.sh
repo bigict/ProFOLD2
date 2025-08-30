@@ -31,6 +31,8 @@ conda install -y -c nvidia/label/cuda-${cuda_version} \
 
 conda install -y -c conda-forge \
     biopython \
+    biotite \
     einops \
+    rdkit \
     tensorboard \
     tqdm

@@ -111,6 +111,16 @@ def max_neg_value(t):
   return -torch.finfo(t.dtype).max
 
 
+def shaped_dropout(x, p, shape=None, training=True):
+  if exists(shape) and 0 < p < 1.0:
+    if training:
+      assert x.dim() == len(shape)
+      m = torch.bernoulli(torch.full(shape, 1 - p, device=x.device))
+      return m * x / (1 - p)
+    return x
+  return F.dropout(x, p=p, training=training)
+
+
 def shared_dropout(x, p, broadcast_dim=None, training=True):
   if exists(broadcast_dim) and 0 < p < 1.0:
     if training:
@@ -191,6 +201,52 @@ class APC(nn.Module):
 
   def forward(self, x):
     return functional.apc(x, dim=self.dim)
+
+
+# Adaptive LayerNorm
+class AdaLN(nn.Module):
+  """Adaptive LayerNorm"""
+  def __init__(self, dim, dim_cond=None):
+    super().__init__()
+
+    if exists(dim_cond):
+      self.norm = nn.LayerNorm(dim, elementwise_affine=False, bias=False)
+      self.norm_cond = nn.LayerNorm(dim_cond, bias=False)
+      self.to_w = nn.Linear(dim_cond, dim)
+      self.to_b = nn.Linear(dim_cond, dim, bias=False)
+
+      init_linear_(self.to_w)
+      init_linear_(self.to_b)
+    else:
+      self.norm = nn.LayerNorm(dim)
+
+  def forward(self, x, cond=None):
+    assert not exists(cond) ^ hasattr(self, 'norm_cond')
+    if exists(cond):
+      x, cond = self.norm(x), self.norm_cond(cond)
+      return F.sigmoid(self.to_w(cond)) * x + self.to_b(cond)
+    return self.norm(x)
+
+
+# SwiGLU transition block with AdaLN
+class SwiGLUForward(nn.Module):
+  """SwiGLUForward"""
+  def __init__(self, dim, dim_cond, mult=2):
+    super().__init__()
+
+    self.norm = AdaLN(dim, dim_cond=dim_cond)
+    self.swish = nn.Linear(dim, dim * mult * 2, bias=False)
+    self.gating = nn.Linear(dim_cond, dim)
+    init_linear_(self.gating, b=-2.0)
+    self.proj = nn.Linear(dim * mult, dim, bias=False)
+
+  def forward(self, x, cond, shard_dim=-2, shard_size=None):
+    del shard_dim, shard_size
+    x = self.norm(x, cond=cond)
+    a, b = torch.chunk(self.swish(x), 2, dim=-1)
+    x = tensor_mul(a, F.silu(b))
+    x = tensor_mul(self.proj(x), F.sigmoid(self.gating(cond)))
+    return x
 
 
 # feed forward
@@ -1094,6 +1150,124 @@ class PairwiseEmbedding(nn.Module):
     return x
 
 
+class FourierEmbedding(nn.Module):
+  """FourierEmbedding
+    """
+  def __init__(self, dim):
+    super().__init__()
+
+    self.w = nn.Parameter(torch.randn(dim), requires_grad=False)
+    self.b = nn.Parameter(torch.randn(dim), requires_grad=False)
+
+  def forward(self, t):
+    v = t * self.w + self.b
+    return torch.cos(2 * torch.pi * v)
+
+
+class AttentionWithBias(nn.Module):
+  """AttentionWithBias
+    """
+  def __init__(self, dim, heads, dim_cond=None, has_context=False, **kwargs):
+    super().__init__()
+
+    dim_node, _ = embedd_dim_get(dim)
+
+    self.norm = nn.ModuleDict({'query': AdaLN(dim_node, dim_cond=dim_cond)})
+    if has_context:
+      self.norm['context'] = AdaLN(dim_node, dim_cond=dim_cond)
+    self.attn = Attention(dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
+    if exists(dim_cond):
+      self.gating = nn.Linear(dim_node, dim_node)
+      init_linear_(self.gating, b=-2.)
+
+    accept_kernel_fn = env('AttentionPairBias_accept_kernel_fn', defval=0, dtype=int)
+    if not hasattr(F, 'scaled_dot_product_attention') and exists(accept_kernel_fn):
+      logger.warning('F.scaled_dot_product_attention is not available! disabled it.')
+      accept_kernel_fn = 0
+    accept_kernel_dtype = env('AttentionPairBias_accept_kernel_dtype')
+    if accept_kernel_dtype in ('float16', 'f16'):
+      accept_kernel_dtype = torch.float16
+    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
+      accept_kernel_dtype = torch.bfloat16
+    self.attn_fn = functools.partial(
+        pytorch_attn, dtype=accept_kernel_dtype
+    ) if accept_kernel_fn else None
+
+  def forward(
+      self,
+      x,
+      pair_bias,
+      cond=None,
+      mask=None,
+      pair_mask=None,
+      context=None,
+      context_cond=None,
+      context_mask=None
+  ):
+    x = self.norm['query'](x, cond=cond)
+    assert not exists(context) ^ ('context' in self.norm)
+    if exists(context):
+      assert not exists(cond) ^ exists(context_cond)
+      context = self.norm['context'](context, cond=context_cond)
+
+    if exists(pair_mask):
+      pair_bias = pair_bias.masked_fill(~pair_mask, max_neg_value(pair_bias))
+    x = self.attn(
+        x,
+        mask=mask,
+        context=context,
+        context_mask=context_mask,
+        attn_bias=pair_bias,
+        attn_fn=self.attn_fn
+    )
+
+    if exists(cond):
+      x = tensor_mul(x, F.sigmoid(self.gating(cond)))
+
+    return x
+
+
+class AttentionPairBias(nn.Module):
+  """AttentionPairBias
+    """
+  def __init__(self, dim, heads, group_size=1, **kwargs):
+    super().__init__()
+
+    _, dim_edge = embedd_dim_get(dim)
+    self.attn = layer_stack(AttentionWithBias, group_size, dim, heads, **kwargs)
+    self.edges_to_attn_bias = nn.Sequential(
+        nn.LayerNorm(dim_edge),
+        nn.Linear(dim_edge, heads, bias=False),
+        Rearrange('... i j h -> ... h i j')
+    )
+
+  def forward(
+      self,
+      x,
+      edges,
+      cond=None,
+      mask=None,
+      edge_bias=None,
+      edge_mask=None,
+      context=None,
+      context_cond=None,
+      context_mask=None
+  ):
+    pair_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
+    if exists(edge_bias):
+      pair_bias = tensor_add(pair_bias, edge_bias)
+    return self.attn(
+        x,
+        cond=cond,
+        mask=mask,
+        pair_bias=pair_bias,
+        pair_mask=edge_mask,
+        context=context,
+        context_cond=context_cond,
+        context_mask=context_mask
+    )
+
+
 def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   # Hack for keyword-only parameter in a python 2.7-compliant way
   preserve = kwargs.pop('preserve_rng_state', True)
@@ -1131,6 +1305,12 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   return run_function(end + 1, len(functions) - 1, functions)(*inputs)
 
 
+def kwarg_stack(depth, layer_kwargs):
+  if exists(layer_kwargs):
+    return {k: v[depth] for k, v in layer_kwargs.items()}
+  return {}
+
+
 def layer_stack(moduleclass, depth, *args, **kwargs):
   class _LayerStack(nn.Module):
     def __init__(self, *args, **kwargs):
@@ -1144,3 +1324,18 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
         )
 
   return _LayerStack(*args, **kwargs)
+
+
+def residue_stack(moduleclass, depth, *args, **kwargs):
+  class _ResidueNet(nn.Module):
+    def __init__(self, *args, **kwargs):
+      super().__init__()
+      self.net = moduleclass(*args, **kwargs)
+
+    def forward(self, *args, **kwargs):
+      with profiler.record_function(moduleclass.__name__):
+        return tuple(
+            map(lambda xy: tensor_add(*xy), zip(args, self.net(*args, **kwargs)))
+        )
+
+  return layer_stack(_ResidueNet, depth, *args, **kwargs)
