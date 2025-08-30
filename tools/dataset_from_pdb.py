@@ -113,6 +113,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       letter = residue_constants.restype_3to1[unktype]
     else:
       letter = residue_constants.restype_3to1[residue_id]
+    letter, _ = letter
     return letter
 
   def _get_atom_list(residue_id, chain_type):

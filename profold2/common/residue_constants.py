@@ -16,11 +16,18 @@
 import os
 import collections
 import functools
+import json
 from typing import Mapping, List, Tuple
 
 import numpy as np
 
 # Internal import (35fd).
+from profold2.utils import env
+
+# molecule type
+PROT = 1
+DNA = 2
+RNA = 3
 
 # Distance from one CA to next CA [trans configuration: omega = 180].
 ca_ca = 3.80209737096
@@ -548,7 +555,7 @@ atom_types = [
 ]
 atom_order = {atom_type: i for i, atom_type in enumerate(atom_types)}
 atom_type_num = len(atom_types)  # := 37.
-atom14_type_num = 14  # := 14.
+atom14_type_num = env('profold2_atom14_type_num', defval=14, dtype=int)  # := 14.
 
 # A compact atom encoding with 14 columns
 # pylint: disable=line-too-long
@@ -579,23 +586,62 @@ restype_name_to_atom14_names = {
 # pylint: enable=line-too-long
 # pylint: enable=bad-whitespace
 
+restype_list = set(env('profold2_restype_list', defval=[PROT], dtype=json.loads))
+assert restype_list
+
 # This is the standard residue order when coding AA type as a number.
 # Reproduce it by taking 3-letter AA codes and sorting them alphabetically.
 restypes = (
     'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
     'S', 'T', 'W', 'Y', 'V'
 )
-restype_order = {restype: i for i, restype in enumerate(restypes)}
+restypes = ()
+if PROT in restype_list:
+  restypes = restypes + (
+    'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P',
+    'S', 'T', 'W', 'Y', 'V'
+  )
+restype_from_idx = -1
+if PROT in restype_list:
+  prot_from_idx, prot_to_idx = restype_from_idx + 1, restype_from_idx + 20
+  restype_from_idx = prot_to_idx
+else:
+  prot_from_idx, prot_to_idx = -1, -1
+
+if PROT in restype_list:
+  restype_from_idx += 1  # with X
+
+if PROT in restype_list:
+  prot_gap_idx = restype_from_idx + 1
+  restype_from_idx = prot_gap_idx
+else:
+  prot_gap_idx = -1
+del restype_from_idx
+
+def moltype(mol_idx):
+  return PROT
+
+
+restype_order = {(restype, moltype(i)): i for i, restype in enumerate(restypes)}
 restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
-restypes_with_x = restypes + ('X', )
-restype_order_with_x = {restype: i for i, restype in enumerate(restypes_with_x)}
+
+def is_aa(restype):
+  return moltype(restype) == PROT
+
+
+restypes_with_x = restypes + ('X', ) if PROT in restype_list else restypes
+restype_order_with_x = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x)
+}
 
 
 def sequence_to_onehot(
     sequence: str,
     mapping: Mapping[str, int],
+    mol_type: int = PROT,
     map_unknown_to_x: bool = False
 ) -> np.ndarray:
   """Maps the given sequence into a one-hot encoded matrix.
@@ -629,37 +675,37 @@ def sequence_to_onehot(
   for aa_index, aa_type in enumerate(sequence):
     if map_unknown_to_x:
       if aa_type.isalpha() and aa_type.isupper():
-        aa_id = mapping.get(aa_type, mapping['X'])
+        aa_id = mapping.get((aa_type, mol_type), mapping[('X', mol_type)])
       else:
         raise ValueError(f'Invalid character in the sequence: {aa_type}')
     else:
-      aa_id = mapping[aa_type]
+      aa_id = mapping[(aa_type, mol_type)]
     one_hot_arr[aa_index, aa_id] = 1
 
   return one_hot_arr
 
 
 restype_1to3 = {
-    'A': 'ALA',
-    'R': 'ARG',
-    'N': 'ASN',
-    'D': 'ASP',
-    'C': 'CYS',
-    'Q': 'GLN',
-    'E': 'GLU',
-    'G': 'GLY',
-    'H': 'HIS',
-    'I': 'ILE',
-    'L': 'LEU',
-    'K': 'LYS',
-    'M': 'MET',
-    'F': 'PHE',
-    'P': 'PRO',
-    'S': 'SER',
-    'T': 'THR',
-    'W': 'TRP',
-    'Y': 'TYR',
-    'V': 'VAL',
+    ('A', PROT): 'ALA',
+    ('R', PROT): 'ARG',
+    ('N', PROT): 'ASN',
+    ('D', PROT): 'ASP',
+    ('C', PROT): 'CYS',
+    ('Q', PROT): 'GLN',
+    ('E', PROT): 'GLU',
+    ('G', PROT): 'GLY',
+    ('H', PROT): 'HIS',
+    ('I', PROT): 'ILE',
+    ('L', PROT): 'LEU',
+    ('K', PROT): 'LYS',
+    ('M', PROT): 'MET',
+    ('F', PROT): 'PHE',
+    ('P', PROT): 'PRO',
+    ('S', PROT): 'SER',
+    ('T', PROT): 'THR',
+    ('W', PROT): 'TRP',
+    ('Y', PROT): 'TYR',
+    ('V', PROT): 'VAL',
 }
 
 # NB: restype_3to1 differs from Bio.PDB.protein_letters_3to1 by being a simple
@@ -671,7 +717,8 @@ restype_3to1 = {v: k for k, v in restype_1to3.items()}
 # Define a restype name for all unknown residues.
 unk_restype = 'UNK'
 
-resnames = [restype_1to3[r] for r in restypes] + [unk_restype]
+resnames = [restype_1to3[(r, moltype(i))]
+            for i, r in enumerate(restypes)] + [(unk_restype, PROT)]
 resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 
 # The mapping here uses hhblits convention, so that B is mapped to D, J and O
@@ -681,65 +728,76 @@ resname_to_idx = {resname: i for i, resname in enumerate(resnames)}
 # "-" representing a missing amino acid in an alignment.  The id for these
 # codes is put at the end (20 and 21) so that they can easily be ignored if
 # desired.
-HHBLITS_AA_TO_ID = {
-    'A': 0,
-    'B': 2,
-    'C': 1,
-    'D': 2,
-    'E': 3,
-    'F': 4,
-    'G': 5,
-    'H': 6,
-    'I': 7,
-    'J': 20,
-    'K': 8,
-    'L': 9,
-    'M': 10,
-    'N': 11,
-    'O': 20,
-    'P': 12,
-    'Q': 13,
-    'R': 14,
-    'S': 15,
-    'T': 16,
-    'U': 1,
-    'V': 17,
-    'W': 18,
-    'X': 20,
-    'Y': 19,
-    'Z': 3,
-    '-': 21,
-}
+HHBLITS_AA_TO_ID = {}
+if PROT in restype_list:
+  HHBLITS_AA_TO_ID.update({
+    ('A', PROT): prot_from_idx + 0,
+    ('B', PROT): prot_from_idx + 2,
+    ('C', PROT): prot_from_idx + 1,
+    ('D', PROT): prot_from_idx + 2,
+    ('E', PROT): prot_from_idx + 3,
+    ('F', PROT): prot_from_idx + 4,
+    ('G', PROT): prot_from_idx + 5,
+    ('H', PROT): prot_from_idx + 6,
+    ('I', PROT): prot_from_idx + 7,
+    ('J', PROT): unk_restype_index,
+    ('K', PROT): prot_from_idx + 8,
+    ('L', PROT): prot_from_idx + 9,
+    ('M', PROT): prot_from_idx + 10,
+    ('N', PROT): prot_from_idx + 11,
+    ('O', PROT): unk_restype_index,
+    ('P', PROT): prot_from_idx + 12,
+    ('Q', PROT): prot_from_idx + 13,
+    ('R', PROT): prot_from_idx + 14,
+    ('S', PROT): prot_from_idx + 15,
+    ('T', PROT): prot_from_idx + 16,
+    ('U', PROT): prot_from_idx + 1,
+    ('V', PROT): prot_from_idx + 17,
+    ('W', PROT): prot_from_idx + 18,
+    ('X', PROT): unk_restype_index,
+    ('Y', PROT): prot_from_idx + 19,
+    ('Z', PROT): prot_from_idx + 3,
+    ('-', PROT): prot_gap_idx,
+  })
 
 # Partial inversion of HHBLITS_AA_TO_ID.
-ID_TO_HHBLITS_AA = {
-    0: 'A',
-    1: 'C',  # Also U.
-    2: 'D',  # Also B.
-    3: 'E',  # Also Z.
-    4: 'F',
-    5: 'G',
-    6: 'H',
-    7: 'I',
-    8: 'K',
-    9: 'L',
-    10: 'M',
-    11: 'N',
-    12: 'P',
-    13: 'Q',
-    14: 'R',
-    15: 'S',
-    16: 'T',
-    17: 'V',
-    18: 'W',
-    19: 'Y',
-    20: 'X',  # Includes J and O.
-    21: '-',
-}
+ID_TO_HHBLITS_AA = {}
+if PROT in restype_list:
+  ID_TO_HHBLITS_AA.update({
+    prot_from_idx +  0: ('A', PROT),
+    prot_from_idx +  1: ('C', PROT),  # Also U.
+    prot_from_idx +  2: ('D', PROT),  # Also B.
+    prot_from_idx +  3: ('E', PROT),  # Also Z.
+    prot_from_idx +  4: ('F', PROT),
+    prot_from_idx +  5: ('G', PROT),
+    prot_from_idx +  6: ('H', PROT),
+    prot_from_idx +  7: ('I', PROT),
+    prot_from_idx +  8: ('K', PROT),
+    prot_from_idx +  9: ('L', PROT),
+    prot_from_idx + 10: ('M', PROT),
+    prot_from_idx + 11: ('N', PROT),
+    prot_from_idx + 12: ('P', PROT),
+    prot_from_idx + 13: ('Q', PROT),
+    prot_from_idx + 14: ('R', PROT),
+    prot_from_idx + 15: ('S', PROT),
+    prot_from_idx + 16: ('T', PROT),
+    prot_from_idx + 17: ('V', PROT),
+    prot_from_idx + 18: ('W', PROT),
+    prot_from_idx + 19: ('Y', PROT),
+    unk_restype_index:  ('X', PROT),  # Includes J and O.
+    prot_gap_idx:       ('-', PROT),
+  })
 
-restypes_with_x_and_gap = restypes + ('X', '-')
+restypes_gap = ()
+if PROT in restype_list:
+  restypes_gap = restypes_gap + ('-', )
+restypes_with_x_and_gap = restypes_with_x + restypes_gap
+restype_order_with_x_and_gap = {
+    (restype, moltype(i)): i
+    for i, restype in enumerate(restypes_with_x_and_gap)
+}
 MAP_HHBLITS_AATYPE_TO_OUR_AATYPE = tuple(
-    restypes_with_x_and_gap.index(ID_TO_HHBLITS_AA[i])
+    restype_order_with_x_and_gap[ID_TO_HHBLITS_AA[i]]
     for i in range(len(restypes_with_x_and_gap))
 )
 
@@ -749,9 +807,9 @@ def _make_standard_atom_mask() -> np.ndarray:
   # +1 to account for unknown (all 0s).
   mask = np.zeros([restype_num + 1, atom14_type_num], dtype=np.int32)
   for restype, restype_letter in enumerate(restypes):
-    restype_name = restype_1to3[restype_letter]
+    restype_name = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[restype_name]  # pylint: disable=redefined-outer-name
-    for atom_type, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
+    for atom_type, atom_name in enumerate(atom_list[:atom14_type_num]):  # pylint: disable=redefined-outer-name
       if atom_name:
         mask[restype, atom_type] = 1
   return mask
@@ -760,12 +818,14 @@ def _make_standard_atom_mask() -> np.ndarray:
 STANDARD_ATOM_MASK = _make_standard_atom_mask()
 
 
-chi_angles_num = 7
+chi_angles_num = env('profold2_chi_angles_num', defval=7, dtype=int)
 chi_angles_atom14_indices = np.zeros(
     (restype_num + 1, chi_angles_num, 4), dtype=np.int32
 )
 chi_angles_atom14_exists = np.zeros((restype_num + 1, chi_angles_num), dtype=np.bool_)
 for res_name, res_chi_angles in torsion_angles_atoms.items():
+  if res_name not in resname_to_idx:
+    continue
   res_type = resname_to_idx[res_name]
   atom_list = restype_name_to_atom14_names[res_name]
 
@@ -842,7 +902,7 @@ def _make_rigid_group_constants():
 
   # Fill the arrays above.
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     for atomname, group_idx, atom_position in rigid_group_atom_positions[resname]:
       if group_idx > chi_angles_num:
         continue
@@ -858,7 +918,7 @@ def _make_rigid_group_constants():
       restype_atom14_rigid_group_positions[restype, atom14idx, :] = atom_position
 
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_positions = {
         name: np.array(pos)
         for name, _, pos in rigid_group_atom_positions[resname]
@@ -866,9 +926,10 @@ def _make_rigid_group_constants():
 
     # backbone to backbone is the identity transform
     restype_rigid_group_default_frame[restype, 0, :, :] = np.eye(4)
-    restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
-        to_atom14_index(resname, ['C', 'CA', 'N'])
-    )
+    if moltype(restype) == PROT:
+      restype_rigid_group_atom14_idx[restype, 0, :] = np.array(
+          to_atom14_index(resname, ['C', 'CA', 'N'])
+      )
     restype_rigid_group_mask[restype, 0] = True
     restype_rigid_group_depend[restype, 0] = torsion_angles_depend[restype][0]
 
@@ -876,26 +937,28 @@ def _make_rigid_group_constants():
     restype_rigid_group_default_frame[restype, 1, :, :] = np.eye(4)
 
     # phi-frame to backbone
-    mat = _make_rigid_transformation_4x4(
-        ex=atom_positions['N'] - atom_positions['CA'],
-        ey=np.array([1., 0., 0.]),
-        translation=atom_positions['N']
-    )
-    restype_rigid_group_default_frame[restype, 2, :, :] = mat
+    if moltype(restype) == PROT:
+      mat = _make_rigid_transformation_4x4(
+          ex=atom_positions['N'] - atom_positions['CA'],
+          ey=np.array([1., 0., 0.]),
+          translation=atom_positions['N']
+      )
+      restype_rigid_group_default_frame[restype, 2, :, :] = mat
     restype_rigid_group_depend[restype, 2] = torsion_angles_depend[restype][1]
 
     # psi-frame to backbone
-    mat = _make_rigid_transformation_4x4(
-        ex=atom_positions['C'] - atom_positions['CA'],
-        ey=atom_positions['CA'] - atom_positions['N'],
-        translation=atom_positions['C']
-    )
-    restype_rigid_group_default_frame[restype, 3, :, :] = mat
-    restype_rigid_group_atom14_idx[restype, 3, :] = np.array(
-        to_atom14_index(resname, ['CA', 'C', 'O'])
-    )
-    restype_rigid_group_mask[restype, 3] = True
-    restype_rigid_group_depend[restype, 3] = torsion_angles_depend[restype][2]
+    if moltype(restype) == PROT and torsion_angles_mask[restype][2]:
+      mat = _make_rigid_transformation_4x4(
+          ex=atom_positions['C'] - atom_positions['CA'],
+          ey=atom_positions['CA'] - atom_positions['N'],
+          translation=atom_positions['C']
+      )
+      restype_rigid_group_atom14_idx[restype, 3, :] = np.array(
+          to_atom14_index(resname, ['CA', 'C', 'O'])
+      )
+      restype_rigid_group_default_frame[restype, 3, :, :] = mat
+      restype_rigid_group_mask[restype, 3] = True
+      restype_rigid_group_depend[restype, 3] = torsion_angles_depend[restype][2]
 
     # chi1-frame to backbone
     if torsion_angles_mask[restype][3]:
@@ -945,7 +1008,10 @@ atom14_van_der_waals_radius = np.zeros(
 
 def _make_atom14_van_der_waals_radius():
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
     for atom_idx, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
       if not atom_name:
@@ -970,7 +1036,10 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor
   )
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
-    resname = restype_1to3[restype_letter]
+    if not is_aa(restype):
+      continue
+
+    resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
 
     # create lower and upper bounds for clashes

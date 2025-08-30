@@ -106,7 +106,9 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
             f'PDB contains an insertion code at chain {chain.id} and residue '
             f'index {res.id[1]}. These are not supported.'
         )
-      res_shortname = residue_constants.restype_3to1.get(res.resname, 'X')
+      res_shortname = residue_constants.restype_3to1.get(
+          res.resname, ('X', residue_constants.PROT)
+      )
       restype_idx = residue_constants.restype_order.get(
           res_shortname, residue_constants.restype_num
       )
@@ -166,7 +168,9 @@ def to_pdb(prot: Protein, model: str = '1', parent: str = 'N/A') -> str:
     PDB string.
   """
   restypes = residue_constants.restypes_with_x
-  res_1to3 = lambda r: residue_constants.restype_1to3.get(restypes[r], 'UNK')
+  res_1to3 = lambda r: residue_constants.restype_1to3.get(
+      (restypes[r], residue_constants.moltype(r)), 'UNK'
+  )
   #atom_types = residue_constants.atom_types
 
   pdb_lines = []

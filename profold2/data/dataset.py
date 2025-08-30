@@ -28,7 +28,7 @@ from profold2.data.parsers import parse_fasta
 from profold2.data.padding import pad_sequential, pad_rectangle
 from profold2.data.utils import (
     compose_pid, decompose_pid, fix_residue_id, fix_atom_id, fix_coord, parse_seq_index,
-    seq_index_join, seq_index_split, str_seq_index
+    parse_seq_type, seq_type_dict, seq_index_join, seq_index_split, str_seq_index
 )
 from profold2.utils import default, env, exists, timing
 
@@ -125,7 +125,7 @@ def _msa_as_seq(item, idx, str_key='msa'):
     i, new_order = 0, []
 
     while i < len(item['str_seq']):
-      if item['str_seq'][i] != residue_constants.restypes_with_x_and_gap[-1]:
+      if item['str_seq'][i] not in residue_constants.restypes_gap:
         new_order.append(i)
       i += 1
     logger.debug(
@@ -143,12 +143,23 @@ def _msa_as_seq(item, idx, str_key='msa'):
     if 'coord' in item:
       # Apply new coord_mask based on aatypes
       restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
-      includes = set(['N', 'CA', 'C', 'CB', 'O'])
+      includes = set(
+          [
+              ('N',    residue_constants.PROT),
+              ('CA',   residue_constants.PROT),
+              ('C',    residue_constants.PROT),
+              ('CB',   residue_constants.PROT),
+              ('O',    residue_constants.PROT),
+          ]
+      )
       for i in range(residue_constants.restype_num):
-        resname = residue_constants.restype_1to3[residue_constants.restypes[i]]
+        mol_type = residue_constants.moltype(i)
+        resname = residue_constants.restype_1to3[
+            (residue_constants.restypes[i], mol_type)
+        ]
         atom_list = residue_constants.restype_name_to_atom14_names[resname]
         for j in range(restype_atom14_mask.shape[1]):
-          if restype_atom14_mask[i, j] > 0 and atom_list[j] not in includes:
+          if restype_atom14_mask[i, j] > 0 and (atom_list[j], mol_type) not in includes:
             restype_atom14_mask[i, j] = 0
       coord_exists = torch.gather(
           torch.from_numpy(restype_atom14_mask), 0,
@@ -176,7 +187,9 @@ def _msa_as_seq(item, idx, str_key='msa'):
   return item
 
 
-def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
+def _make_msa_features(
+    sequences, seq_type=residue_constants.PROT, msa_idx=0, max_msa_depth=None
+):
   """Constructs a feature dict of MSA features."""
   def parse_a4m(sequences):
     deletion_matrix = []
@@ -213,7 +226,7 @@ def _make_msa_features(sequences, msa_idx=0, max_msa_depth=None):
     int_msa.append(
         [
             residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
-                residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence
+                residue_constants.HHBLITS_AA_TO_ID[(res, seq_type)]] for res in sequence
         ]
     )
   int_msa = torch.as_tensor(int_msa, dtype=torch.int)
@@ -305,7 +318,12 @@ def _make_var_choice(var_list, attr_list, max_var_depth, defval=1.0):
 
 
 def _make_var_features(
-    sequences, descriptions, var_idx=0, attr_dict=None, max_var_depth=None
+    sequences,
+    descriptions,
+    var_idx=0,
+    seq_type=residue_constants.PROT,
+    attr_dict=None,
+    max_var_depth=None,
 ):
   """Constructs a feature dict of MSA features."""
   def parse_a4m(sequences):
@@ -344,7 +362,7 @@ def _make_var_features(
     int_msa.append(
         [
             residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
-                residue_constants.HHBLITS_AA_TO_ID[res]] for res in sequence
+                residue_constants.HHBLITS_AA_TO_ID[(res, seq_type)]] for res in sequence
         ]
     )
 
@@ -393,6 +411,7 @@ def _make_seq_features(
     seq_color=1,
     seq_entity=None,
     seq_sym=None,
+    seq_type=residue_constants.PROT,
     max_seq_len=None
 ):
   residue_index = torch.arange(len(sequence), dtype=torch.int)
@@ -410,6 +429,7 @@ def _make_seq_features(
       residue_constants.sequence_to_onehot(
           sequence=sequence,
           mapping=residue_constants.restype_order_with_x,
+          mol_type=seq_type,
           map_unknown_to_x=True
       ),
       dtype=torch.int
@@ -417,8 +437,8 @@ def _make_seq_features(
   # residue_index = torch.arange(len(sequence), dtype=torch.int)
   str_seq = ''.join(
       map(
-          lambda a: a if a in residue_constants.restype_order_with_x else
-          residue_constants.restypes_with_x[-1], sequence
+          lambda a: a if (a, seq_type) in residue_constants.restype_order_with_x else
+          residue_constants.restypes_with_x[-1][0], sequence
       )
   )
   mask = torch.ones(len(sequence), dtype=torch.bool)
@@ -429,6 +449,7 @@ def _make_seq_features(
       seq_color=seq_color,
       seq_entity=seq_entity,
       seq_sym=seq_sym,
+      seq_type=seq_type,
       str_seq=str_seq,
       mask=mask
   )
@@ -480,9 +501,10 @@ def _make_pdb_features(
       int_resseq_start = int_resseq
     if not exists(int_resseq_end) or int_resseq != int_resseq_end:
       # sequence
-      resname = residue_constants.restype_3to1.get(
-          residue_id, residue_constants.restypes_with_x[-1]
+      resname, seq_type = residue_constants.restype_3to1.get(
+          residue_id, (residue_constants.restypes_with_x[-1], residue_constants.PROT)
       )
+      assert seq_type == residue_constants.PROT
       seq.append(resname)
 
       # cordinates
@@ -983,8 +1005,14 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
     if exists(self.descriptions) and exists(self.descriptions[seq_idx]):
       desc = self.descriptions[seq_idx]
       residue_index = parse_seq_index(desc, input_sequence, residue_index)
+      seq_type = parse_seq_type(desc)
+      if isinstance(seq_type, list):
+        seq_type = [seq_type_dict[s] for s in seq_type]
+      else:
+        seq_type = seq_type_dict[seq_type]
       desc = desc.split()[0]
     else:
+      seq_type = residue_constants.PROT
       desc = str(seq_idx)
     seq_color = torch.ones(len(input_sequence), dtype=torch.int)
     if self.domain_as_seq:
@@ -994,16 +1022,20 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
               torch.cumsum(residue_index[:-1] + 1 != residue_index[1:], dim=-1)
           )
       )
+      chains = torch.unique_consecutive(seq_color)
+      assert isinstance(seq_type, list) or len(chains) == 1
+
     ret = dict(
         pid=desc,
         seq=seq,
         seq_index=residue_index,
         seq_color=seq_color,
+        seq_type=seq_type,
         str_seq=str_seq,
         mask=mask
     )
     if exists(self.msa) and exists(self.msa[seq_idx]):
-      ret.update(_make_msa_features(self.msa[seq_idx], msa_idx=msa_idx))
+      ret.update(_make_msa_features(self.msa[seq_idx], seq_type, msa_idx=msa_idx))
     if msa_idx > 0:
       ret = _msa_as_seq(ret, msa_idx)
     return ret
@@ -1098,7 +1130,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           for line in filter(
               lambda x: len(x) > 0, map(lambda x: fs.textise(x).strip(), f)
           ):
-            v, k = line.split()
+            v, k, *_ = line.split()
             self.mapping[k] = v
             self.cluster[v].append(k)
 
@@ -1254,9 +1286,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
       if exists(domains):
         if self.feat_flags & FEAT_MSA:
-          ret.update(self.get_msa_features_new(fs, pkey))
+          ret.update(self.get_msa_features_new(fs, pkey, seq_type=ret['seq_type']))
         if self.feat_flags & FEAT_VAR:
-          ret.update(self.get_var_features_new(fs, pkey))
+          ret.update(self.get_var_features_new(fs, pkey, seq_type=ret['seq_type']))
         ret = self.data_from_domain(ret, domains)
       if exists(crop_fn):
         clip = crop_fn(ret)
@@ -1264,9 +1296,18 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret = _protein_crop_fn(ret, clip)
           ret['clip'] = clip
       if not exists(domains) and (self.feat_flags & FEAT_MSA):
-        ret.update(self.get_msa_features_new(fs, pkey, ret.get('clip')))
+        assert isinstance(ret['seq_type'], int)
+        ret.update(
+            self.get_msa_features_new(
+                fs, pkey, seq_type=ret['seq_type'], clip=ret.get('clip')
+            )
+        )
       if not exists(domains) and (self.feat_flags & FEAT_VAR):
-        ret.update(self.get_var_features_new(fs, pkey, ret.get('clip')))
+        ret.update(
+            self.get_var_features_new(
+                fs, pkey, seq_type=ret['seq_type'], clip=ret.get('clip')
+            )
+        )
 
     if exists(domains):
       # CATH update pid
@@ -1386,7 +1427,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         for field in ('msa_idx', 'num_msa'):
           ret[field] = max(ret.get(field, 0), feat[field])
         m, n = len(ret.get('str_msa', [])), len(feat['str_msa'])
-        gap_idx = residue_constants.restypes_with_x_and_gap.index('-')
+        gap_idx = residue_constants.restype_order_with_x_and_gap[
+            (residue_constants.restypes_gap[feat['seq_type'] - 1], feat['seq_type'])]
         if m < n and 'msa' in ret:
           seq_len = len(ret['str_msa'][0])
           ret['str_msa'] += ['-' * seq_len] * (n - m)
@@ -1463,7 +1505,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 feat['del_var'][var_idx]
             )
 
-    ret['pid'] = compose_pid(pid, ','.join(chains))
+    ret['pid'] = compose_pid(pid, ','.join(filter(lambda c: c in feats, chains)))
     if self.feat_flags & FEAT_VAR and 'var' in ret and ret['var']:
       assert 'length' in ret
       var_dict = ret['var']
@@ -1628,7 +1670,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
     return self.resolu.get(pid[:4], -1.)
 
-  def get_msa_features_new(self, fs, protein_id, clip=None):
+  def get_msa_features_new(
+      self, fs, protein_id, seq_type=residue_constants.PROT, clip=None
+  ):
     k = int(np.random.randint(len(self.msa_list)))
     source = self.msa_list[k]
     with fs.open(f'msa/{protein_id}/{source}/{protein_id}.a4m') as f:
@@ -1673,12 +1717,17 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['msa_idx'] = int(np.argmax(np.random.multinomial(1, w))) + 1
     ret.update(
         _make_msa_features(
-            sequences, msa_idx=ret['msa_idx'], max_msa_depth=self.max_msa_depth
+            sequences,
+            seq_type=seq_type,
+            msa_idx=ret['msa_idx'],
+            max_msa_depth=self.max_msa_depth
         )
     )
     return ret
 
-  def get_var_features_new(self, fs, protein_id, clip=None):
+  def get_var_features_new(
+      self, fs, protein_id, seq_type=residue_constants.PROT, clip=None
+  ):
     variant_path = f'{self.var_dir}/{protein_id}/msas/{protein_id}.a3m'
     if fs.exists(variant_path):
       with fs.open(variant_path) as f:
@@ -1720,6 +1769,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               sequences,
               descriptions,
               var_idx=ret['var_idx'],
+              seq_type=seq_type,
               attr_dict=self.attr_list,
               max_var_depth=self.max_var_depth
           )
@@ -1738,7 +1788,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
   def get_structure_label_npz(
       self, fs, protein_key, protein_id, seq_color=1, seq_entity=None, seq_sym=None
   ):
-    ret = {}
+    ret = {'seq_type': residue_constants.PROT}  # protein by default
 
     fasta_file = f'{self.fasta_dir}/{protein_key}.fasta'
     if fs.exists(fasta_file):
@@ -1749,6 +1799,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         raise ValueError(f'More than one input sequence found in {fasta_file}.')
       input_sequence = input_seqs[0]
       input_description = input_descs[0]
+      input_type = seq_type_dict[parse_seq_type(input_description)]
 
       ret.update(
           _make_seq_features(
@@ -1757,6 +1808,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               seq_color=seq_color,
               seq_entity=seq_entity,
               seq_sym=seq_sym,
+              seq_type=input_type,
               max_seq_len=None
           )
       )
@@ -1776,7 +1828,34 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               ret.update(
                   coord_plddt=torch.ones_like(ret['coord_mask'], dtype=torch.float32)
               )
-    else:  # from pdb_db file
+
+          # FIX: compatible with atom14
+          for field in ('coord', 'coord_mask', 'coord_plddt'):
+            if field in ret:
+              if ret[field].shape[1] < residue_constants.atom14_type_num:
+                pad = torch.zeros(
+                    ret[field].shape[0],
+                    residue_constants.atom14_type_num - ret[field].shape[1],
+                    *ret[field].shape[2:],
+                    dtype=ret[field].dtype
+                )
+                ret[field] = torch.cat((ret[field], pad), dim=1)
+              elif ret[field].shape[1] > residue_constants.atom14_type_num:
+                ret[field] = ret[field][:, :residue_constants.atom14_type_num, ...]
+        else:
+          l = ret['seq'].shape[0]
+          ret.update(
+              coord=torch.zeros(
+                  l, residue_constants.atom14_type_num, 3, dtype=torch.float32
+              ),
+              coord_mask=torch.zeros(
+                  l, residue_constants.atom14_type_num, dtype=torch.bool
+              ),
+              coord_plddt=torch.ones(
+                  l, residue_constants.atom14_type_num, dtype=torch.float32
+              )
+          )
+    else:  # from pdb_db file, NOTE: protein supported only
       for pdb_type in ('pdb', 'cif', None):  # None is a sentinal
         if exists(pdb_type):
           pdb_file = f'{self.pdb_dir}/{protein_id}.{pdb_type}'
@@ -1872,7 +1951,9 @@ def _collate_fn(batch, feat_flags=None):
     for field in ('msa_idx', 'num_msa'):
       ret[field] = _to_tensor(field, dtype=torch.int)
     ret['msa'] = pad_rectangle(
-        _to_list('msa'), max_batch_len, padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        _to_list('msa'),
+        max_batch_len,
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('msa_mask', 'del_msa'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
@@ -1884,7 +1965,7 @@ def _collate_fn(batch, feat_flags=None):
     ret['variant'] = pad_rectangle(
         _to_list('variant'),
         max_batch_len,
-        padval=residue_constants.HHBLITS_AA_TO_ID['-']
+        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = pad_rectangle(_to_list(field), max_batch_len)
