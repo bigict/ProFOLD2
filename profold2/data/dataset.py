@@ -1786,6 +1786,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
 
   def get_resolution(self, protein_id):
     pid, _ = decompose_pid(protein_id)  # pylint: disable=unbalanced-tuple-unpacking
+    # HACK: for rna or dna rebuild dataset
+    if pid.startswith('rna-') or pid.startswith('dna-'):
+      pid = pid[4:]
     return self.resolu.get(pid[:4], -1.)
 
   def get_msa_features_new(
