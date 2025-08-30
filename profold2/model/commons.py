@@ -236,6 +236,8 @@ class Attention(nn.Module):
       dim_head=64,
       dropout=0.,
       gating=True,
+      q_use_bias=False,
+      kv_use_bias=False,
       global_query_attn=False
   ):
     super().__init__()
@@ -244,11 +246,11 @@ class Attention(nn.Module):
     self.scale = dim_head**-0.5
 
     dim_inner = dim_head * heads
-    self.to_q = nn.Linear(dim_q, dim_inner, bias=False)
+    self.to_q = nn.Linear(dim_q, dim_inner, bias=q_use_bias)
     if global_query_attn:
-      self.to_kv = nn.Linear(dim_kv, dim_head * 2, bias=False)
+      self.to_kv = nn.Linear(dim_kv, dim_head * 2, bias=kv_use_bias)
     else:
-      self.to_kv = nn.Linear(dim_kv, dim_inner * 2, bias=False)
+      self.to_kv = nn.Linear(dim_kv, dim_inner * 2, bias=kv_use_bias)
     self.to_out = nn.Linear(dim_inner, dim_q)
 
     self.gating = nn.Linear(dim_kv, dim_inner) if gating else None
