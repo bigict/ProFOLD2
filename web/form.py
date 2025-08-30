@@ -10,9 +10,11 @@ from web import db
 _JOBID_RE = re.compile('[a-zA-Z0-9_]+', re.I)
 _EMAIL_RE = re.compile('^[^@\\s]+@([-a-z0-9]+\\.)+[a-z]{2,}$', re.I)
 
+
 def bytes_to_string(byte_values):
   t = io.TextIOWrapper(io.BytesIO(byte_values))
   return t.read()
+
 
 def var_get(var, args, files=None, defval=None, func=lambda x: x.strip()):
   val = defval
@@ -31,6 +33,7 @@ def var_get(var, args, files=None, defval=None, func=lambda x: x.strip()):
     val = func(val)
   return val
 
+
 def validate(args, files=None):
   erros = []
 
@@ -48,8 +51,9 @@ def validate(args, files=None):
 
   # validate sequence
   try:
-    sequences = var_get(('sequences', 'sequence_file'), args,
-            files=files, func=parse_fasta)
+    sequences = var_get(
+        ('sequences', 'sequence_file'), args, files=files, func=parse_fasta
+    )
     if sequences:
       n = 0
       sequences, descriptions = sequences
@@ -64,10 +68,10 @@ def validate(args, files=None):
           if not aa in residue_constants.restype_order:
             i, k = min(0, j - 20), max(len(sequence), j + 20)
             erros.append((f'In the following sequence, the blue character is invalid.<br>'  # pylint: disable=line-too-long
-                       f'{description}<br>'
-                       f'...{sequence[i:j]}<font color="blue">{aa}</font>{sequence[j+1:k]} ...'))  # pylint: disable=line-too-long
+                          f'{description}<br>'
+                          f'...{sequence[i:j]}<font color="blue">{aa}</font>{sequence[j+1:k]} ...'))  # pylint: disable=line-too-long
         n += len(sequence) + len(description) + 2
-      if n >= (1<<16):
+      if n >= (1 << 16):
         erros.append(f'`input sequences` length should be less than {1<<6}k')
     if not sequences:
       erros.append('`sequences` requires and should be FASTA!')
