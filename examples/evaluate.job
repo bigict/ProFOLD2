@@ -22,7 +22,7 @@ help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [eval_opt ...]"
   echo "positional arguments:"
   echo "    eval_opt   evaluate option."
-  echo "               \`PYTHONPATH=${PWD} python ${PWD}/profold2/command/main.py evaluate -h\` for further help."
+  echo "               \`python ${PWD}/main.py evaluate -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
@@ -86,7 +86,7 @@ runner="python"
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun ${runner}"
 fi
-PYTHONPATH=${PWD} ${runner} ${PWD}/profold2/command/main.py ${node_opts} evaluate \
+${runner} ${PWD}/main.py ${node_opts} evaluate \
     --prefix=${CWD}/${exp}.eval${model_suffix} \
     \
     --model=${CWD}/${exp}.folding/model.pth${model_suffix} \
