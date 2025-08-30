@@ -17,7 +17,15 @@ setup(
     keywords=[
         'artificial intelligence', 'attention mechanism', 'protein folding'
     ],
-    install_requires=['biopython', 'einops>=0.3', 'numpy', 'torch>=1.6'],
+    install_requires=[
+        'biopython',
+        'einops>=0.3',
+        'openmm>=8.0.0',
+        'pdbfixer',
+        'tensorboard',
+        'torch>=2.3.1',
+        'tqdm'
+    ],
     test_suite='tests',
     include_package_data=True,
     package_data={
