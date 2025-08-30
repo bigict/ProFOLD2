@@ -23,7 +23,7 @@ help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [pred_opt ...] fasta_file [fasta_file ...]"
   echo "positional arguments:"
   echo "    pred_opt   predict option."
-  echo "               \`PYTHONPATH=${PWD} python ${PWD}/profold2/command/main.py predict -h\` for further help."
+  echo "               \`python ${PWD}/main.py predict -h\` for further help."
   echo "    fasta_file fasta format protein sequence file."
   echo "options:"
   echo "    -h, --help show this help message and exit"
@@ -81,7 +81,7 @@ runner="python"
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun ${runner}"
 fi
-PYTHONPATH=${PWD} ${runner} ${PWD}/profold2/command/main.py ${node_opts} predict \
+${runner} ${PWD}/main.py ${node_opts} predict \
     --prefix=${CWD}/${exp}.pred${model_suffix} \
     \
     --models ${CWD}/${exp}.folding/model.pth${model_suffix} \

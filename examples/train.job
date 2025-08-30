@@ -23,7 +23,7 @@ help() {
   echo "usage: `basename $0` [-h] -p {slurm,local} -- [train_opt ...]"
   echo "positional arguments:"
   echo "    train_opt  train option."
-  echo "               \`PYTHONPATH=${PWD} python ${PWD}/profold2/command/main.py train -h\` for further help."
+  echo "               \`python ${PWD}/main.py train -h\` for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -p PLATFORM, --platform PLATFORM {slurm,local}"
@@ -89,7 +89,7 @@ runner="python"
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun ${runner}"
 fi
-PYTHONPATH=${PWD} ${runner} ${PWD}/profold2/command/main.py ${node_opts} train \
+${runner} ${PWD}/main.py ${node_opts} train \
     --prefix=${CWD}/${exp}.folding \
     --checkpoint_max_to_keep=10 \
     --num_batches=${num_batches:-10000} \
