@@ -1,5 +1,26 @@
 set -e
 
+help() {
+  echo "usage: `basename $0` [-h]"
+  echo "options:"
+  echo "    -h, --help show this help message and exit"
+  echo "    -c, --do-cleanup cleanup cached data"
+  exit $1
+}
+
+do_cleanup=0
+
+ARGS=$(getopt -o "ch" -l "do-cleanup,help" -- "$@") || help 1
+eval "set -- ${ARGS}"
+while true; do
+  case "$1" in
+    (-c | --do-cleanup) do_cleanup=1; shift 1;;
+    (-h | --help) help 0 ;;
+    (--) shift 1; break;;
+    (*) help 1;
+  esac
+done
+
 cuda_version=${cuda_version:-"12.1.1"}
 gcc_version=${gcc_version:-"12.4.0"}
 openmm_version=${openmm_version:-"8.0.0"}
@@ -34,3 +55,8 @@ conda install -y -c conda-forge \
     einops \
     tensorboard \
     tqdm
+
+if [ ${do_cleanup} -ne 0 ]; then
+  pip cache purge
+  conda clean -a -y -f
+fi
