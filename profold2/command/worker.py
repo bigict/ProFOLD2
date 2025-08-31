@@ -6,6 +6,7 @@ from datetime import timedelta
 import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
+import re
 import resource
 
 import torch
@@ -189,6 +190,35 @@ class WorkerModel(object):
   def device(self):
     return self.xpu.device
 
+  def hook(self, model):
+    def _load_state_dict_pre_hook(state_dict, *args, **kwargs):
+      key_modifier_list = [
+          ('(.*)impl.token_emb.(.*)', '\\1impl.embedder.to_single_emb.\\2'),
+          ('(.*)impl.to_pairwise_repr.(.*)', '\\1impl.embedder.to_pairwise_emb.\\2')
+      ]
+      key_modifier_list = [
+          functools.partial(re.sub, pattern, repl)
+          for pattern, repl in key_modifier_list
+      ]
+      key_list_new = {}
+      for key, val in state_dict.items():
+        key_new = key
+        for key_modifier in key_modifier_list:
+          key_new = key_modifier(key_new)
+        if key_new != key:
+          logging.warning('load_state_dict_pre_hook: from <%s> to <%s>', key, key_new)
+          key_list_new[key] = key_new
+      if key_list_new:
+        for key, key_new in key_list_new.items():
+          state_dict[key_new] = state_dict[key]
+          del state_dict[key]
+
+    if hasattr(model, 'register_load_state_dict_pre_hook'):
+      register_hook = model.register_load_state_dict_pre_hook
+    else:
+      register_hook = model._register_load_state_dict_pre_hook
+    return register_hook(_load_state_dict_pre_hook)
+
   def wrap(self, **kwargs):
     model = AlphaFold2(**kwargs)
 
@@ -203,6 +233,8 @@ class WorkerModel(object):
           find_unused_parameters=False
       )
       model._set_static_graph()  # pylint: disable=protected-access
+
+    self.hook(model)
 
     return model
 
@@ -228,6 +260,9 @@ class WorkerModel(object):
         kwargs[key] = checkpoint[key]
 
     model = AlphaFold2(**kwargs)
+
+    self.hook(model)
+
     model.load_state_dict(checkpoint['model'])
     if self.xpu.is_available():
       model = model.to(device=self.xpu.device)
