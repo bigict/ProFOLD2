@@ -36,7 +36,7 @@ COPY . ${profold_home}
 
 # Install dependencies
 ENV cuda_version=${CUDA}
-RUN bash ${profold_home}/install_env.sh
+RUN bash ${profold_home}/install_env.sh -c
 
 # Add SETUID bit to the ldconfig binary so that non-root users can run it.
 RUN chmod u+s /sbin/ldconfig.real
