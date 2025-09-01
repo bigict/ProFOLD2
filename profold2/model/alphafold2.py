@@ -87,7 +87,8 @@ class InputEmbeddings(nn.Module):
       m_mask = msa_mask
       assert exists(msa_mask)
     else:
-      m = self.to_single_emb(rearrange(target_feat, '... i d -> ... () i d'))
+      # TODO: target_feat in residue id.
+      m = self.to_single_emb(rearrange(target_feat, '... i -> ... () i'))
       m_mask = rearrange(target_mask, '... i -> ... () i')
 
     # add single representation to msa representation
