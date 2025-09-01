@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Amber relaxation."""
 from typing import Any, Dict, Sequence, Tuple
 import numpy as np
@@ -27,17 +26,13 @@ RELAX_STIFFNESS = 10.0
 RELAX_EXCLUDE_RESIDUES = []
 RELAX_MAX_OUTER_ITERATIONS = 3
 
+
 class AmberRelaxation(object):
   """Amber relaxation."""
-
-  def __init__(self,
-               *,
-               max_iterations: int,
-               tolerance: float,
-               stiffness: float,
-               exclude_residues: Sequence[int],
-               max_outer_iterations: int,
-               use_gpu: bool):
+  def __init__(
+      self, *, max_iterations: int, tolerance: float, stiffness: float,
+      exclude_residues: Sequence[int], max_outer_iterations: int, use_gpu: bool
+  ):
     """Initialize Amber Relaxer.
 
     Args:
@@ -62,15 +57,18 @@ class AmberRelaxation(object):
     self._max_outer_iterations = max_outer_iterations
     self._use_gpu = use_gpu
 
-  def process(self, *,
-              prot: protein.Protein) -> Tuple[str, Dict[str, Any], np.ndarray]:
+  def process(self, *, prot: protein.Protein) -> Tuple[str, Dict[str, Any], np.ndarray]:
     """Runs Amber relax on a prediction, adds hydrogens, returns PDB string."""
     out = amber_minimize.run_pipeline(
-        prot=prot, max_iterations=self._max_iterations,
-        tolerance=self._tolerance, stiffness=self._stiffness,
+        prot=prot,
+        max_iterations=self._max_iterations,
+        tolerance=self._tolerance,
+        stiffness=self._stiffness,
         exclude_residues=self._exclude_residues,
         max_outer_iterations=self._max_outer_iterations,
-        use_gpu=self._use_gpu, checks=False)
+        use_gpu=self._use_gpu,
+        checks=False
+    )
     min_pos = out['pos']
     start_pos = out['posinit']
     rmsd = np.sqrt(np.sum((start_pos - min_pos)**2) / start_pos.shape[0])
@@ -86,6 +84,5 @@ class AmberRelaxation(object):
     #utils.assert_equal_nonterminal_atom_types(
     #    protein.from_pdb_string(min_pdb).atom_mask,
     #    prot.atom_mask)
-    violations = out['structural_violations'][
-        'total_per_residue_violations_mask']
+    violations = out['structural_violations']['total_per_residue_violations_mask']
     return min_pdb, debug_data, violations

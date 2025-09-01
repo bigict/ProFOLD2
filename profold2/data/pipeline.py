@@ -42,6 +42,7 @@ def make_sequence_features(
   features['aatype'] = residue_constants.sequence_to_onehot(
       sequence=sequence,
       mapping=residue_constants.restype_order_with_x,
+      mol_type=residue_constants.PROT,
       map_unknown_to_x=True)
   features['between_segment_residues'] = np.zeros((num_res,), dtype=np.int32)
   features['domain_name'] = np.array([description.encode('utf-8')],
@@ -69,7 +70,7 @@ def make_msa_features(msas: Sequence[parsers.Msa]) -> FeatureDict:
         continue
       seen_sequences.add(sequence)
       int_msa.append(
-          [residue_constants.HHBLITS_AA_TO_ID[res] for res in sequence])
+          [residue_constants.HHBLITS_AA_TO_ID[(res, residue_constants.PROT)] for res in sequence])
       deletion_matrix.append(msa.deletion_matrix[sequence_index])
       identifiers = msa_identifiers.get_identifiers(
           msa.descriptions[sequence_index])
@@ -213,7 +214,7 @@ class DataPipeline:
           use_precomputed_msas=self.use_precomputed_msas)
       bfd_msa = parsers.parse_stockholm(jackhmmer_small_bfd_result['sto'])
     else:
-      bfd_out_path = os.path.join(msa_output_dir, 'bfd_uniref_hits.a3m')
+      bfd_out_path = os.path.join(msa_output_dir, 'bfd_uniclust_hits.a3m')
       hhblits_bfd_uniref_result = run_msa_tool(
           msa_runner=self.hhblits_bfd_uniref_runner,
           input_fasta_path=input_fasta_path,

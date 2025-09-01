@@ -127,7 +127,7 @@ def main(args):  # pylint: disable=redefined-outer-name
     mounts.append(mount)
     target_fasta_paths.append(target_path)
   command_args += target_fasta_paths
-  logging.debug('command_args: %s', command_args)
+  logging.debug('command_args: %s', ' '.join(command_args))
 
   # Run docker
   client = docker.from_env()

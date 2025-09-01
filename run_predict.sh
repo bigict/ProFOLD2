@@ -33,8 +33,8 @@ create_sto() {
 }
 
 docker_image_name="profold2:msa"
-data_dir=/mnt/data/profold2/db
-output_dir=/mnt/data/profold2/test
+data_dir=${CWD}/db
+output_dir=${CWD}/test
 max_template_date="2021-05-14"
 msa_mode=1   # msa
 pf2_params=""
@@ -51,6 +51,10 @@ while getopts 'd:o:m:t:p:sh' OPT; do
   esac
 done
 shift $((OPTIND - 1))
+
+#export AxialAttention_accept_kernel_fn=1
+export OuterProductMean_eps=1e-3
+export FeedForward_activation="ReLU"
 
 mkdir -p ${output_dir}
 for f in $*; do
@@ -75,15 +79,22 @@ for f in $*; do
     fi
     af2_params="--use_precomputed_msas ${af2_params}"
   fi
-  python docker/run_docker.py \
-      --docker_image_name=${docker_image_name} \
-      --data_dir=${data_dir} \
-      --max_template_date=${max_template_date} \
-      --output_dir=${output_dir} \
-      --models model_msa_1 \
-      --model_shard_size=2 \
-      --fasta_fmt=pkl \
-      ${pf2_params} \
-      ${f}
+
+  python main.py --nnodes=1 --init_method=file:///tmp/profold2.dist predict \
+  	--uniref90_database_path=${data_dir}/uniref90/uniref90.fasta \
+  	--mgnify_database_path=${data_dir}/mgnify/mgy_clusters.fa \
+  	--template_mmcif_dir=${data_dir}/pdb_mmcif/mmcif_files \
+  	--obsolete_pdbs_path=${data_dir}/pdb_mmcif/obsolete.dat \
+  	--pdb70_database_path=${data_dir}/pdb70/pdb70 \
+  	--uniref30_database_path=${data_dir}/uniref30/UniRef30_2021_03 \
+  	--bfd_database_path=${data_dir}/bfd/bfd_metaclust_clu_complete_id30_c90_final_seq.sorted_opt \
+  	--max_template_date=2021-05-14 \
+	--map_location=cpu \
+	--models ${data_dir}/params/model_msa_1.pth \
+	--fasta_fmt=pkl --model_recycles=2 --model_shard_size=2 \
+  	--use_precomputed_msas \
+  	--prefix=${output_dir} \
+  	--verbose ${f}
+
   echo "Finished (${f}|${msa_mode}) `date`"
 done

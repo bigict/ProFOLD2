@@ -97,8 +97,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   with open(args.model_headers, 'r', encoding='utf-8') as f:
     headers = json.loads(f.read())
 
-  logging.info('Alphafold2.feats: %s', feats)
-  logging.info('Alphafold2.headers: %s', headers)
+  logging.info('AlphaFold2.feats: %s', feats)
+  logging.info('AlphaFold2.headers: %s', headers)
 
   features = FeatureBuilder(feats).to(device)
   model = worker.wrap(dim=args.model_dim,

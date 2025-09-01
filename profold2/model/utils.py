@@ -36,7 +36,6 @@ def get_files(
 
 class Checkpoint:
   """Save and restore PyTorch objects implementing a `state_dict` method."""
-
   def __init__(self, **kwargs):
     """Constructor.
 
@@ -107,8 +106,10 @@ class Checkpoint:
       state = torch.load(Path(save_path), map_location='cpu')
       for name, state_dict in state.items():
         if not hasattr(self, name):
-          logging.warning('%s in saved checkpoint not in checkpoint to '
-                          'reload. Skipping it.', name)
+          logging.warning(
+              '%s in saved checkpoint not in checkpoint to '
+              'reload. Skipping it.', name
+          )
           continue
         obj = getattr(self, name)
         logging.debug('loading %s ...', name)
@@ -155,7 +156,6 @@ class CheckpointManager:
 
     .. _2: https://www.tensorflow.org/api_docs/python/tf/train/CheckpointManager/  # pylint: disable=line-too-long
     """
-
   def __init__(
       self,
       directory: str,
