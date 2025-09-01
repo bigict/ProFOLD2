@@ -1,6 +1,8 @@
-# python 3.7
+# python 3.11
+openmm>=8.0.0
+pdbfixer
+torch>=2.3.1
 biopython
-einops>=0.3
-# numpy
-# torch>=1.6
-# tensorboard
+einops
+tensorboard
+tqdm

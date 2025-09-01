@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A Python wrapper for Kalign."""
 import os
 import subprocess
@@ -34,7 +33,6 @@ def _to_a3m(sequences: Sequence[str]) -> str:
 
 class Kalign:
   """Python wrapper of the Kalign binary."""
-
   def __init__(self, *, binary_path: str):
     """Initializes the Python Kalign wrapper.
 
@@ -66,10 +64,12 @@ class Kalign:
 
     for s in sequences:
       if len(s) < 6:
-        raise ValueError('Kalign requires all sequences to be at least 6 '
-                         'residues long. Got %s (%d residues).' % (s, len(s)))
+        raise ValueError(
+            'Kalign requires all sequences to be at least 6 '
+            'residues long. Got %s (%d residues).' % (s, len(s))
+        )
 
-    with utils.tmpdir_manager(base_dir='/tmp') as query_tmp_dir:
+    with utils.tmpdir_manager() as query_tmp_dir:
       input_fasta_path = os.path.join(query_tmp_dir, 'input.fasta')
       output_a3m_path = os.path.join(query_tmp_dir, 'output.a3m')
 
@@ -84,18 +84,21 @@ class Kalign:
       ]
 
       logging.info('Launching subprocess "%s"', ' '.join(cmd))
-      process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
       with utils.timing('Kalign query'):
         stdout, stderr = process.communicate()
         retcode = process.wait()
-        logging.info('Kalign stdout:\n%s\n\nstderr:\n%s\n',
-                     stdout.decode('utf-8'), stderr.decode('utf-8'))
+        logging.info(
+            'Kalign stdout:\n%s\n\nstderr:\n%s\n', stdout.decode('utf-8'),
+            stderr.decode('utf-8')
+        )
 
       if retcode:
-        raise RuntimeError('Kalign failed\nstdout:\n%s\n\nstderr:\n%s\n'
-                           % (stdout.decode('utf-8'), stderr.decode('utf-8')))
+        raise RuntimeError(
+            'Kalign failed\nstdout:\n%s\n\nstderr:\n%s\n' %
+            (stdout.decode('utf-8'), stderr.decode('utf-8'))
+        )
 
       with open(output_a3m_path) as f:
         a3m = f.read()

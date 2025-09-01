@@ -14,6 +14,7 @@
 """Common utilities for data pipeline tools."""
 import os
 import contextlib
+import gzip
 import shutil
 import tempfile
 import time
@@ -24,7 +25,7 @@ import logging
 @contextlib.contextmanager
 def tmpdir_manager(base_dir: Optional[str] = None):
   """Context manager that deletes a temporary directory on exit."""
-  tmpdir = tempfile.mkdtemp(dir=base_dir)
+  tmpdir = tempfile.mkdtemp(prefix=f'tmp{os.getpid()}', dir=base_dir)
   try:
     yield tmpdir
   finally:
@@ -38,3 +39,8 @@ def timing(msg: str):
   yield
   toc = time.time()
   logging.info('Finished %s in %.3f seconds', msg, toc - tic)
+
+
+@contextlib.contextmanager
+def open():
+  pass

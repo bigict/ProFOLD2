@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A Python wrapper for hmmsearch - search profile against a sequence db."""
 
 import os
@@ -27,13 +26,14 @@ from profold2.data.tools import utils
 
 class Hmmsearch(object):
   """Python wrapper of the hmmsearch binary."""
-
-  def __init__(self,
-               *,
-               binary_path: str,
-               hmmbuild_binary_path: str,
-               database_path: str,
-               flags: Optional[Sequence[str]] = None):
+  def __init__(
+      self,
+      *,
+      binary_path: str,
+      hmmbuild_binary_path: str,
+      database_path: str,
+      flags: Optional[Sequence[str]] = None
+  ):
     """Initializes the Python hmmsearch wrapper.
 
     Args:
@@ -51,13 +51,15 @@ class Hmmsearch(object):
     self.database_path = database_path
     if flags is None:
       # Default hmmsearch run settings.
-      flags = ['--F1', '0.1',
-               '--F2', '0.1',
-               '--F3', '0.1',
-               '--incE', '100',
-               '-E', '100',
-               '--domE', '100',
-               '--incdomE', '100']
+      flags = [
+          '--F1', '0.1',
+          '--F2', '0.1',
+          '--F3', '0.1',
+          '--incE', '100',
+          '-E', '100',
+          '--domE', '100',
+          '--incdomE', '100'
+      ]
     self.flags = flags
 
     if not os.path.exists(self.database_path):
@@ -74,13 +76,14 @@ class Hmmsearch(object):
 
   def query(self, msa_sto: str) -> str:
     """Queries the database using hmmsearch using a given stockholm msa."""
-    hmm = self.hmmbuild_runner.build_profile_from_sto(msa_sto,
-                                                      model_construction='hand')
+    hmm = self.hmmbuild_runner.build_profile_from_sto(
+        msa_sto, model_construction='hand'
+    )
     return self.query_with_hmm(hmm)
 
   def query_with_hmm(self, hmm: str) -> str:
     """Queries the database using hmmsearch using a given hmm."""
-    with utils.tmpdir_manager(base_dir='/tmp') as query_tmp_dir:
+    with utils.tmpdir_manager() as query_tmp_dir:
       hmm_input_path = os.path.join(query_tmp_dir, 'query.hmm')
       out_path = os.path.join(query_tmp_dir, 'output.sto')
       with open(hmm_input_path, 'w') as f:
@@ -89,43 +92,44 @@ class Hmmsearch(object):
       cmd = [
           self.binary_path,
           '--noali',  # Don't include the alignment in stdout.
-          '--cpu', '8'
+          '--cpu',
+          '8'
       ]
       # If adding flags, we have to do so before the output and input:
       if self.flags:
         cmd.extend(self.flags)
       cmd.extend([
-          '-A', out_path,
+          '-A',
+          out_path,
           hmm_input_path,
           self.database_path,
       ])
 
       logging.info('Launching sub-process %s', cmd)
-      process = subprocess.Popen(
-          cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-      with utils.timing(
-          f'hmmsearch ({os.path.basename(self.database_path)}) query'):
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      with utils.timing(f'hmmsearch ({os.path.basename(self.database_path)}) query'):
         stdout, stderr = process.communicate()
         retcode = process.wait()
 
       if retcode:
         raise RuntimeError(
-            'hmmsearch failed:\nstdout:\n%s\n\nstderr:\n%s\n' % (
-                stdout.decode('utf-8'), stderr.decode('utf-8')))
+            'hmmsearch failed:\nstdout:\n%s\n\nstderr:\n%s\n' %
+            (stdout.decode('utf-8'), stderr.decode('utf-8'))
+        )
 
       with open(out_path) as f:
         out_msa = f.read()
 
     return out_msa
 
-  def get_template_hits(self,
-                        output_string: str,
-                        input_sequence: str) -> Sequence[parsers.TemplateHit]:
+  def get_template_hits(
+      self, output_string: str, input_sequence: str
+  ) -> Sequence[parsers.TemplateHit]:
     """Gets parsed template hits from the raw string output by the tool."""
-    a3m_string = parsers.convert_stockholm_to_a3m(output_string,
-                                                  remove_first_row_gaps=False)
+    a3m_string = parsers.convert_stockholm_to_a3m(
+        output_string, remove_first_row_gaps=False
+    )
     template_hits = parsers.parse_hmmsearch_a3m(
-        query_sequence=input_sequence,
-        a3m_string=a3m_string,
-        skip_first=False)
+        query_sequence=input_sequence, a3m_string=a3m_string, skip_first=False
+    )
     return template_hits

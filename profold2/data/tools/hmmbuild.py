@@ -11,14 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A Python wrapper for hmmbuild - construct HMM profiles from MSA."""
 
 import os
 import re
 import subprocess
 import logging
-
 
 # Internal import (7716).
 
@@ -27,11 +25,7 @@ from profold2.data.tools import utils
 
 class Hmmbuild(object):
   """Python wrapper of the hmmbuild binary."""
-
-  def __init__(self,
-               *,
-               binary_path: str,
-               singlemx: bool = False):
+  def __init__(self, *, binary_path: str, singlemx: bool = False):
     """Initializes the Python hmmbuild wrapper.
 
     Args:
@@ -97,10 +91,12 @@ class Hmmbuild(object):
       ValueError: If unspecified arguments are provided.
     """
     if model_construction not in {'hand', 'fast'}:
-      raise ValueError(f'Invalid model_construction {model_construction} - only'
-                       'hand and fast supported.')
+      raise ValueError(
+          f'Invalid model_construction {model_construction} - only'
+          'hand and fast supported.'
+      )
 
-    with utils.tmpdir_manager(base_dir='/tmp') as query_tmp_dir:
+    with utils.tmpdir_manager() as query_tmp_dir:
       input_query = os.path.join(query_tmp_dir, 'query.msa')
       output_hmm_path = os.path.join(query_tmp_dir, 'output.hmm')
 
@@ -121,18 +117,21 @@ class Hmmbuild(object):
       ])
 
       logging.info('Launching subprocess %s', cmd)
-      process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
+      process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
       with utils.timing('hmmbuild query'):
         stdout, stderr = process.communicate()
         retcode = process.wait()
-        logging.info('hmmbuild stdout:\n%s\n\nstderr:\n%s\n',
-                     stdout.decode('utf-8'), stderr.decode('utf-8'))
+        logging.info(
+            'hmmbuild stdout:\n%s\n\nstderr:\n%s\n', stdout.decode('utf-8'),
+            stderr.decode('utf-8')
+        )
 
       if retcode:
-        raise RuntimeError('hmmbuild failed\nstdout:\n%s\n\nstderr:\n%s\n'
-                           % (stdout.decode('utf-8'), stderr.decode('utf-8')))
+        raise RuntimeError(
+            'hmmbuild failed\nstdout:\n%s\n\nstderr:\n%s\n' %
+            (stdout.decode('utf-8'), stderr.decode('utf-8'))
+        )
 
       with open(output_hmm_path, encoding='utf-8') as f:
         hmm = f.read()

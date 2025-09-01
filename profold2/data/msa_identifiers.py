@@ -11,13 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Utilities for extracting identifiers from MSA sequence descriptions."""
 
 import dataclasses
 import re
 from typing import Optional
-
 
 # Sequences coming from UniProtKB database come in the
 # `db|UniqueIdentifier|EntryName` format, e.g. `tr|A0A146SKV9|A0A146SKV9_FUNHE`
@@ -67,8 +65,7 @@ def _parse_sequence_identifier(msa_sequence_identifier: str) -> Identifiers:
   """
   matches = re.search(_UNIPROT_PATTERN, msa_sequence_identifier.strip())
   if matches:
-    return Identifiers(
-        species_id=matches.group('SpeciesIdentifier'))
+    return Identifiers(species_id=matches.group('SpeciesIdentifier'))
   return Identifiers()
 
 

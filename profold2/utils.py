@@ -1,11 +1,15 @@
 """Utils for profold2
 """
+import os
 import contextlib
 from functools import wraps
 from inspect import isfunction
+import tempfile
 import time
+import urllib
 import uuid
 
+from tqdm.auto import tqdm
 import numpy as np
 import torch
 from torch.cuda.amp import autocast
@@ -20,6 +24,28 @@ def default(val, d):
   if exists(val):
     return val
   return d() if isfunction(d) else d
+
+
+def env(*keys, defval=None, dtype=None):
+  for key in keys:
+    value = os.getenv(key)
+    if exists(value):
+      return dtype(value) if exists(dtype) else value
+  return defval
+
+
+def version_cmp(x, y):
+  for a, b in zip(x.split('.'), y.split('.')):
+    if int(a) > int(b):
+      return 1
+    elif int(a) < int(b):
+      return -1
+  return 0
+
+
+def package_dir():
+  cwd = os.path.dirname(__file__)
+  return os.path.dirname(cwd)
 
 
 def unique_id():
@@ -39,6 +65,15 @@ def timing(msg, print_fn, prefix='', callback_fn=None):
   print_fn(f'{prefix}Finished {msg} in {(toc-tic):>.3f} seconds')
 
 
+def wget(url, filename=None, chunk_size=(1 << 20)):
+  with urllib.request.urlopen(url) as f:
+    kwargs = {
+        'total': int(f.headers.get('Content-Length', 0)),
+        'desc': os.path.basename(filename) if exists(filename) else None,
+    }
+    with tqdm.wrapattr(f, 'read', **kwargs) as r:
+      if exists(filename):
+        writer = functools.partial(open, filename, mode='wb')
 # decorators
 
 
