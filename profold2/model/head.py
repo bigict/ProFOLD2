@@ -432,7 +432,7 @@ class FoldingHead(nn.Module):
       dim,
       structure_module_depth,
       structure_module_heads,
-      point_value_dim=4,
+      point_value_dim=8,
       qkv_use_bias=False,
       fape_min=1e-6,
       fape_max=15,

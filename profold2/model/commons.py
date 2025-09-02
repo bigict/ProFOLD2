@@ -62,17 +62,11 @@ def default_list_get(value, n):
 
 
 def embedd_dim_get(dim):
-  if isinstance(dim, (tuple, list)):
-    assert len(dim) == 2  # (dim_single, dim_pairwise)
-    return dim
-  return (dim, dim)
+  return default_list_get(dim, 2)  # (dim_node, dim_edge)
 
 
 def embedd_dropout_get(p):
-  if isinstance(p, (tuple, list)):
-    assert len(p) == 2  # (p_single, p_pairwise)
-    return p
-  return (p, p)
+  return default_list_get(p, 2)  # (p_single, p_pairwise)
 
 
 def tensor_add(x, y):
@@ -204,12 +198,22 @@ class GEGLU(nn.Module):
 class FeedForward(nn.Module):
   """FeedForward layer in transformer
     """
-  def __init__(self, dim, mult=4, dropout=0.):
+  def __init__(self, dim, mult=4, dropout=0., activation=None):
     super().__init__()
     self.norm = nn.LayerNorm(dim)
 
+    # NOTE: activation: ReLU (AlphaFold2), GatedGELU (ProFOLD)
+    activation = default(activation, env('FeedForward_activation', defval='GatedGELU'))
+    if activation == 'GatedGELU':
+      activation = GEGLU
+      amplifier = 2
+    else:
+      assert activation == 'ReLU'
+      activation = nn.ReLU
+      amplifier = 1
+
     self.net = nn.Sequential(
-        nn.Linear(dim, dim * mult * 2), GEGLU(), nn.Dropout(dropout),
+        nn.Linear(dim, dim * mult * amplifier), activation(), nn.Dropout(dropout),
         nn.Linear(dim * mult, dim)
     )
     init_linear_(self.net[-1])
@@ -431,7 +435,7 @@ class AxialAttention(nn.Module):
     if exists(self.edges_to_attn_bias) and exists(edges):
       attn_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
       if exists(edge_mask):
-        attn_mask = rearrange(edge_mask, '... i j -> ... () i j')
+        attn_mask = rearrange(edge_mask.bool(), '... i j -> ... () i j')
         attn_bias = attn_bias.masked_fill(~attn_mask, max_neg_value(attn_bias))
     if exists(attn_bias) and self.col_attn:
       attn_bias = rearrange(attn_bias, '... i j -> ... j i')
@@ -528,7 +532,8 @@ class OuterProductMean(nn.Module):
   def __init__(self, dim_msa, dim_pairwise, dim_hidden=32, eps=1e-5):
     super().__init__()
 
-    self.eps = eps
+    # NOTE: eps: 1e-3 (AlphaFold), 1e-5 (ProFOLD)
+    self.eps = env('OuterProductMean_eps', defval=eps, dtype=float)
     self.norm = nn.LayerNorm(dim_msa)
     dim_hidden = default(dim_hidden, dim_pairwise)
 
@@ -1048,9 +1053,8 @@ class RelativePositionEmbedding(nn.Module):
   def __init__(self, dim, max_rel_dist):
     super().__init__()
 
-    _, dim_pairwise = embedd_dim_get(dim)
     self.max_rel_dist = max_rel_dist
-    self.embedding = nn.Embedding(max_rel_dist * 2 + 1, dim_pairwise)
+    self.embedding = nn.Embedding(max_rel_dist * 2 + 1, dim)
 
   def forward(self, seq_index):
     seq_rel_dist = rearrange(seq_index, '... i -> ... i ()'
@@ -1064,13 +1068,12 @@ class RelativePositionEmbedding(nn.Module):
 class PairwiseEmbedding(nn.Module):
   """PairwiseEmbedding
     """
-  def __init__(self, dim, max_rel_dist=0):
+  def __init__(self, dim_msa, dim_pairwise, max_rel_dist=0):
     super().__init__()
 
-    dim_single, dim_pairwise = embedd_dim_get(dim)
-    self.to_pairwise_repr = nn.Linear(dim_single, dim_pairwise * 2)
+    self.to_pairwise_repr = nn.Linear(dim_msa, dim_pairwise * 2)
     self.relative_pos_emb = RelativePositionEmbedding(
-        dim, max_rel_dist
+        dim_pairwise, max_rel_dist
     ) if max_rel_dist > 0 else None
 
   def embeddings(self):

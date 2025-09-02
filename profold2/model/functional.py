@@ -304,7 +304,7 @@ def distogram_from_positions(coords, breaks):
   return dgram.float()
 
 
-def lddt(pred_points, true_points, points_mask, cutoff=15.):
+def lddt(pred_points, true_points, points_mask, cutoff=15., per_residue=True):
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
       Inputs:
@@ -340,8 +340,9 @@ def lddt(pred_points, true_points, points_mask, cutoff=15.):
   score = 0.25 * sum(dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0))
 
   # Normalize over the appropriate axes.
-  return (torch.sum(cdist_to_score * score, dim=-1) +
-          eps) / (torch.sum(cdist_to_score, dim=-1) + eps)
+  reduce_dim = -1 if per_residue else (-2, -1)
+  return (torch.sum(cdist_to_score * score, dim=reduce_dim) +
+          eps) / (torch.sum(cdist_to_score, dim=reduce_dim) + eps)
 
 
 def plddt(logits):
@@ -746,8 +747,9 @@ def rigids_from_angles(aatypes, backb_frames, angles):
   # Shape (b, l, n+1, 3, 3)
   rotations = torch.stack(
       (
-          ones, zeros, zeros, zeros, cos_angles, -sin_angles, zeros, sin_angles,
-          cos_angles
+          ones,  zeros,       zeros,
+          zeros, cos_angles, -sin_angles,
+          zeros, sin_angles,  cos_angles
       ),
       dim=-1
   )

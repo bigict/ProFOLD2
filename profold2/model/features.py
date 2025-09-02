@@ -6,7 +6,7 @@ from inspect import isfunction
 import numpy as np
 import torch
 from torch.nn import functional as F
-from einops import rearrange, repeat
+from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.data.esm import ESMEmbeddingExtractor

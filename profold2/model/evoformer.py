@@ -2,11 +2,125 @@
  """
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.cuda.amp import autocast
-from einops import rearrange
+from einops import rearrange, repeat
 
-from profold2.model import commons, profiler
+from profold2.common import residue_constants
+from profold2.model import commons, functional, profiler
 from profold2.utils import exists
+
+
+class TemplatePairBlock(nn.Module):
+  """The pair stack block for templates in AlphaFold2
+   """
+  def __init__(self, *, dim, heads, dim_head, attn_dropout, ff_dropout):
+    super().__init__()
+
+    self.attn = commons.PairwiseAttentionBlock(
+        dim_msa=dim,
+        dim_pairwise=dim,
+        heads=heads,
+        dim_head=dim_head,
+        dropout=attn_dropout,
+        disabled_outer_mean=True,
+        multiplication_first=False
+    )
+    self.ff = commons.FeedForward(dim=dim, mult=2, dropout=ff_dropout)
+
+  def forward(self, x, mask, shard_size=None):
+    x = self.attn(x, mask=mask, shard_size=shard_size)
+    x = commons.tensor_add(x, self.ff(x, shard_size=shard_size))
+    return x, mask
+
+
+class SingleTemplateEmbedding(nn.Module):
+  """The pair stack for templates in AlphaFold2
+   """
+  def __init__(
+      self,
+      *,
+      depth,
+      dim,
+      dim_templ_feat=88,
+      templ_dgram_breaks_min=3.25,
+      templ_dgram_breaks_max=50.57,
+      templ_dgram_breaks_num=39,
+      use_template_unit_vector=False,
+      **kwargs
+  ):
+    super().__init__()
+
+    dgram_breaks = torch.linspace(
+        templ_dgram_breaks_min, templ_dgram_breaks_max, steps=templ_dgram_breaks_num
+    )
+    self.register_buffer('dgram_breaks', dgram_breaks, persistent=False)
+    self.use_template_unit_vector = use_template_unit_vector
+
+    self.to_pair = nn.Linear(dim_templ_feat, dim)
+    self.pair_stack = commons.layer_stack(TemplatePairBlock, depth, dim=dim, **kwargs)
+    self.to_out_norm = nn.LayerNorm(dim)
+
+  def forward(self, batch, mask_2d, shard_size=None):
+    _, m, n = batch['template_seq'].shape[:3]
+    template_mask = batch['template_pseudo_beta_mask']
+    template_mask_2d = rearrange(template_mask, '... i -> ... i ()'
+                                ) * rearrange(template_mask, '... j -> ... () j')
+    template_dgram = functional.distogram_from_positions(
+        batch['template_pseudo_beta'], self.dgram_breaks
+    )
+    to_concat = [template_dgram, template_mask_2d[..., None]]
+
+    aatype = F.one_hot(batch['template_seq'].long(), num_classes=22)
+    to_concat += [
+        repeat(aatype, '... j d -> ... i j d', i=n),
+        repeat(aatype, '... i d -> ... i j d', j=n)
+    ]
+
+    n_idx = residue_constants.atom_order['N']
+    ca_idx = residue_constants.atom_order['CA']
+    c_idx = residue_constants.atom_order['C']
+    R, t = functional.rigids_from_3x3(  # pylint: disable=invalid-name
+        batch['template_coord'], indices=(c_idx, ca_idx, n_idx)
+    )
+
+    local_points = torch.einsum(
+        '... i w h,... i j w -> ... i j h', R,
+        rearrange(t, '... j d -> ... () j d') - rearrange(t, '... i d ->... i () d')
+    )
+    inv_distance_scalar = torch.rsqrt(
+        1e-6 + torch.sum(torch.square(local_points), dim=-1, keepdims=True)
+    )
+
+    # Backbone affine mask: whether the residue has C, CA, N
+    # (the template mask defined above only considers pseudo CB).
+    template_mask = (
+        batch['template_coord_mask'][..., n_idx] *
+        batch['template_coord_mask'][..., ca_idx] *
+        batch['template_coord_mask'][..., c_idx]
+    )
+    template_mask_2d = template_mask[..., :, None] * template_mask[..., None, :]
+    inv_distance_scalar *= template_mask_2d[..., None]
+    unit_vector = local_points * inv_distance_scalar
+    if not self.use_template_unit_vector:
+      unit_vector = torch.zeros_like(unit_vector)
+    to_concat += [unit_vector, template_mask_2d[..., None]]
+
+    x = torch.cat(to_concat, dim=-1)
+    # Mask out non-template regions so we don't get arbitrary values in the
+    # distogram for these regions.
+    x *= template_mask_2d[..., None]
+
+    x = self.to_pair(x)
+
+    x = rearrange(x, 'b m ... -> (b m) ...')
+    x, *_ = self.pair_stack(
+        x, repeat(mask_2d, 'b ... -> (b m) ...', m=m), shard_size=shard_size
+    )
+    x = rearrange(x, '(b m) ... -> b m ...', m=m)
+
+    x = self.to_out_norm(x)
+    return x
 
 
 class TemplateEmbedding(nn.Module):
@@ -15,85 +129,72 @@ class TemplateEmbedding(nn.Module):
   def __init__(
       self,
       dim,
-      heads=8,
-      dim_head=64,
+      depth,
+      dim_templ,
+      heads=4,
+      dim_head=16,
       attn_dropout=0.,
-      templates_dim=32,
-      templates_embed_layers=4,
-      templates_angles_feats_dim=55
+      dim_msa=None,
+      **kwargs
   ):
     super().__init__()
 
-    self.to_template_embed = nn.Linear(templates_dim, dim)
-    self.templates_embed_layers = templates_embed_layers
-    self.template_pairwise_embedder = commons.PairwiseAttentionBlock(
-        dim=dim, dim_head=dim_head, heads=heads
+    self.template_pairwise_embedder = SingleTemplateEmbedding(
+        depth=depth,
+        dim=dim_templ,
+        dim_head=dim_head,
+        heads=heads,
+        attn_dropout=attn_dropout,
+        **kwargs
     )
 
     self.template_pointwise_attn = commons.Attention(
-        dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout
+        dim_q=dim,
+        dim_kv=dim_templ,
+        heads=heads,
+        dim_head=dim_head,
+        dropout=attn_dropout,
+        gating=False
     )
 
-    self.template_angle_mlp = nn.Sequential(
-        nn.Linear(templates_angles_feats_dim, dim), nn.GELU(), nn.Linear(dim, dim)
+    self.template_single_embedder = nn.Sequential(
+        nn.Linear(22 + 14 * 2 + 7, dim_msa), nn.ReLU(), nn.Linear(dim_msa, dim_msa)
+    ) if dim_msa else None
+
+  def forward(self, x, x_mask, m, m_mask, batch, shard_size=None):
+
+    n = batch['template_seq'].shape[2]
+    template_mask = batch['template_mask']
+
+    # Make sure the weights are shared across templates by constructing the
+    # embedder here.
+    template_pair_representation = self.template_pairwise_embedder(
+        batch, x_mask, shard_size=shard_size
     )
+    t = rearrange(x, '... i j d -> ... (i j) () d')
+    context = rearrange(template_pair_representation, '... m i j d -> ... (i j) m d')
+    t = self.template_pointwise_attn(t, context=context, context_mask=template_mask)
+    t = rearrange(t, '... (i j) m d -> ... i j (m d)', i=n)
+    x += t
 
-  def forward(
-      self,
-      x,
-      x_mask,
-      m,
-      msa_mask,
-      templates_feats=None,
-      templates_angles=None,
-      templates_mask=None
-  ):
-    # embed templates, if present
-    if exists(templates_feats):
-      assert exists(templates_mask)
-      _, num_templates, n, *_ = templates_feats.shape
-
-      # embed template
-
-      t = self.to_template_embed(templates_feats)
-      t_mask_crossed = rearrange(templates_mask, 'b t i -> b t i ()'
-                                ) * rearrange(templates_mask, 'b t j -> b t () j')
-
-      t = rearrange(t, 'b t ... -> (b t) ...')
-      t_mask_crossed = rearrange(t_mask_crossed, 'b t ... -> (b t) ...')
-
-      for _ in range(self.templates_embed_layers):
-        t = self.template_pairwise_embedder(t, mask=t_mask_crossed)
-
-      t = rearrange(t, '(b t) ... -> b t ...', t=num_templates)
-      t_mask_crossed = rearrange(
-          t_mask_crossed, '(b t) ... -> b t ...', t=num_templates
-      )
-
-      # template pos emb
-
-      x_point = rearrange(x, 'b i j d -> (b i j) () d')
-      t_point = rearrange(t, 'b t i j d -> (b i j) t d')
-      x_mask_point = rearrange(x_mask, 'b i j -> (b i j) ()')
-      t_mask_point = rearrange(t_mask_crossed, 'b t i j -> (b i j) t')
-
-      template_pooled = self.template_pointwise_attn(
-          x_point, context=t_point, mask=x_mask_point, context_mask=t_mask_point
-      )
-
-      template_pooled_mask = rearrange(t_mask_point.sum(dim=-1) > 0, 'b -> b () ()')
-      template_pooled = template_pooled * template_pooled_mask
-
-      template_pooled = rearrange(template_pooled, '(b i j) () d -> b i j d', i=n, j=n)
-      x = commons.tensor_add(x, template_pooled)
-
-    # add template angle features to MSAs by passing through MLP and then concat
-    if exists(templates_angles):
-      assert exists(templates_mask)
-      t_angle_feats = self.template_angle_mlp(templates_angles)
-      m = torch.cat((m, t_angle_feats), dim=1)
-      msa_mask = torch.cat((msa_mask, templates_mask), dim=1)
-    return x, x_mask, m, msa_mask
+    if exists(self.template_single_embedder):
+      aatype = F.one_hot(batch['template_seq'].long(), num_classes=22)
+      to_concat = [
+          aatype.float(),
+          rearrange(batch['template_torsion_angles'], '... r d -> ... (r d)'),
+          rearrange(batch['template_torsion_angles_alt'], '... r d -> ... (r d)'),
+          batch['template_torsion_angles_mask'].float(),
+      ]
+      s = torch.cat(to_concat, dim=-1)
+      s = self.template_single_embedder(s.float())  # pylint: disable=not-callable
+      # Concatenate the templates to the msa.
+      m = torch.cat((m, s), dim=1) if exists(m) else s
+      # Concatenate templates masks to the msa masks.
+      # Use mask from the psi angle, as it only depends on the backbone atoms
+      # from a single residue.
+      s_mask = batch['template_torsion_angles_mask'][..., 2]
+      m_mask = torch.cat((m_mask, s_mask), dim=1) if exists(m_mask) else s_mask
+    return x, m, x_mask, m_mask
 
 
 class EvoformerBlock(nn.Module):
@@ -116,11 +217,14 @@ class EvoformerBlock(nn.Module):
   ):
     super().__init__()
 
+    heads_msa, heads_pair = commons.default_list_get(heads, 2)
+    dim_head_msa, dim_head_pair = commons.default_list_get(dim_head, 2)
+
     self.pair_attn = commons.PairwiseAttentionBlock(
         dim_msa=dim_msa,
         dim_pairwise=dim_pairwise,
-        heads=heads,
-        dim_head=dim_head,
+        heads=heads_pair,
+        dim_head=dim_head_pair,
         dropout=attn_dropout
     )
     self.pair_ff = commons.FeedForward(dim=dim_pairwise, dropout=ff_dropout)
@@ -128,8 +232,8 @@ class EvoformerBlock(nn.Module):
       self.msa_attn = commons.MsaAttentionBlock(
           dim_msa=dim_msa,
           dim_pairwise=dim_pairwise,
-          heads=heads,
-          dim_head=dim_head,
+          heads=heads_msa,
+          dim_head=dim_head_msa,
           dropout=attn_dropout,
           global_column_attn=global_column_attn,
           **kwargs
@@ -139,9 +243,9 @@ class EvoformerBlock(nn.Module):
       self.frame_attn = commons.FrameAttentionBlock(
           dim_msa=dim_msa,
           dim_pairwise=dim_pairwise,
-          heads=heads,
-          scalar_key_dim=dim_head,
-          scalar_value_dim=dim_head,
+          heads=heads_msa,
+          scalar_key_dim=dim_head_msa,
+          scalar_value_dim=dim_head_msa,
           dropout=attn_dropout,
           gating=True,
           point_weight_init=5e-3,
@@ -172,9 +276,12 @@ class EvoformerBlock(nn.Module):
         with autocast(enabled=False):
           # to default float
           m, x, t = m.float(), x.float(), tuple(map(lambda x: x.float(), t))
-          s = self.frame_attn(m[:, 0], mask=msa_mask[:, 0], pairwise_repr=x, frames=t)
+          s = self.frame_attn(
+              m[..., 0, :, :], mask=msa_mask[..., 0, :, :], pairwise_repr=x, frames=t
+          )
           s = commons.tensor_add(s, self.frame_ff(s, shard_size=shard_size))
-        m = torch.cat((s[:, None, ...], m[:, 1:, ...]), dim=1)
+
+        m = torch.cat((s[..., None, :, :], m[..., 1:, :, :]), dim=-3)
 
     # frame update
     if hasattr(self, 'frame_update'):
@@ -182,7 +289,7 @@ class EvoformerBlock(nn.Module):
         with autocast(enabled=False):
           # to default float
           m, t = m.float(), tuple(map(lambda x: x.float(), t))
-          t = self.frame_update(m[:, 0], frames=t)
+          t = self.frame_update(m[..., 0, :, :], frames=t)
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
