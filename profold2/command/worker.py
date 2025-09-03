@@ -192,6 +192,7 @@ class WorkerModel(object):
 
   def hook(self, model):
     def _load_state_dict_pre_hook(state_dict, *args, **kwargs):
+      del args, kwargs
       key_modifier_list = [
           ('(.*)impl.token_emb.(.*)', '\\1impl.embedder.to_single_emb.\\2'),
           ('(.*)impl.to_pairwise_repr.(.*)', '\\1impl.embedder.to_pairwise_emb.\\2')
@@ -201,7 +202,7 @@ class WorkerModel(object):
           for pattern, repl in key_modifier_list
       ]
       key_list_new = {}
-      for key, val in state_dict.items():
+      for key in state_dict.keys():
         key_new = key
         for key_modifier in key_modifier_list:
           key_new = key_modifier(key_new)
@@ -216,7 +217,7 @@ class WorkerModel(object):
     if hasattr(model, 'register_load_state_dict_pre_hook'):
       register_hook = model.register_load_state_dict_pre_hook
     else:
-      register_hook = model._register_load_state_dict_pre_hook
+      register_hook = model._register_load_state_dict_pre_hook  # pylint: disable=protected-access
     return register_hook(_load_state_dict_pre_hook)
 
   def wrap(self, **kwargs):
@@ -253,6 +254,11 @@ class WorkerModel(object):
     model.eval()
 
     return checkpoint['feats'], model
+
+  def save(self, f, feats, model):
+    if isinstance(model, nn.parallel.DistributedDataParallel):
+      model = model.module
+    torch.save(dict(feats=feats, model=model.state_dict(), **model.to_config()), f)  # pylint: disable=use-dict-literal)
 
 
 class WorkerFunction(object):
