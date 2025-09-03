@@ -187,9 +187,10 @@ def make_atom14_positions(prot):
   restype_atom37_to_atom14 = []  # mapping (restype, atom37) --> atom14
   restype_atom14_mask = []
 
-  for rt in residue_constants.restypes:
+  for i, rt in enumerate(residue_constants.restypes):
+    mol_type = residue_constants.moltype(i)
     atom_names = residue_constants.restype_name_to_atom14_names[
-        residue_constants.restype_1to3[rt]]
+        residue_constants.restype_1to3[(rt, mol_type)]]
 
     restype_atom14_to_atom37.append(
         [(residue_constants.atom_order[name] if name else 0) for name in atom_names]
@@ -244,7 +245,8 @@ def make_atom14_positions(prot):
   # Create the corresponding mask.
   restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
   for restype, restype_letter in enumerate(residue_constants.restypes):
-    restype_name = residue_constants.restype_1to3[restype_letter]
+    mol_type = residue_constants.moltype(restype)
+    restype_name = residue_constants.restype_1to3[(restype_letter, mol_type)]
     atom_names = residue_constants.residue_atoms[restype_name]
     for atom_name in atom_names:
       atom_type = residue_constants.atom_order[atom_name]
@@ -256,7 +258,8 @@ def make_atom14_positions(prot):
   # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
   # alternative ground truth coordinates where the naming is swapped
   restype_3 = [
-      residue_constants.restype_1to3[res] for res in residue_constants.restypes
+      residue_constants.restype_1to3[(res, residue_constants.moltype(i))]
+      for i, res in enumerate(residue_constants.restypes)
   ]
   restype_3 += ["UNK"]
 
