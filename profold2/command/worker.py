@@ -243,29 +243,7 @@ class WorkerModel(object):
       checkpoint = torch.load(f, map_location=map_location, weights_only=False)
     else:
       checkpoint = torch.load(f, map_location=map_location)
-    kwargs = dict(
-        dim=checkpoint['dim'],
-        evoformer_depth=checkpoint['evoformer_depth'],
-        evoformer_head_num=checkpoint['evoformer_head_num'],
-        evoformer_head_dim=checkpoint['evoformer_head_dim'],
-        accept_msa_attn=checkpoint.get('evoformer_accept_msa_attn', True),
-        accept_frame_attn=checkpoint.get('evoformer_accept_frame_attn', False),
-        accept_frame_update=checkpoint.get('evoformer_accept_frame_update', False),
-        headers=checkpoint['headers']
-    )
-
-    # optional args.
-    for key in (
-        'template_depth',
-        'num_tokens',
-        'num_msa_tokens',
-        'recycling_single_repr',
-        'recycling_pos',
-    ):
-      if key in checkpoint:
-        kwargs[key] = checkpoint[key]
-
-    model = AlphaFold2(**kwargs)
+    model = AlphaFold2.from_config(checkpoint)
 
     self.hook(model)
 
