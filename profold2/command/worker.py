@@ -255,7 +255,13 @@ class WorkerModel(object):
     )
 
     # optional args.
-    for key in ('num_tokens', 'recycling_single_repr', 'recycling_pos'):
+    for key in (
+        'template_depth',
+        'num_tokens',
+        'num_msa_tokens',
+        'recycling_single_repr',
+        'recycling_pos',
+    ):
       if key in checkpoint:
         kwargs[key] = checkpoint[key]
 

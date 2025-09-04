@@ -75,10 +75,12 @@ class InputEmbeddings(nn.Module):
 
     if num_msa_tokens > 0:
       self.to_pairwise_emb = commons.PairwiseEmbedding(
-          (num_msa_tokens, dim_pairwise), max_rel_dist=max_rel_dist
+          num_seq_tokens, dim_pairwise, max_rel_dist=max_rel_dist
       )
     else:
-      self.to_pairwise_emb = commons.PairwiseEmbedding(dim, max_rel_dist=max_rel_dist)
+      self.to_pairwise_emb = commons.PairwiseEmbedding(
+          dim_msa, dim_pairwise, max_rel_dist=max_rel_dist
+      )
 
   def forward(self, target_feat, target_mask, seq_index, msa_feat=None, msa_mask=None):
     s = self.to_single_emb(target_feat)
@@ -87,7 +89,7 @@ class InputEmbeddings(nn.Module):
       m_mask = msa_mask
       assert exists(msa_mask)
     else:
-      # TODO: target_feat in residue id.
+      # NOTE: `target_feat` is a tensor of residue_id.
       m = self.to_single_emb(rearrange(target_feat, '... i -> ... () i'))
       m_mask = rearrange(target_mask, '... i -> ... () i')
 
@@ -133,8 +135,8 @@ class AlphaFold2(nn.Module):
 
     # input embedder
     self.embedder = InputEmbeddings(
-        (dim_msa, dim_pairwise),
-        num_tokens,
+        dim=(dim_msa, dim_pairwise),
+        num_seq_tokens=num_tokens,
         num_msa_tokens=num_msa_tokens,
         max_rel_dist=max_rel_dist
     )
@@ -186,9 +188,12 @@ class AlphaFold2(nn.Module):
     seq, mask, seq_embed, seq_index = map(
         batch.get, ('seq', 'mask', 'emb_seq', 'seq_index')
     )
+    target_feat, = map(batch.get, ('target_feat',))
+    if not exists(target_feat):
+      target_feat = seq
     msa_enabled = batch.get('msa_enabled', False)
     if msa_enabled:
-      msa, msa_mask, msa_embed = map(batch.get, ('msa', 'msa_mask', 'emb_msa'))
+      msa, msa_mask, msa_embed = map(batch.get, ('msa_feat', 'msa_mask', 'emb_msa'))
     else:
       msa, msa_mask, msa_embed = None, None, None  # msa as features disabled
     del seq_embed, msa_embed
@@ -198,7 +203,7 @@ class AlphaFold2(nn.Module):
 
     # input embeddings
     x, m, x_mask, msa_mask = self.embedder(
-        seq, mask, seq_index, msa_feat=msa, msa_mask=mask
+        target_feat, mask, seq_index, msa_feat=msa, msa_mask=msa_mask
     )
 
     # add recyclables, if present

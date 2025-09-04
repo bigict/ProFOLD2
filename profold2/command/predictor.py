@@ -101,8 +101,9 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
       descriptions += d[:1]
       if len(s) > args.max_msa_size:
         s = s[:1] + list(
-            np.random.choice(s, size=args.max_msa_size -
-                             1, replace=False) if args.max_msa_size > 1 else []
+            np.random.choice(
+                s, size=args.max_msa_size - 1, replace=False
+            ) if args.max_msa_size > 1 else []
         )
       msa += [s]
   data = ProteinSequenceDataset(
