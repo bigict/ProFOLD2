@@ -804,7 +804,7 @@ def fape(
     true_points,
     points_mask,
     clamp_distance=None,
-    clamp_ratio=1.0,
+    clamp_ratio=None,
     dij_weight=None,
     use_weighted_mask=True,
     epsilon=1e-8
@@ -824,7 +824,11 @@ def fape(
   assert pred_points.shape[-1] == 3 and true_points.shape[-1] == 3
   # Shape (b, n)
   assert pred_points.shape[:-1] == points_mask.shape
-  assert 0.0 <= clamp_ratio <= 1.0
+  clamp_ratio = default(clamp_ratio, 1.0)
+  if isinstance(clamp_ratio, torch.Tensor):
+    assert torch.all(torch.logical_and(0.0 <= clamp_ratio, clamp_ratio <= 1.0))
+  else:
+    assert 0.0 <= clamp_ratio <= 1.0
 
   def to_local(rotations, translations, points):
     # inverse frames
@@ -838,11 +842,11 @@ def fape(
 
   # Shape (b, l, l, n)
   dij = torch.sqrt(torch.sum((pred_xij - true_xij)**2, dim=-1) + epsilon)
-  if clamp_distance and clamp_ratio > 0:
-    if clamp_ratio >= 1.0:
-      dij = torch.clamp(dij, 0, clamp_distance)
-    else:
+  if exists(clamp_distance):
+    if isinstance(clamp_ratio, torch.Tensor) or (0 <= clamp_ratio < 1):
       dij = (1 - clamp_ratio) * dij + clamp_ratio * torch.clamp(dij, 0, clamp_distance)
+    else:
+      dij = torch.clamp(dij, 0, clamp_distance)
   dij_mask = rearrange(frames_mask, '... i -> ... i ()'
                       ) * rearrange(points_mask, '... j -> ... () j')
 
