@@ -497,6 +497,14 @@ class FoldingHead(nn.Module):
         with torch.no_grad():
           true_frames = default(gt_frames, pred_frames)
 
+        clamp_ratio = self.fape_backbone_clamp_ratio
+        if 'seq_color' in batch and (0 < clamp_ratio <= 1):
+          clamp_ratio = torch.where(
+              batch['seq_color'][..., :, None] == batch['seq_color'][..., None, :],
+              clamp_ratio,
+              0.
+          )
+
         _, pred_points = pred_frames
         _, true_points = true_frames
         r = functional.fape(
@@ -507,7 +515,7 @@ class FoldingHead(nn.Module):
             true_points,
             frames_mask,
             self.fape_max,
-            clamp_ratio=self.fape_backbone_clamp_ratio,
+            clamp_ratio=clamp_ratio,
             dij_weight=dij_weight,
             use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False)
         ) / self.fape_z
