@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional, folding
+from profold2.model import commons, functional, diffusion, folding, evoformer
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
@@ -422,6 +422,115 @@ class DistogramHead(nn.Module):
     )
     logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
+
+
+class DonfidenceHead(nn.Module):
+  """Head to predict diffusion generation confidence.
+    """
+  def __init__(
+      self,
+      dim,
+      dim_input=None,
+      pairformer_depth=4,
+      pairformer_head_num=16,
+      pairformer_head_dim=32,
+      pairformer_attn_dropout=0.,
+      pairformer_ff_dropout=0.,
+      pae_bin_num=64,
+      pde_bin_num=64,
+      plddt_bin_num=50,
+      dgram_bin_min=3.25,
+      dgram_bin_max=50.75,
+      dgram_bin_num=39
+  ):
+    super().__init__()
+
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
+
+    dgram_breaks = torch.linspace(dgram_bin_min, dgram_bin_max, steps=dgram_bin_num)
+    self.register_buffer('dgram_breaks', dgram_breaks, persistent=False)
+
+    self.from_input = nn.Linear(
+        dim_input, dim_pairwise * 2, bias=False
+    ) if exists(dim_input) else None
+    self.from_dij = nn.Linear(dgram_bin_num, dim_pairwise, bias=False)
+
+    self.pairformer = evoformer.Pairformer(
+        depth=pairformer_depth,
+        dim_single=dim_single,
+        dim_pairwise=dim_pairwise,
+        heads=pairformer_head_num,
+        dim_head=pairformer_head_dim,
+        attn_dropout=pairformer_attn_dropout,
+        ff_dropout=pairformer_ff_dropout
+    )
+
+    self.to_pae = nn.Sequential(
+        nn.LayerNorm(dim_pairwise), nn.Linear(dim_pairwise, pae_bin_num, bias=False)
+    )
+    self.to_pde = nn.Sequential(
+        nn.LayerNorm(dim_pairwise), nn.Linear(dim_pairwise, pde_bin_num, bias=False)
+    )
+    self.to_plddt = nn.Sequential(
+        nn.LayerNorm(dim_single), nn.Linear(dim_single, plddt_bin_num, bias=False)
+    )
+
+  def forward(self, headers, representations, batch):
+    assert 'folding' in headers and 'coords' in headers['folding']
+
+    single_repr, pairwise_repr = map(
+        lambda key: representations[key].detach(), ('single', 'pair')
+    )
+
+    # embed pair distance of representative atoms
+    with torch.no_grad():
+      ca_idx = residue_constants.atom_order['CA']
+      dij = functional.distogram_from_positions(
+          headers['folding']['coords'][..., ca_idx, :], self.dgram_breaks
+      )
+    pairwise_repr = commons.tensor_add(pairwise_repr, self.from_dij(dij))
+
+    single_repr, pairwise_repr = self.pairformer(single_repr, pairwise_repr)
+
+    pae = self.to_pae(pairwise_repr)
+    pde = self.to_pde(pairwise_repr + rearrange(pairwise_repr, '... i j d -> ... j i d'))
+
+    return dict(pae=pae, pde=pde)
+
+  def loss(self, value, batch):
+    pass
+
+
+class DiffusionHead(nn.Module):
+  """Head to generate 3d struct.
+    """
+  def __init__(
+      self,
+      dim,
+      diffuser_noise_level_mean=-1.2,
+      diffuser_noise_level_std=1.5,
+      diffuser_sigma_data=16.,
+      diffuser_batch_size=16,
+      **params
+  ):
+    super().__init__()
+
+    self.diffuser_noise_level = diffusion.DiffusionNoiseLevel(
+        mean=diffuser_noise_level_mean,
+        std=diffuser_noise_level_std,
+        sigma_data=diffuser_sigma_data
+    )
+    self.diffuser_module = diffusion.DiffusionModule(
+        dim,
+    )
+
+    self.params = params
+
+  def forward(self, headers, representations, batch):
+    outputs = self.diffuser_module(representations, batch)
+
+  def loss(self, value, batch):
+    pass
 
 
 class FoldingHead(nn.Module):
@@ -1631,6 +1740,8 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      donfidence=DonfidenceHead,
+      diffusion=DiffusionHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=LDDTHead,
