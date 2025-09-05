@@ -498,12 +498,22 @@ class FoldingHead(nn.Module):
           true_frames = default(gt_frames, pred_frames)
 
         clamp_ratio = self.fape_backbone_clamp_ratio
-        if 'seq_color' in batch and (0 < clamp_ratio <= 1):
+        if 0 < clamp_ratio <= 1:
+          # clamp pairs between protein monomer only.
           clamp_ratio = torch.where(
-              batch['seq_color'][..., :, None] == batch['seq_color'][..., None, :],
+              torch.logical_and(
+                  batch['seq'] >= residue_constants.prot_from_idx,
+                  batch['seq'] <= residue_constants.prot_to_idx
+              ),
               clamp_ratio,
               0.
           )
+          if 'seq_color' in batch:
+            clamp_ratio = torch.where(
+                batch['seq_color'][..., :, None] == batch['seq_color'][..., None, :],
+                clamp_ratio,
+                0.
+            )
 
         _, pred_points = pred_frames
         _, true_points = true_frames
