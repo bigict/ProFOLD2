@@ -304,7 +304,7 @@ def distogram_from_positions(coords, breaks):
   return dgram.float()
 
 
-def lddt(pred_points, true_points, points_mask, cutoff=15., per_residue=True):
+def lddt(pred_points, true_points, points_mask, cutoff=None, per_residue=True):
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
       Inputs:
@@ -318,6 +318,7 @@ def lddt(pred_points, true_points, points_mask, cutoff=15., per_residue=True):
   """
   assert len(pred_points.shape) == 3 and pred_points.shape[-1] == 3
   assert len(true_points.shape) == 3 and true_points.shape[-1] == 3
+  cutoff = default(cutoff, 15.0)
 
   eps = 1e-10
 
@@ -329,7 +330,7 @@ def lddt(pred_points, true_points, points_mask, cutoff=15., per_residue=True):
       (true_cdist < cutoff) * (
           rearrange(points_mask, '... i -> ... i ()') *
           rearrange(points_mask, '... j -> ... () j')
-      ) * (1.0 - torch.eye(true_cdist.shape[1], device=points_mask.device))
+      ) * (1.0 - torch.eye(true_cdist.shape[-2], device=points_mask.device))
   )  # Exclude self-interaction
 
   # Shift unscored distances to be far away
