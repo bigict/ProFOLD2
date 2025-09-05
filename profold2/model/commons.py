@@ -1,8 +1,10 @@
 """A lot of modules in AlphaFold2
   """
 import contextlib
+import dataclasses
 import functools
 import logging
+import typing
 
 import torch
 from torch import nn
@@ -165,6 +167,39 @@ def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
 
 
 # helper classes
+class ConfigMeta(type):
+  """Metaclass that synthesizes a __post_init__ that coerces dicts to Config subclass
+  instances.
+  """
+  def __new__(mcs, clsname, bases, attrs):
+    cls = super().__new__(mcs, clsname, bases, attrs)
+
+    old_post_init = getattr(cls, '__post_init__', None)
+
+    def _post_init(self) -> None:
+      # Use get_type_hints instead of Field.type to ensure that forward references are
+      # resolved.
+      type_hints = typing.get_type_hints(self.__class__)
+      fields = dataclasses.fields(self.__class__)
+      for field in fields:
+        type_hint = type_hints[field.name]
+        if issubclass(type(type_hint), ConfigMeta):
+          field_value = getattr(self, field.name)
+          if exists(field_value) and isinstance(field_value, dict):
+            setattr(self, field.name, type_hint(**field_value))
+      if exists(old_post_init):
+        old_post_init(self)
+
+    cls.__post_init__ = _post_init
+
+    return dataclasses.dataclass()(cls)
+
+
+class BasicConfig(metaclass=ConfigMeta):
+  def asdict(self):
+    return dataclasses.asdict(self)
+
+
 class Always(nn.Module):
   def __init__(self, val):
     super().__init__()

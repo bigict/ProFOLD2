@@ -294,6 +294,32 @@ class AlphaFold2WithRecycling(nn.Module):
     self.impl = AlphaFold2(**kwargs)
     logger.debug(self)
 
+  @staticmethod
+  def from_config(config):
+    kwargs = dict(
+        dim=config['dim'],
+        evoformer_depth=config['evoformer_depth'],
+        evoformer_head_num=config['evoformer_head_num'],
+        evoformer_head_dim=config['evoformer_head_dim'],
+        accept_msa_attn=config.get('evoformer_accept_msa_attn', True),
+        accept_frame_attn=config.get('evoformer_accept_frame_attn', False),
+        accept_frame_update=config.get('evoformer_accept_frame_update', False),
+        headers=config['headers']
+    )
+
+    # optional args.
+    for key in (
+        'template_depth',
+        'num_tokens',
+        'num_msa_tokens',
+        'recycling_single_repr',
+        'recycling_pos',
+    ):
+      if key in config:
+        kwargs[key] = config[key]
+
+    return AlphaFold2WithRecycling(**kwargs)
+
   def embeddings(self):
     return self.impl.embeddings()
 
