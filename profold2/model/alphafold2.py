@@ -291,6 +291,7 @@ class AlphaFold2WithRecycling(nn.Module):
   def __init__(self, **kwargs):
     super().__init__()
 
+    self.config = kwargs
     self.impl = AlphaFold2(**kwargs)
     logger.debug(self)
 
@@ -319,6 +320,9 @@ class AlphaFold2WithRecycling(nn.Module):
         kwargs[key] = config[key]
 
     return AlphaFold2WithRecycling(**kwargs)
+
+  def to_config(self):
+    return self.config
 
   def embeddings(self):
     return self.impl.embeddings()

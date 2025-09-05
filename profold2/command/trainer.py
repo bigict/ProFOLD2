@@ -457,24 +457,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   # save model
   if worker.is_master():
-    torch.save(
-        dict(
-            dim=args.model_dim,  # pylint: disable=use-dict-literal)
-            evoformer_depth=args.model_evoformer_depth,
-            evoformer_head_num=args.model_evoformer_head_num,
-            evoformer_head_dim=args.model_evoformer_head_dim,
-            evoformer_accept_msa_attn=args.model_evoformer_accept_msa_attn,
-            evoformer_accept_frame_attn=args.model_evoformer_accept_frame_attn,
-            evoformer_accept_frame_update=args.model_evoformer_accept_frame_update,  # pylint: disable=line-too-long
-            num_tokens=args.model_num_tokens,
-            headers=headers,
-            feats=feats,
-            model=model.module.state_dict()
-            if isinstance(model, nn.parallel.DistributedDataParallel) else
-            model.state_dict()
-        ),
-        os.path.join(args.prefix, 'model.pth')
-    )
+    worker.save(os.path.join(args.prefix, 'model.pth'), feats, model)
 
 
 setattr(train, 'preprocess', preprocess)
