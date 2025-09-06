@@ -98,6 +98,13 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
   return tms
 
 
+def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
+  is_prot = torch.logical_and(
+      seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
+  )
+  return torch.where(is_prot, prot_cutoff, na_cutoff)
+
+
 class ConfidenceHead(nn.Module):
   """Head to predict confidence.
     """
@@ -778,8 +785,11 @@ class LDDTHead(nn.Module):
       )
 
     with torch.no_grad():
-      # Shape (b, l)
-      lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+      # Shape (..., l)
+      cutoff = lddt_cutoff(batch['seq'])
+      lddt_ca = functional.lddt(
+          pred_points, true_points, points_mask, cutoff=cutoff[..., None]
+      )
       # protect against out of range for lddt_ca == 1
       bin_index = torch.clamp(
           torch.floor(lddt_ca * self.buckets_num).long(), max=self.buckets_num - 1
@@ -1203,7 +1213,10 @@ class MetricDictHead(nn.Module):
           points_mask = point_mask[..., ca_idx]
 
           # Shape (b, l)
-          lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+          cutoff = lddt_cutoff(batch['seq'])
+          lddt_ca = functional.lddt(
+              pred_points, true_points, points_mask, cutoff=cutoff[..., None]
+          )
           avg_lddt_ca = functional.masked_mean(value=lddt_ca, mask=points_mask)
           metrics['lddt'] = avg_lddt_ca
           logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
