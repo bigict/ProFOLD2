@@ -502,8 +502,8 @@ class FoldingHead(nn.Module):
           # clamp pairs between protein monomer only.
           clamp_ratio = torch.where(
               torch.logical_and(
-                  batch['seq'] >= residue_constants.prot_from_idx,
-                  batch['seq'] <= residue_constants.prot_to_idx
+                  batch['seq'][..., None] >= residue_constants.prot_from_idx,
+                  batch['seq'][..., None] <= residue_constants.prot_to_idx
               ),
               clamp_ratio,
               0.
