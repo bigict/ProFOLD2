@@ -1173,12 +1173,16 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
   class _LayerStack(nn.Module):
     def __init__(self, *args, **kwargs):
       super().__init__()
+
+      segment_size = kwargs.pop('checkpoint_segment_size', 1)
+      assert depth % segment_size == 0
       self.layers = nn.ModuleList(moduleclass(*args, **kwargs) for _ in range(depth))  # pylint: disable=missing-kwargs
+      self.segments = len(self.layers) // segment_size
 
     def forward(self, *args, **kwargs):
       with profiler.record_function(moduleclass.__name__):
         return checkpoint_sequential_nargs(
-            self.layers, len(self.layers), *args, **kwargs
+            self.layers, self.segments, *args, **kwargs
         )
 
   return _LayerStack(*args, **kwargs)
