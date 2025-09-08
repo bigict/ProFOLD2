@@ -13,7 +13,7 @@ from profold2.common import residue_constants
 from profold2.model import commons, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
-from profold2.utils import exists
+from profold2.utils import env, exists
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,9 @@ class AlphaFold2(nn.Module):
     # main trunk modules
     self.evoformer = Evoformer(
         depth=evoformer_depth,
+        checkpoint_segment_size=env(
+            'profold2_evoformer_checkpoint_segment_size', defval=1, dtype=int
+        ),
         dim_msa=dim_msa,
         dim_pairwise=dim_pairwise,
         heads=evoformer_head_num,
