@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def binary_focal_loss_weight(probs, labels, gammar):
   assert gammar > 0
   p = probs * labels + (1. - probs) * (1. - labels)
-  return (1. - p) ** gammar
+  return (1. - p)**gammar
 
 
 def sigmoid_cross_entropy(probs, labels, gammar=0):
@@ -98,6 +98,13 @@ def batched_tmscore(pred_points, true_points, coord_mask, mask):
   return tms
 
 
+def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
+  is_prot = torch.logical_and(
+      seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
+  )
+  return torch.where(is_prot[..., None], prot_cutoff, na_cutoff)
+
+
 class ConfidenceHead(nn.Module):
   """Head to predict confidence.
     """
@@ -123,7 +130,7 @@ class ConfidenceHead(nn.Module):
         )
         metrics['ptm'] = functional.ptm(logits, breaks, mask=mask)
         metrics['iptm'] = functional.ptm(
-           logits, breaks, mask=mask, seq_color=batch.get('seq_color')
+            logits, breaks, mask=mask, seq_color=batch.get('seq_color')
         )
     return metrics
 
@@ -504,15 +511,12 @@ class FoldingHead(nn.Module):
               torch.logical_and(
                   batch['seq'][..., None] >= residue_constants.prot_from_idx,
                   batch['seq'][..., None] <= residue_constants.prot_to_idx
-              ),
-              clamp_ratio,
-              0.
+              ), clamp_ratio, 0.
           )
           if 'seq_color' in batch:
             clamp_ratio = torch.where(
                 batch['seq_color'][..., :, None] == batch['seq_color'][..., None, :],
-                clamp_ratio,
-                0.
+                clamp_ratio, 0.
             )
 
         _, pred_points = pred_frames
@@ -778,8 +782,10 @@ class LDDTHead(nn.Module):
       )
 
     with torch.no_grad():
-      # Shape (b, l)
-      lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+      # Shape (..., l)
+      lddt_ca = functional.lddt(
+          pred_points, true_points, points_mask, cutoff=lddt_cutoff(batch['seq'])
+      )
       # protect against out of range for lddt_ca == 1
       bin_index = torch.clamp(
           torch.floor(lddt_ca * self.buckets_num).long(), max=self.buckets_num - 1
@@ -986,9 +992,7 @@ class PairingHead(nn.Module):
         probs = torch.clamp(
             1. - torch.exp(
                 torch.sum(
-                    torch.log(
-                        torch.clamp(1. - torch.exp(x.float()), min=eps, max=1.)
-                    ),
+                    torch.log(torch.clamp(1. - torch.exp(x.float()), min=eps, max=1.)),
                     dim=-1
                 )
             ),
@@ -1182,12 +1186,13 @@ class MetricDictHead(nn.Module):
         assert exists(point_mask)
 
         seq_index = batch.get('seq_index')
-        point_mask = point_mask * torch.logical_and(  # protein only
-            batch['seq'] >= residue_constants.prot_from_idx,
-            batch['seq'] <= residue_constants.prot_to_idx
-        )[..., None]
         ca_ca_distance_error = functional.between_ca_ca_distance_loss(
-            points, point_mask, seq_index
+            points,
+            point_mask * torch.logical_and(  # protein only
+                batch['seq'] >= residue_constants.prot_from_idx,
+                batch['seq'] <= residue_constants.prot_to_idx
+            )[..., None],
+            seq_index
         )
         metrics['violation'] = MetricDict()
         metrics['violation']['ca_ca_distance'] = ca_ca_distance_error
@@ -1203,7 +1208,9 @@ class MetricDictHead(nn.Module):
           points_mask = point_mask[..., ca_idx]
 
           # Shape (b, l)
-          lddt_ca = functional.lddt(pred_points, true_points, points_mask)
+          lddt_ca = functional.lddt(
+              pred_points, true_points, points_mask, cutoff=lddt_cutoff(batch['seq'])
+          )
           avg_lddt_ca = functional.masked_mean(value=lddt_ca, mask=points_mask)
           metrics['lddt'] = avg_lddt_ca
           logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
@@ -1278,7 +1285,7 @@ class FitnessHead(nn.Module):
     self.label_epsilon = label_epsilon
     if exists(pos_weight):
       self.register_buffer(
-          'pos_weight', torch.full((task_num,), pos_weight), persistent=False
+          'pos_weight', torch.full((task_num, ), pos_weight), persistent=False
       )
     else:
       self.pos_weight = None
