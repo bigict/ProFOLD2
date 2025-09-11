@@ -304,17 +304,19 @@ def distogram_from_positions(coords, breaks):
   return dgram.float()
 
 
-def lddt(pred_points, true_points, points_mask, cutoff=None, per_residue=True):
+def lddt(
+    pred_points, true_points, points_mask, cutoff=None, per_residue=True, smooth=False
+):
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
       Inputs:
-      * pred_coords: (b, l, d) array of predicted 3D points.
-      * true_points: (b, l, d) array of true 3D points.
-      * points_mask : (b, l) binary-valued array. 1 for points that exist in
+      * pred_coords: (..., l, d) array of predicted 3D points.
+      * true_points: (..., l, d) array of true 3D points.
+      * points_mask : (..., l) binary-valued array. 1 for points that exist in
           the true points
       * cutoff: maximum inclusion radius in reference struct.
       Outputs:
-      * (b, l) lddt scores ranging between 0 and 1
+      * (..., l) lddt scores ranging between 0 and 1
   """
   assert len(pred_points.shape) == 3 and pred_points.shape[-1] == 3
   assert len(true_points.shape) == 3 and true_points.shape[-1] == 3
@@ -338,7 +340,10 @@ def lddt(pred_points, true_points, points_mask, cutoff=None, per_residue=True):
 
   # True lDDT uses a number of fixed bins.
   # We ignore the physical plausibility correction to lDDT, though.
-  score = 0.25 * sum(dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0))
+  if smooth:
+    score = 0.25 * sum(F.sigmoid(t - dist_l1) for t in (0.5, 1.0, 2.0, 4.0))
+  else:
+    score = 0.25 * sum(dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0))
 
   # Normalize over the appropriate axes.
   reduce_dim = -1 if per_residue else (-2, -1)
