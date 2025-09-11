@@ -1176,7 +1176,14 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
 
       segment_size = kwargs.pop('checkpoint_segment_size', 1)
       assert depth % segment_size == 0
-      self.layers = nn.ModuleList(moduleclass(*args, **kwargs) for _ in range(depth))  # pylint: disable=missing-kwargs
+      layer_kwargs = kwargs.pop('layer_kwargs', None)
+      def kwargs_stack(layer_idx):
+        if exists(layer_kwargs):
+          return kwargs | {k: v[layer_idx] for k, v in layer_kwargs.items()}
+        return kwargs
+      self.layers = nn.ModuleList(
+          moduleclass(*args, **kwargs_stack(layer_idx)) for layer_idx in range(depth)
+      )  # pylint: disable=missing-kwargs
       self.segments = len(self.layers) // segment_size
 
     def forward(self, *args, **kwargs):
