@@ -1,4 +1,4 @@
-"""Docker launch script for ProFold docker image."""
+"""Docker launch script for ProFOLD docker image."""
 
 import os
 import logging
