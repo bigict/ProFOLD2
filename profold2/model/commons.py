@@ -277,6 +277,8 @@ class Attention(nn.Module):
       gating=True,
       q_use_bias=False,
       kv_use_bias=False,
+      o_use_bias=True,
+      g_use_bias=True,
       global_query_attn=False
   ):
     super().__init__()
@@ -290,9 +292,9 @@ class Attention(nn.Module):
       self.to_kv = nn.Linear(dim_kv, dim_head * 2, bias=kv_use_bias)
     else:
       self.to_kv = nn.Linear(dim_kv, dim_inner * 2, bias=kv_use_bias)
-    self.to_out = nn.Linear(dim_inner, dim_q)
+    self.to_out = nn.Linear(dim_inner, dim_q, bias=o_use_bias)
 
-    self.gating = nn.Linear(dim_kv, dim_inner) if gating else None
+    self.gating = nn.Linear(dim_kv, dim_inner, bias=g_use_bias) if gating else None
     if exists(self.gating):
       init_linear_(self.gating, b=1.)
 
@@ -1137,8 +1139,10 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   preserve = kwargs.pop('preserve_rng_state', True)
 
   def run_function(start, end, functions):
-    def forward(*inputs):
+    def forward(inputs):
       for j in range(start, end + 1):
+        if not isinstance(inputs, tuple):
+          inputs = (inputs, )  # HACK: fix inputs is a Tensor only
         inputs = functions[j](*inputs, **kwargs)
       return inputs
 
@@ -1156,17 +1160,17 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
       if version_cmp(torch.__version__, '1.11.0') >= 0:
         inputs = checkpoint(
             run_function(start, end, functions),
-            *inputs,
+            inputs,
             preserve_rng_state=preserve,
             use_reentrant=True
         )  # compatible with torch 2.4+
       else:
         inputs = checkpoint(
-            run_function(start, end, functions), *inputs, preserve_rng_state=preserve
+            run_function(start, end, functions), inputs, preserve_rng_state=preserve
         )
     else:
-      inputs = run_function(start, end, functions)(*inputs)
-  return run_function(end + 1, len(functions) - 1, functions)(*inputs)
+      inputs = run_function(start, end, functions)(inputs)
+  return run_function(end + 1, len(functions) - 1, functions)(inputs)
 
 
 def layer_stack(moduleclass, depth, *args, **kwargs):
