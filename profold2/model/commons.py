@@ -1138,12 +1138,12 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   # Hack for keyword-only parameter in a python 2.7-compliant way
   preserve = kwargs.pop('preserve_rng_state', True)
 
-  def run_function(start, end, functions):
+  def run_function(start, end, functions, is_last=False):
     def forward(*inputs):
       for j in range(start, end + 1):
-        if not isinstance(inputs, tuple):
-          inputs = (inputs, )  # HACK: fix inputs is a Tensor only
         inputs = functions[j](*inputs, **kwargs)
+        if not ((is_last and j == end) or isinstance(inputs, tuple)):
+          inputs = (inputs, )  # HACK: fix inputs is a Tensor only
       return inputs
 
     return forward
@@ -1170,7 +1170,7 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
         )
     else:
       inputs = run_function(start, end, functions)(*inputs)
-  return run_function(end + 1, len(functions) - 1, functions)(*inputs)
+  return run_function(end + 1, len(functions) - 1, functions, is_last=True)(*inputs)
 
 
 def layer_stack(moduleclass, depth, *args, **kwargs):
