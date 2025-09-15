@@ -9,7 +9,7 @@ import typing
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint_sequential
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
@@ -1134,21 +1134,57 @@ class PairwiseEmbedding(nn.Module):
     return x
 
 
+def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
+  # Hack for keyword-only parameter in a python 2.7-compliant way
+  preserve = kwargs.pop('preserve_rng_state', True)
+
+  def run_function(start, end, functions):
+    def forward(inputs):
+      for j in range(start, end + 1):
+        if not isinstance(inputs, tuple):
+          inputs = (inputs, )  # HACK: fix inputs is a Tensor only
+        inputs = functions[j](*inputs, **kwargs)
+      return inputs
+
+    return forward
+
+  if isinstance(functions, torch.nn.Sequential):
+    functions = list(functions.children())
+
+  segment_size = len(functions) // segments
+  # the last chunk has to be non-volatile
+  end = -1
+  for start in range(0, segment_size * (segments - 1), segment_size):
+    end = start + segment_size - 1
+    if torch.is_grad_enabled():
+      if version_cmp(torch.__version__, '1.11.0') >= 0:
+        inputs = checkpoint(
+            run_function(start, end, functions),
+            inputs,
+            preserve_rng_state=preserve,
+            use_reentrant=True
+        )  # compatible with torch 2.4+
+      else:
+        inputs = checkpoint(
+            run_function(start, end, functions), inputs, preserve_rng_state=preserve
+        )
+    else:
+      inputs = run_function(start, end, functions)(inputs)
+  return run_function(end + 1, len(functions) - 1, functions)(inputs)
+
+
 def layer_stack(moduleclass, depth, *args, **kwargs):
   class _LayerStack(nn.Module):
-    """Wrap list[moduleclass]"""
     def __init__(self, *args, **kwargs):
       super().__init__()
 
       segment_size = kwargs.pop('checkpoint_segment_size', 1)
       assert depth % segment_size == 0
       layer_kwargs = kwargs.pop('layer_kwargs', None)
-
       def kwargs_stack(layer_idx):
         if exists(layer_kwargs):
           return kwargs | {k: v[layer_idx] for k, v in layer_kwargs.items()}
         return kwargs
-
       self.layers = nn.ModuleList(
           moduleclass(*args, **kwargs_stack(layer_idx)) for layer_idx in range(depth)
       )  # pylint: disable=missing-kwargs
@@ -1156,19 +1192,8 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
 
     def forward(self, *args, **kwargs):
       with profiler.record_function(moduleclass.__name__):
-
-        def wrapped(f, args, **kwargs):
-          if isinstance(args, tuple):
-            return f(*args, **kwargs)
-          return f(args, **kwargs)  # fix: args is a Tensor
-
-        functions = [
-            functools.partial(wrapped, layer, **kwargs) for layer in self.layers
-        ]
-        segments = self.segments if torch.is_grad_enabled() else 1
-        if version_cmp(torch.__version__, '1.11.0') >= 0:
-          # compatible with torch 2.4+
-          return checkpoint_sequential(functions, segments, args, use_reentrant=True)
-        return checkpoint_sequential(functions, segments, args)
+        return checkpoint_sequential_nargs(
+            self.layers, self.segments, *args, **kwargs
+        )
 
   return _LayerStack(*args, **kwargs)
