@@ -1139,7 +1139,7 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   preserve = kwargs.pop('preserve_rng_state', True)
 
   def run_function(start, end, functions):
-    def forward(inputs):
+    def forward(*inputs):
       for j in range(start, end + 1):
         if not isinstance(inputs, tuple):
           inputs = (inputs, )  # HACK: fix inputs is a Tensor only
@@ -1160,17 +1160,17 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
       if version_cmp(torch.__version__, '1.11.0') >= 0:
         inputs = checkpoint(
             run_function(start, end, functions),
-            inputs,
+            *inputs,
             preserve_rng_state=preserve,
             use_reentrant=True
         )  # compatible with torch 2.4+
       else:
         inputs = checkpoint(
-            run_function(start, end, functions), inputs, preserve_rng_state=preserve
+            run_function(start, end, functions), *inputs, preserve_rng_state=preserve
         )
     else:
-      inputs = run_function(start, end, functions)(inputs)
-  return run_function(end + 1, len(functions) - 1, functions)(inputs)
+      inputs = run_function(start, end, functions)(*inputs)
+  return run_function(end + 1, len(functions) - 1, functions)(*inputs)
 
 
 def layer_stack(moduleclass, depth, *args, **kwargs):
@@ -1181,10 +1181,12 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
       segment_size = kwargs.pop('checkpoint_segment_size', 1)
       assert depth % segment_size == 0
       layer_kwargs = kwargs.pop('layer_kwargs', None)
+
       def kwargs_stack(layer_idx):
         if exists(layer_kwargs):
           return kwargs | {k: v[layer_idx] for k, v in layer_kwargs.items()}
         return kwargs
+
       self.layers = nn.ModuleList(
           moduleclass(*args, **kwargs_stack(layer_idx)) for layer_idx in range(depth)
       )  # pylint: disable=missing-kwargs
@@ -1192,8 +1194,6 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
 
     def forward(self, *args, **kwargs):
       with profiler.record_function(moduleclass.__name__):
-        return checkpoint_sequential_nargs(
-            self.layers, self.segments, *args, **kwargs
-        )
+        return checkpoint_sequential_nargs(self.layers, self.segments, *args, **kwargs)
 
   return _LayerStack(*args, **kwargs)
