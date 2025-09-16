@@ -61,7 +61,7 @@ def make_mask(restypes, mask, device=None):
   return torch.as_tensor([1.0] * num_class, device=device)
 
 
-def batched_gather(params, indices, has_batch_dim=False):
+def batched_gather(params, indices, dim=1, has_batch_dim=False):
   b, device = indices.shape[0], indices.device
   if isinstance(params, np.ndarray):
     params = torch.from_numpy(params).to(device)
@@ -73,7 +73,7 @@ def batched_gather(params, indices, has_batch_dim=False):
   kwargs = dict(zip(ext, params.shape[-c:]))
   ext = ' '.join(ext)
   return torch.gather(
-      params, 1, repeat(indices.long(), f'b n ... -> b n ... {ext}', **kwargs)
+      params, dim, repeat(indices.long(), f'b n ... -> b n ... {ext}', **kwargs)
   )
 
 
