@@ -222,6 +222,31 @@ class APC(nn.Module):
     return functional.apc(x, dim=self.dim)
 
 
+# Adaptive LayerNorm
+class AdaLN(nn.Module):
+  """Adaptive LayerNorm"""
+  def __init__(self, dim, dim_cond=None):
+    super().__init__()
+
+    if exists(dim_cond):
+      self.norm = nn.LayerNorm(dim, elementwise_affine=False, bias=False)
+      self.norm_cond = nn.LayerNorm(dim_cond, bias=False)
+      self.to_w = nn.Linear(dim_cond, dim)
+      self.to_b = nn.Linear(dim_cond, dim, bias=False)
+
+      init_linear_(self.to_w)
+      init_linear_(self.to_b)
+    else:
+      self.norm = nn.LayerNorm(dim)
+
+  def forward(self, x, cond=None):
+    assert not exists(cond) ^ hasattr(self, 'norm_cond')
+    if exists(cond):
+      x, cond = self.norm(x), self.norm_cond(cond)
+      return F.sigmoid(self.to_w(cond)) * x + self.to_b(cond)
+    return self.norm(x)
+
+
 # feed forward
 class GEGLU(nn.Module):
   """Gated GELU"""
@@ -230,26 +255,36 @@ class GEGLU(nn.Module):
     return x * F.gelu(gates)
 
 
+class SwiGLU(nn.Module):
+  """Gated SiLU"""
+  def forward(self, x):
+    x, gates = x.chunk(2, dim=-1)
+    return x * F.silu(gates)
+
+
 class FeedForward(nn.Module):
   """FeedForward layer in transformer
     """
-  def __init__(self, dim, mult=4, dropout=0., activation=None):
+  def __init__(self, dim, mult=4, dropout=0., activation=None, use_bias=True):
     super().__init__()
     self.norm = nn.LayerNorm(dim)
 
-    # NOTE: activation: ReLU (AlphaFold2), GatedGELU (ProFOLD)
+    # NOTE: activation: ReLU (AlphaFold2), GatedGELU (ProFOLD), SwiGLU (AlphaFold3)
     activation = default(activation, env('FeedForward_activation', defval='GatedGELU'))
     if activation == 'GatedGELU':
       activation = GEGLU
       amplifier = 2
-    else:
-      assert activation == 'ReLU'
+    elif activation == 'ReLU':
       activation = nn.ReLU
       amplifier = 1
+    else:
+      assert activation == 'SwiGLU'
+      activation = SwiGLU
+      amplifiers = 2
 
     self.net = nn.Sequential(
-        nn.Linear(dim, dim * mult * amplifier), activation(), nn.Dropout(dropout),
-        nn.Linear(dim * mult, dim)
+        nn.Linear(dim, dim * mult * amplifier, bias=use_bias), activation(),
+        nn.Dropout(dropout), nn.Linear(dim * mult, dim, bias=use_bias)
     )
     init_linear_(self.net[-1])
 
@@ -1197,3 +1232,16 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
         return checkpoint_sequential_nargs(self.layers, self.segments, *args, **kwargs)
 
   return _LayerStack(*args, **kwargs)
+
+
+def residue_stack(moduleclass, depth, *args, **kwargs):
+  class _ResidueNet(nn.Module):
+    def __init__(self, *args, **kwargs):
+      super().__init__()
+      self.net = moduleclass(*args, **kwargs)
+
+    def forward(self, x, **kwargs):
+      with profiler.record_function(moduleclass.__name__):
+        return tensor_add(x, self.net(x, **kwargs))
+
+  return layer_stack(_ResidueNet, depth, *args, **kwargs)
