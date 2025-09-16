@@ -1431,7 +1431,7 @@ def kabsch_rotation(
   assert x.shape == y.shape
 
   if exists(mask):
-    x, y = x[mask, :], y[mask, :]
+    x, y = x[mask > 0, :], y[mask > 0, :]
 
   with autocast(enabled=False):
     x, y = x.float(), y.float()
@@ -1447,15 +1447,19 @@ def kabsch_rotation(
   return r
 
 
-def kabsch_align(x: torch.Tensor, y: torch.Tensor):
+def kabsch_align(x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None):
   """ Kabsch alignment of x into y. Assumes x, y are both (num_res, 3).
     """
   # center x and y to the origin
-  x_ = x - x.mean(dim=-2, keepdim=True)
-  y_ = y - y.mean(dim=-2, keepdim=True)
+  if exists(mask):
+    x_ = x - masked_mean(value=x, mask=mask, dim=-2, keepdim=True)
+    y_ = y - masked_mean(value=y, mask=mask, dim=-2, keepdim=True)
+  else:
+    x_ = x - x.mean(dim=-2, keepdim=True)
+    y_ = y - y.mean(dim=-2, keepdim=True)
 
   # calculate rotations
-  r = kabsch_rotation(x_, y_)
+  r = kabsch_rotation(x_, y_, mask=mask)
 
   # apply rotations
   x_ = x_ @ r
