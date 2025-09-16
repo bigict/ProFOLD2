@@ -290,7 +290,7 @@ class FeedForward(nn.Module):
     else:
       assert activation == 'SwiGLU'
       activation = SwiGLU
-      amplifiers = 2
+      amplifier = 2
 
     self.net = nn.Sequential(
         nn.Linear(dim, dim * mult * amplifier, bias=use_bias), activation(),
@@ -307,6 +307,33 @@ class FeedForward(nn.Module):
         shard_dim=shard_dim,
         cat_dim=shard_dim
     )
+
+
+class ConditionedFeedForward(nn.Module):
+  """ConditionedFeedForward layer in transformer
+    """
+  def __init__(self, dim, dim_cond, dropout=0., mult=2):
+    super().__init__()
+
+    self.norm = AdaLN(dim, dim_cond=dim_cond)
+    self.net = nn.Sequential(
+        nn.Linear(dim, dim * mult * 2, bias=False), SwiGLU(),
+        nn.Dropout(dropout), nn.Linear(dim * mult, dim, bias=False)
+    )
+    init_linear_(self.net[-1])
+    self.gating = nn.Linear(dim_cond, dim)
+    init_linear_(self.gating, b=-2.0)
+
+  def forward(self, x, cond, shard_dim=-2, shard_size=None):
+    x = self.norm(x, cond=cond)
+    x = functional.sharded_apply(
+        self.net, [x],
+        shard_size=None if self.training else shard_size,
+        shard_dim=shard_dim,
+        cat_dim=shard_dim
+    )
+    x = tensor_mul(x, F.sigmoid(self.gating(cond)))
+    return x
 
 
 class Attention(nn.Module):
