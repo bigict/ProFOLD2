@@ -107,6 +107,16 @@ def max_neg_value(t):
   return -torch.finfo(t.dtype).max
 
 
+def shaped_dropout(x, p, shape=None, training=True):
+  if exists(shape) and 0 < p < 1.0:
+    if training:
+      assert x.dim() == len(shape)
+      m = torch.bernoulli(torch.full(shape, 1 - p, device=x.device))
+      return m * x / (1 - p)
+    return x
+  return F.dropout(x, p=p, training=training)
+
+
 def shared_dropout(x, p, broadcast_dim=None, training=True):
   if exists(broadcast_dim) and 0 < p < 1.0:
     if training:
@@ -1167,6 +1177,109 @@ class PairwiseEmbedding(nn.Module):
       )
       return x, x_mask
     return x
+
+
+class AttentionWithBias(nn.Module):
+  """AttentionWithBias
+    """
+  def __init__(self, dim, heads, dim_cond=None, has_context=False, **kwargs):
+    super().__init__()
+
+    self.norm = nn.ModuleDict({'query': AdaLN(dim, dim_cond=dim_cond)})
+    if has_context:
+      self.norm['context'] = AdaLN(dim, dim_cond=dim_cond)
+    self.attn = Attention(dim_q=dim, dim_kv=dim, heads=heads, **kwargs)
+    if exists(dim_cond):
+      self.gating = nn.Linear(dim_cond, dim)
+      init_linear_(self.gating, b=-2.)
+
+    accept_kernel_fn = env('AttentionPairBias_accept_kernel_fn', defval=0, dtype=int)
+    if not hasattr(F, 'scaled_dot_product_attention') and exists(accept_kernel_fn):
+      logger.warning('F.scaled_dot_product_attention is not available! disabled it.')
+      accept_kernel_fn = 0
+    accept_kernel_dtype = env('AttentionPairBias_accept_kernel_dtype')
+    if accept_kernel_dtype in ('float16', 'f16'):
+      accept_kernel_dtype = torch.float16
+    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
+      accept_kernel_dtype = torch.bfloat16
+    self.attn_fn = functools.partial(
+        pytorch_attn, dtype=accept_kernel_dtype
+    ) if accept_kernel_fn else None
+
+  def forward(
+      self,
+      x,
+      pair_bias,
+      *,
+      cond=None,
+      mask=None,
+      pair_mask=None,
+      context=None,
+      context_cond=None,
+      context_mask=None
+  ):
+    x = self.norm['query'](x, cond=cond)
+    assert not exists(context) ^ ('context' in self.norm)
+    if exists(context):
+      assert not exists(cond) ^ exists(context_cond)
+      context = self.norm['context'](context, cond=context_cond)
+
+    if exists(pair_mask):
+      pair_bias = pair_bias.masked_fill(~pair_mask, max_neg_value(pair_bias))
+    x = self.attn(
+        x,
+        mask=mask,
+        context=context,
+        context_mask=context_mask,
+        attn_bias=pair_bias,
+        attn_fn=self.attn_fn
+    )
+
+    if exists(cond):
+      x = tensor_mul(x, F.sigmoid(self.gating(cond)))
+
+    return x
+
+
+class AttentionPairBias(nn.Module):
+  """AttentionPairBias
+    """
+  def __init__(self, dim_node, dim_edge, heads, group_size=1, **kwargs):
+    super().__init__()
+
+    self.attn = layer_stack(AttentionWithBias, group_size, dim_node, heads, **kwargs)
+    self.edges_to_attn_bias = nn.Sequential(
+        nn.LayerNorm(dim_edge),
+        nn.Linear(dim_edge, heads, bias=False),
+        Rearrange('... i j h -> ... h i j')
+    )
+
+  def forward(
+      self,
+      x,
+      edges,
+      *,
+      cond=None,
+      mask=None,
+      edge_bias=None,
+      edge_mask=None,
+      context=None,
+      context_cond=None,
+      context_mask=None
+  ):
+    pair_bias = self.edges_to_attn_bias(edges)  # pylint: disable=not-callable
+    if exists(edge_bias):
+      pair_bias = tensor_add(pair_bias, edge_bias)
+    return self.attn(
+        x,
+        pair_bias,
+        cond=cond,
+        mask=mask,
+        pair_mask=edge_mask,
+        context=context,
+        context_cond=context_cond,
+        context_mask=context_mask
+    )
 
 
 def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):

@@ -306,3 +306,58 @@ def Evoformer(depth, *args, **kwargs):
   """The Evoformer in AlphaFold2
    """
   return commons.layer_stack(EvoformerBlock, depth, *args, **kwargs)
+
+
+class PairformerBlock(nn.Module):
+  """One Evoformer Layer
+   """
+  def __init__(
+      self,
+      *,
+      dim_single,
+      dim_pairwise,
+      heads,
+      dim_head,
+      attn_dropout,
+      ff_dropout,
+      **kwargs
+  ):
+    super().__init__()
+
+    self.pair_attn = commons.PairwiseAttentionBlock(
+        dim_msa=dim_single,
+        dim_pairwise=dim_pairwise,
+        heads=heads,
+        dim_head=dim_head,
+        disabled_outer_mean=True,
+        dropout=attn_dropout
+    )
+    self.pair_ff = commons.FeedForward(dim=dim_pairwise, dropout=ff_dropout)
+    self.seq_attn = commons.AttentionPairBias(
+        dim_node=dim_single,
+        dim_edge=dim_pairwise,
+        heads=heads,
+        dim_head=dim_head,
+        dropout=attn_dropout,
+        **kwargs
+    )
+    self.seq_ff = commons.FeedForward(dim=dim_single, dropout=ff_dropout)
+
+  def forward(self, s, x, cond=None, mask=None, seq_mask=None, shard_size=None):
+    # pairwise attention and transition
+    with profiler.record_function('pair_attn'):
+      x = self.pair_attn(x, mask=mask, shard_size=shard_size)
+      x = commons.tensor_add(x, self.pair_ff(x, shard_size=shard_size))
+
+    # seq attention and transition
+    with profiler.record_function('seq_attn'):
+      s = self.seq_attn(s, x, cond=cond, mask=seq_mask, edge_mask=mask)
+      s = commons.tensor_add(s, self.seq_ff(s, shard_size=shard_size))
+
+    return s, x
+
+
+def Pairformer(depth, *args, **kwargs):
+  """The Pairformer in AlphaFold3
+   """
+  return commons.layer_stack(PairformerBlock, depth, *args, **kwargs)

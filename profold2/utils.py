@@ -40,6 +40,10 @@ def version_cmp(x, y):
   return 0
 
 
+def compose(*funcs):
+  return functools.reduce(lambda g, f: lambda x: f(g(x)), funcs)
+
+
 def package_dir():
   cwd = os.path.dirname(__file__)
   return os.path.dirname(cwd)
