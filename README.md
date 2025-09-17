@@ -5,7 +5,7 @@
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bigict/ProFOLD2/pylint.yml)
 ![GitHub Release](https://img.shields.io/github/v/release/bigict/ProFOLD2)
 
-ProFOLD2 - A protein 3D structure prediction application
+ProFOLD2 - A protein 3D-structure prediction application
 
 ## Requirements
 
