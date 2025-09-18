@@ -17,21 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def Transition(dim, mult=1., num_layers=2, act=nn.ReLU):  # pylint: disable=invalid-name
-  layers = []
-  dim_hidden = dim * mult
+  assert num_layers >= 1
+  dim_hidden = dim * mult if num_layers > 1 else dim
 
-  for ind in range(num_layers):
-    is_first = ind == 0
-    is_last = ind == (num_layers - 1)
-    dim_in = dim if is_first else dim_hidden
-    dim_out = dim if is_last else dim_hidden
-
-    layers.append(nn.Linear(dim_in, dim_out))
-
-    if is_last:
-      continue
-
-    layers.append(act())
+  layers = [nn.Linear(dim, dim_hidden)]
+  for _ in range(1, num_layers - 1):
+    layers += [act(), nn.Linear(dim_hidden, dim_hidden)]
+  if num_layers > 1:
+    layers += [act(), nn.Linear(dim_hidden, dim)]
 
   return nn.Sequential(*layers)
 
