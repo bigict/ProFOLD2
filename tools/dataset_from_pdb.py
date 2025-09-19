@@ -214,7 +214,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
 
         if exists(labels):
           labels, bfactors = fix_coord(
-              residue_id, coord, coord_mask_list, bfactors=bfactors
+              residue_id, labels, label_mask, bfactors=bfactors
           )
           coord_list.append(labels)
           coord_mask_list.append(label_mask)
