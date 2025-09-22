@@ -1504,7 +1504,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
 
   pred_center = torch.mean(pred_ca, dim=-2, keepdim=True)
   true_center = torch.mean(true_ca, dim=-2, keepdim=True)
-  t = true_center - torch.einsum('... h w, ... w -> ... h', R, pred_center)
+  t = pred_center - torch.einsum('... h w, ... w -> ... h', R, true_center)
 
   return R, t
 
