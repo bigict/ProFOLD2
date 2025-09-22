@@ -1,9 +1,10 @@
-"""An implementation of AlphaFold2 model
+"""An implementation of AlphaFold2-style model
  """
 from dataclasses import dataclass
 import functools
 import logging
 import random
+from typing import Optional
 
 import torch
 from torch import nn
@@ -23,9 +24,9 @@ class Recyclables:
   msa_first_row_repr: torch.Tensor
   pairwise_repr: torch.Tensor
   coords: torch.Tensor
-  frames: tuple = None
+  frames: Optional[tuple[torch.Tensor, torch.Tensor]] = None
 
-  def asdict(self):
+  def asdict(self) -> dict:
     return dict(
         msa_first_row_repr=self.msa_first_row_repr,
         pairwise_repr=self.pairwise_repr,
@@ -47,7 +48,7 @@ class ReturnValues(_ReturnValues):
       kwargs['recyclables'] = Recyclables(**kwargs['recyclables'])
     super().__init__(**kwargs)
 
-  def asdict(self):
+  def asdict(self) -> dict:
     return dict(
         recyclables=self.recyclables.asdict()
         if exists(self.recyclables) else self.recyclables,
@@ -103,7 +104,7 @@ class InputEmbeddings(nn.Module):
 
 
 class AlphaFold2(nn.Module):
-  """An implementation of the AlphaFold2 model
+  """An implementation of the AlphaFold2-style model
    """
   def __init__(
       self,
