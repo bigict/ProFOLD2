@@ -1428,11 +1428,11 @@ def kabsch_rotation(
   Returns:
       r (torch.Tensor): rotation matrix with shape `(3, 3)`
     """
-  assert x.shape == y.shape and x.shape[-1] == 3
+  assert x.shape[-2:] == y.shape[-2:] and x.shape[-1] == 3
 
   if exists(mask):
-    assert len(x.shape) == 2
-    x, y = x[mask > 0, :], y[mask > 0, :]
+    assert len(y.shape) == 2
+    x, y = x[..., mask > 0, :], y[mask > 0, :]
 
   with autocast(enabled=False):
     x, y = x.float(), y.float()
@@ -1443,7 +1443,7 @@ def kabsch_rotation(
 
     # determinant sign for direction correction
     d = torch.sign(torch.det(v) * torch.det(w))
-    v[-1, -1] = v[-1, -1] * d
+    v[..., -1, -1] = v[..., -1, -1] * d
     # Create Rotation matrix U
     r = v @ w
   return r
@@ -1460,16 +1460,16 @@ def kabsch_transform(
   Returns:
       r (torch.Tensor): rotation matrix with shape `(3, 3)`
     """
-  assert x.shape == y.shape
+  assert x.shape[-2:] == y.shape[-2:]
 
   if exists(mask):
-    x_center = masked_mean(value=x, mask=mask[..., None], dim=-2, keepdim=True)
-    y_center = masked_mean(value=y, mask=mask[..., None], dim=-2, keepdim=True)
+    x_center = masked_mean(value=x, mask=mask[..., None], dim=-2)
+    y_center = masked_mean(value=y, mask=mask[..., None], dim=-2)
   else:
-    x_center = torch.mean(x, dim=-2, keepdim=True)
-    y_center = torch.mean(y, dim=-2, keepdim=True)
+    x_center = torch.mean(x, dim=-2)
+    y_center = torch.mean(y, dim=-2)
 
-  R = kabsch_rotation(x - x_center, y - y_center, mask=mask)  # pylint: disable=invalid-name
+  R = kabsch_rotation(x - x_center[..., None, :], y - y_center[..., None, :], mask=mask)  # pylint: disable=invalid-name
   t = x_center - torch.einsum('... h w, ... w -> ... h', R, y_center)
 
   return R, t
@@ -1522,7 +1522,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     pred_points = torch.nan_to_num(pred_points, nan=0.0, posinf=1.0, neginf=1.0)
 
   if torch.any(mask_ca):
-    pred_ca = pred_ca[mask_ca, :]
+    pred_ca = pred_ca[..., mask_ca, :]
     true_ca = true_ca[mask_ca, :]
   else:
     with torch.no_grad():
@@ -1573,7 +1573,7 @@ def optimal_permutation_find(
     crop_mask = seq_crop_mask(
         fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_color_i
     )
-    pred_points_i = pred_points[seq_color == seq_color_i, ...]
+    pred_points_i = pred_points[..., seq_color == seq_color_i, :, :]
     for seq_color_j in seq_crop_candidate(fgt_seq_color, fgt_seq_entity, seq_color_i):
       if int(seq_color_j) not in used:
         true_points_j, points_mask_j = seq_crop_apply(
@@ -1624,7 +1624,7 @@ def multi_chain_permutation_alignment(value, batch):
               crop_mask
           )
           pred_points = value['coords'][bdx][
-              batch['seq_color'][bdx] == batch['seq_anchor'][bdx]
+              ..., batch['seq_color'][bdx] == batch['seq_anchor'][bdx], :, :
           ]
           T = optimal_transform_create(pred_points, true_points, points_mask)  # pylint: disable=invalid-name
 
