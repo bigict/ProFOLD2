@@ -1628,7 +1628,9 @@ def multi_chain_permutation_alignment(value, batch):
           ]
           T = optimal_transform_create(pred_points, true_points, points_mask)  # pylint: disable=invalid-name
 
-          coord, coord_mask = batch['coord'][bdx], batch['coord_mask'][bdx]
+          coord, coord_mask = map(
+              torch.clone, (batch['coord'][bdx], batch['coord_mask'][bdx])
+          )
           for seq_color_i, seq_color_j in optimal_permutation_find(
               rigids_apply(T, batch['coord_fgt'][bdx]),
               batch['coord_mask_fgt'][bdx],
