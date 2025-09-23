@@ -1236,8 +1236,8 @@ class AttentionWithBias(nn.Module):
   def forward(
       self,
       x,
-      pair_bias,
       *,
+      pair_bias,
       cond=None,
       mask=None,
       pair_mask=None,
@@ -1299,7 +1299,7 @@ class AttentionPairBias(nn.Module):
       pair_bias = tensor_add(pair_bias, edge_bias)
     return self.attn(
         x,
-        pair_bias,
+        pair_bias=pair_bias,
         cond=cond,
         mask=mask,
         pair_mask=edge_mask,
