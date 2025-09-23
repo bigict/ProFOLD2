@@ -1428,16 +1428,18 @@ def kabsch_rotation(
   Returns:
       r (torch.Tensor): rotation matrix with shape `(3, 3)`
     """
-  assert x.shape == y.shape
+  assert x.shape == y.shape and x.shape[-1] == 3
 
   if exists(mask):
+    assert len(x.shape) == 2
     x, y = x[mask > 0, :], y[mask > 0, :]
 
   with autocast(enabled=False):
     x, y = x.float(), y.float()
 
     # optimal rotation matrix via SVD of the convariance matrix {x.T * y}
-    v, _, w = torch.linalg.svd(x.T @ y)
+    # v, _, w = torch.linalg.svd(x.T @ y)
+    v, _, w = torch.linalg.svd(torch.einsum('... i c,... i d -> ... c d', x, y))
 
     # determinant sign for direction correction
     d = torch.sign(torch.det(v) * torch.det(w))
@@ -1460,14 +1462,14 @@ def kabsch_transform(
     """
   assert x.shape == y.shape
 
-  R = kabsch_rotation(x, y, mask=mask)  # pylint: disable=invalid-name
-
   if exists(mask):
-    x_center = masked_mean(value=x, mask=mask, dim=-2, keepdim=True)
-    y_center = masked_mean(value=y, mask=mask, dim=-2, keepdim=True)
+    x_center = masked_mean(value=x, mask=mask[..., None], dim=-2, keepdim=True)
+    y_center = masked_mean(value=y, mask=mask[..., None], dim=-2, keepdim=True)
   else:
     x_center = torch.mean(x, dim=-2, keepdim=True)
     y_center = torch.mean(y, dim=-2, keepdim=True)
+
+  R = kabsch_rotation(x - x_center, y - y_center, mask=mask)  # pylint: disable=invalid-name
   t = x_center - torch.einsum('... h w, ... w -> ... h', R, y_center)
 
   return R, t
@@ -1478,8 +1480,8 @@ def kabsch_align(x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] 
     """
   # center x and y to the origin
   if exists(mask):
-    x_ = x - masked_mean(value=x, mask=mask, dim=-2, keepdim=True)
-    y_ = y - masked_mean(value=y, mask=mask, dim=-2, keepdim=True)
+    x_ = x - masked_mean(value=x, mask=mask[..., None], dim=-2, keepdim=True)
+    y_ = y - masked_mean(value=y, mask=mask[..., None], dim=-2, keepdim=True)
   else:
     x_ = x - x.mean(dim=-2, keepdim=True)
     y_ = y - y.mean(dim=-2, keepdim=True)
