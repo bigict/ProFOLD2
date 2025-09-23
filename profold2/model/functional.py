@@ -1447,6 +1447,32 @@ def kabsch_rotation(
   return r
 
 
+def kabsch_transform(
+    x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None
+):
+  """Calculate the best rotation that minimises the RMSD between x and y.
+  Args:
+      x (torch.Tensor): source atom coordinates with shape `(num_res, 3)`.
+      y (torch.Tensor): target atom coordinates with shape `(num_res, 3)`.
+      mask (torch.Tensor optional): with shape `(num_res, )`.
+  Returns:
+      r (torch.Tensor): rotation matrix with shape `(3, 3)`
+    """
+  assert x.shape == y.shape
+
+  R = kabsch_rotation(x, y, mask=mask)  # pylint: disable=invalid-name
+
+  if exists(mask):
+    x_center = masked_mean(value=x, mask=mask, dim=-2, keepdim=True)
+    y_center = masked_mean(value=y, mask=mask, dim=-2, keepdim=True)
+  else:
+    x_center = torch.mean(x, dim=-2, keepdim=True)
+    y_center = torch.mean(y, dim=-2, keepdim=True)
+  t = x_center - torch.einsum('... h w, ... w -> ... h', R, y_center)
+
+  return R, t
+
+
 def kabsch_align(x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] = None):
   """ Kabsch alignment of x into y. Assumes x, y are both (num_res, 3).
     """
@@ -1500,11 +1526,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     with torch.no_grad():
       pred_ca = true_ca
 
-  R = kabsch_rotation(pred_ca, true_ca)  # pylint: disable=invalid-name
-
-  pred_center = torch.mean(pred_ca, dim=-2, keepdim=True)
-  true_center = torch.mean(true_ca, dim=-2, keepdim=True)
-  t = pred_center - torch.einsum('... h w, ... w -> ... h', R, true_center)
+  return kabsch_transform(pred_ca, true_ca)
 
   return R, t
 
