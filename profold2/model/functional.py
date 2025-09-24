@@ -684,9 +684,7 @@ def rigids_to_positions(frames, aatypes):
   )
 
   # Transform each atom from it's local frame to the global frame.
-  positions = torch.einsum(
-      '... w,... h w -> ... h', group_pos, rotations
-  ) + translations
+  positions = rigids_apply((rotations, translations), group_pos)
 
   # Mask out non-existing atoms.
   mask = batched_gather(residue_constants.restype_atom14_mask, aatypes)
@@ -704,11 +702,9 @@ def rigids_rearrange(frames, ops1, ops2=None):
 
 
 def rigids_multiply(a, b):
-  rots_a, trans_a = a
-  rots_b, trans_b = b
-  rotations = torch.einsum('... h d,... d w -> ... h w', rots_a, rots_b)
-  translations = torch.einsum('... w,... h w -> ... h', trans_b, rots_a) + trans_a
-  return rotations, translations
+  rotations, translations = b
+  rotations, _ = rigids_rotate(a, rotations)
+  return rotations, rigids_apply(a, translations)
 
 
 def rigids_apply(frames, points):
@@ -811,8 +807,7 @@ def rigids_from_angles(aatypes, backb_frames, angles):
   return rigids_multiply(
       rigids_rearrange(
           backb_frames, '... i c d -> ... i () c d', '... i d -> ... i () d'
-      ),
-      atom_frames
+      ), atom_frames
   )
 
 
@@ -850,12 +845,11 @@ def fape(
   else:
     assert 0.0 <= clamp_ratio <= 1.0
 
-  def to_local(rotations, translations, points):
-    # inverse frames
-    rotations = rearrange(rotations, '... h w -> ... w h')
-    translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
-    return torch.einsum('... j w,... i h w -> ... i j h', points,
-                        rotations) + rearrange(translations, '... i h -> ... i () h')
+  def to_local(R, t, points):
+    # invert apply frames: R^t (x - t)
+    return torch.einsum(
+        '... j w,... w h -> ... j h', points[..., None, :, :] - t[..., :, None, :], R
+    )
 
   pred_xij = to_local(pred_rotations, pred_trans, pred_points)
   true_xij = to_local(true_rotations, true_trans, true_points)
@@ -1065,8 +1059,8 @@ def between_residue_clash_loss(
   # Also mask out the diagonal (atom-pairs from the same residue) -- these atoms
   # are handled separately.
   dist_mask *= (
-      rearrange(residue_index, '... i -> ... i () () ()') <
-      rearrange(residue_index, '... j -> ... () j () ()')
+      rearrange(residue_index, '... i -> ... i () () ()')
+      < rearrange(residue_index, '... j -> ... () j () ()')
   )
 
   # Backbone C--N bond between subsequent residues is no clash.
@@ -1577,10 +1571,7 @@ def optimal_permutation_find(
     for seq_color_j in seq_crop_candidate(fgt_seq_color, fgt_seq_entity, seq_color_i):
       if int(seq_color_j) not in used:
         true_points_j, points_mask_j = seq_crop_apply(
-            fgt_coord,
-            fgt_coord_mask,
-            fgt_seq_color == seq_color_j,
-            crop_mask
+            fgt_coord, fgt_coord_mask, fgt_seq_color == seq_color_j, crop_mask
         )
         r = rmsd(
             pred_points_i[..., ca_idx, :],
