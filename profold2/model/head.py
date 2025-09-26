@@ -75,29 +75,6 @@ def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
   return errors, [1.0] * errors.shape[0]
 
 
-def batched_tmscore(pred_points, true_points, coord_mask, mask):
-  assert len(pred_points.shape) == 4  # b i c d
-
-  def _yield_tmscore(b):
-    flat_cloud_mask = rearrange(coord_mask[b], 'i c -> (i c)')
-
-    if torch.any(flat_cloud_mask):
-      # rotate / align
-      coords_aligned, labels_aligned = functional.kabsch_align(
-          rearrange(pred_points[b], 'i c d -> (i c) d')[flat_cloud_mask],
-          rearrange(true_points[b], 'i c d -> (i c) d')[flat_cloud_mask]
-      )
-
-      return functional.tmscore(
-          coords_aligned, labels_aligned, n=torch.sum(mask[b], dim=-1)
-      )
-    return torch.as_tensor(0., device=flat_cloud_mask.device)
-
-  # tms = sum(map(_yield_tmscore, range(pred_points.shape[0])))
-  tms = torch.stack(list(map(_yield_tmscore, range(pred_points.shape[0]))))
-  return tms
-
-
 def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
   is_prot = torch.logical_and(
       seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
@@ -1568,11 +1545,25 @@ class TMscoreHead(nn.Module):
     assert 'folding' in headers and 'coords' in headers['folding']
 
     if 'coord' in batch and 'coord_mask' in batch:
-      pred_points = headers['folding']['coords'][..., :self.num_atoms, :]
-      true_points = batch['coord'][..., :self.num_atoms, :]
-      coord_mask = batch['coord_mask'][..., :self.num_atoms]
+      pred_points = rearrange(
+          headers['folding']['coords'][..., :self.num_atoms, :],
+          '... i c d -> ... (i c) d'
+      )
+      true_points = rearrange(
+          batch['coord'][..., :self.num_atoms, :], '... i c d -> ... (i c) d'
+      )
+      coord_mask = rearrange(
+          batch['coord_mask'][..., :self.num_atoms], '... i c -> ... (i c)'
+      )
       with torch.no_grad():
-        tms = batched_tmscore(pred_points, true_points, coord_mask, batch['mask'])
+        # rotate / align
+        pred_points, true_points = functional.kabsch_align(
+            pred_points, true_points, mask=coord_mask
+        )
+        n = torch.sum(batch['mask'], dim=-1, keepdim=True)
+        tms = functional.tmscore(pred_points, true_points, n=n)
+      tms = torch.where(torch.any(coord_mask, dim=-1), tms, 0)
+      logger.debug('TMscoreHead.loss: %s', tms)
       return dict(loss=tms)
     return None
 
