@@ -1274,6 +1274,9 @@ class AttentionPairBias(nn.Module):
   def __init__(self, dim_node, dim_edge, heads, group_size=1, **kwargs):
     super().__init__()
 
+    if 'checkpoint_segment_size' not in kwargs:
+      # NOTE: disable checkpoint by default
+      kwargs['checkpoint_segment_size'] = group_size
     self.attn = layer_stack(AttentionWithBias, group_size, dim_node, heads, **kwargs)
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge),
@@ -1384,4 +1387,7 @@ def residue_stack(moduleclass, depth, *args, **kwargs):
       with profiler.record_function(moduleclass.__name__):
         return tensor_add(x, self.net(x, **kwargs))
 
+  if 'checkpoint_segment_size' not in kwargs:
+    # NOTE: disable checkpoint by default
+    kwargs['checkpoint_segment_size'] = depth
   return layer_stack(_ResidueNet, depth, *args, **kwargs)

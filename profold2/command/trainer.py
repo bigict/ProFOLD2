@@ -224,7 +224,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       if not params_requires_grad_pattern.match(name):
         param.requires_grad = False
       else:
-        logging.info('name: %s, param: %s', name, param)
+        logging.info('params_requires_grad: name=%s', name)
   if exists(args.model_params_requires_hook):
     # torch.set_printoptions(profile='full')
     params_requires_hook = re.compile(args.model_params_requires_hook)
