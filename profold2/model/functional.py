@@ -1,6 +1,6 @@
 import collections
 import functools
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -1425,8 +1425,7 @@ def kabsch_rotation(
   assert x.shape[-2:] == y.shape[-2:] and x.shape[-1] == 3
 
   if exists(mask):
-    assert len(y.shape) == 2
-    x, y = x[..., mask > 0, :], y[mask > 0, :]
+    y = y * mask[..., None]
 
   with autocast(enabled=False):
     x, y = x.float(), y.float()
@@ -1490,11 +1489,16 @@ def kabsch_align(x: torch.Tensor, y: torch.Tensor, mask: Optional[torch.Tensor] 
   return x_, y_
 
 
-def tmscore(x: torch.Tensor, y: torch.Tensor, n: Optional[int] = None):
+def tmscore(
+    x: torch.Tensor, y: torch.Tensor, n: Optional[Union[int, torch.Tensor]] = None
+):
   """ Assumes x, y are both (..., num_res, 3). """
   n = default(n, x.shape[-2])
 
-  n = max(21, n)
+  if isinstance(n, torch.Tensor):
+    n = torch.clamp(n, min=21)
+  else:
+    n = max(21, n)
   d0 = 1.24 * (n - 15)**(1.0 / 3.0) - 1.8
   # get distance
   dist = torch.sqrt(torch.sum((x - y)**2, dim=-1))
