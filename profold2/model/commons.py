@@ -168,7 +168,7 @@ def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
         attn_bias.masked_fill(~attn_mask, mask_value), min=-mask_value
     ).to(dtype=dtype_to)
   elif exists(attn_bias):
-    attn_mask = attn_bias
+    attn_mask = attn_bias.to(dtype=dtype_to)
   # See https://github.com/pytorch/pytorch/issues/96099
   o = F.scaled_dot_product_attention(
       q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, scale=scale
@@ -1229,6 +1229,8 @@ class AttentionWithBias(nn.Module):
       accept_kernel_dtype = torch.float16
     elif accept_kernel_dtype in ('bfloat16', 'bf16'):
       accept_kernel_dtype = torch.bfloat16
+    elif accept_kernel_dtype in ('float32', 'f32'):
+      accept_kernel_dtype = torch.float32
     self.attn_fn = functools.partial(
         pytorch_attn, dtype=accept_kernel_dtype
     ) if accept_kernel_fn else None
