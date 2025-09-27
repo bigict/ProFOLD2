@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional, folding
+from profold2.model import commons, functional, diffusion, folding, evoformer
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
@@ -406,6 +406,168 @@ class DistogramHead(nn.Module):
     )
     logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
+
+
+class DonfidenceHead(nn.Module):
+  """Head to predict diffusion generation confidence.
+    """
+  def __init__(
+      self,
+      dim,
+      dim_input=None,
+      pairformer_depth=4,
+      pairformer_head_num=16,
+      pairformer_head_dim=32,
+      pairformer_attn_dropout=0.,
+      pairformer_ff_dropout=0.,
+      pae_bin_num=64,
+      pde_bin_num=64,
+      plddt_bin_num=50,
+      dgram_bin_min=3.25,
+      dgram_bin_max=50.75,
+      dgram_bin_num=39
+  ):
+    super().__init__()
+
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
+
+    dgram_breaks = torch.linspace(dgram_bin_min, dgram_bin_max, steps=dgram_bin_num)
+    self.register_buffer('dgram_breaks', dgram_breaks, persistent=False)
+
+    self.from_input = nn.Linear(
+        dim_input, dim_pairwise * 2, bias=False
+    ) if exists(dim_input) else None
+    self.from_dij = nn.Linear(dgram_bin_num, dim_pairwise, bias=False)
+
+    self.pairformer = evoformer.Pairformer(
+        depth=pairformer_depth,
+        dim_single=dim_single,
+        dim_pairwise=dim_pairwise,
+        heads=pairformer_head_num,
+        dim_head=pairformer_head_dim,
+        attn_dropout=pairformer_attn_dropout,
+        ff_dropout=pairformer_ff_dropout
+    )
+
+    self.to_pae = nn.Sequential(
+        nn.LayerNorm(dim_pairwise), nn.Linear(dim_pairwise, pae_bin_num, bias=False)
+    )
+    self.to_pde = nn.Sequential(
+        nn.LayerNorm(dim_pairwise), nn.Linear(dim_pairwise, pde_bin_num, bias=False)
+    )
+    self.to_plddt = nn.Sequential(
+        nn.LayerNorm(dim_single), nn.Linear(dim_single, plddt_bin_num, bias=False)
+    )
+
+  def forward(self, headers, representations, batch):
+    assert 'folding' in headers and 'coords' in headers['folding']
+
+    single_repr, pairwise_repr = map(
+        lambda key: representations[key].detach(), ('single', 'pair')
+    )
+
+    # embed pair distance of representative atoms
+    with torch.no_grad():
+      ca_idx = residue_constants.atom_order['CA']
+      dij = functional.distogram_from_positions(
+          headers['folding']['coords'][..., ca_idx, :], self.dgram_breaks
+      )
+    pairwise_repr = commons.tensor_add(pairwise_repr, self.from_dij(dij))
+
+    single_repr, pairwise_repr = self.pairformer(single_repr, pairwise_repr)
+
+    pae = self.to_pae(pairwise_repr)
+    pde = self.to_pde(pairwise_repr + rearrange(pairwise_repr, '... i j d -> ... j i d'))
+
+    return dict(pae=pae, pde=pde)
+
+  def loss(self, value, batch):
+    pass
+
+
+class DiffusionHead(nn.Module):
+  """Head to generate 3d struct.
+    """
+  def __init__(
+      self,
+      dim,
+      has_inputs=True,
+      diffuser_batch_size=None,
+      diffuser_shard_size=None,
+      **kwargs
+  ):
+    super().__init__()
+
+    if has_inputs:
+      dim_token = kwargs.pop('inputs_dim_token', 384)
+      num_tokens = kwargs.pop(
+          'inputs_num_tokens',
+          len(residue_constants.restypes_with_x) + 1
+      )
+
+      self.embedder = diffusion.InputFeatureEmbedder(
+          dim_token=dim_token, num_tokens=num_tokens
+      )
+
+      kwargs['dim_inputs'] = dim_token + num_tokens + 1
+    self.diffuser_module = diffusion.DiffusionSampler(dim=dim, **kwargs)
+    self.diffuser_batch_size = diffuser_batch_size
+    self.diffuser_shard_size = env(
+        'profold2_diffusion_shard_size', defval=diffuser_shard_size, dtype=int
+    )
+    assert not exists(self.diffuser_shard_size) or self.diffuser_shard_size > 0
+
+  def forward(self, headers, representations, batch):
+    assert hasattr(self, 'embedder') ^ ('inputs' in representations)
+    if hasattr(self, 'embedder'):
+      inputs = self.embedder(batch)
+    else:
+      inputs = representations['inputs']
+
+    x_true, x_mask, x_noisy, x_denoised, noise_level = self.diffuser_module(
+        batch,
+        inputs=inputs,
+        trunk_single_cond=representations['single'],
+        trunk_pair_cond=representations['pair'],
+        diffuser_batch_size=self.diffuser_batch_size,
+        shard_size=self.diffuser_shard_size
+    )
+    return dict(
+        x_true=x_true,
+        x_mask=x_mask,
+        x_noisy=x_noisy,
+        x_denoised=x_denoised,
+        noise_level=noise_level
+    )
+
+  def loss(self, value, batch):
+    noise_level = value['noise_level']
+    x_true, x_pred, x_mask = value['x_true'], value['x_denoised'], value['x_mask']
+
+    if exists(self.diffuser_batch_size):
+      x_true, x_mask = x_true[..., None, :, :], x_mask[..., None, :]
+
+    # weighted_align
+    with torch.no_grad():
+      with autocast(enabled=False):
+        # TODO: change x_mask to weight
+        R, t = functional.kabsch_transform(x_pred.float(), x_true.float(), x_mask)
+        x_true = functional.rigids_apply(
+            (R[..., None, :, :], t[..., None, :]), x_true.float()
+        )
+
+    ##################################################
+    # EDM: L = \lambda(sigma) || x_pred - x_true ||
+    #    where \lambda(sigma) = (sigma^2 + sigma_data^2) / (sigma * sigma_data)^2
+    ##################################################
+    sigma_scale = (
+        noise_level**2 + self.diffuser_module.sigma_data**2
+    ) / (noise_level * self.diffuser_module.sigma_data)**2
+    errors = sigma_scale[..., None] * torch.sum((x_pred - x_true)**2, dim=-1)
+
+    loss = torch.mean(functional.masked_mean(value=errors, mask=x_mask, dim=-1)) / 3.
+    logger.debug('DiffusionHead.loss: %s', loss)
+    return dict(loss=loss)
 
 
 class FoldingHead(nn.Module):
@@ -1629,6 +1791,8 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      donfidence=DonfidenceHead,
+      diffusion=DiffusionHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=LDDTHead,
