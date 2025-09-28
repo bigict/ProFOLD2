@@ -1273,13 +1273,10 @@ class AttentionWithBias(nn.Module):
 class AttentionPairBias(nn.Module):
   """AttentionPairBias
     """
-  def __init__(self, dim_node, dim_edge, heads, group_size=1, **kwargs):
+  def __init__(self, dim_node, dim_edge, heads, **kwargs):
     super().__init__()
 
-    if 'checkpoint_segment_size' not in kwargs:
-      # NOTE: disable checkpoint by default
-      kwargs['checkpoint_segment_size'] = group_size
-    self.attn = layer_stack(AttentionWithBias, group_size, dim_node, heads, **kwargs)
+    self.attn = AttentionWithBias(dim_node, heads, **kwargs)
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge),
         nn.Linear(dim_edge, heads, bias=False),
