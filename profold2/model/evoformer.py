@@ -332,7 +332,9 @@ class PairformerBlock(nn.Module):
         disabled_outer_mean=True,
         dropout=attn_dropout
     )
-    self.pair_ff = commons.FeedForward(dim=dim_pairwise, dropout=ff_dropout)
+    self.pair_ff = commons.FeedForward(
+        dim=dim_pairwise, dropout=ff_dropout, activation='SwiGLU'
+    )
     self.seq_attn = commons.AttentionPairBias(
         dim_node=dim_single,
         dim_edge=dim_pairwise,
@@ -341,7 +343,9 @@ class PairformerBlock(nn.Module):
         dropout=attn_dropout,
         **kwargs
     )
-    self.seq_ff = commons.FeedForward(dim=dim_single, dropout=ff_dropout)
+    self.seq_ff = commons.FeedForward(
+        dim=dim_single, dropout=ff_dropout, activation='SwiGLU'
+    )
 
   def forward(self, s, x, cond=None, mask=None, seq_mask=None, shard_size=None):
     # pairwise attention and transition
