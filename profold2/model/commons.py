@@ -489,9 +489,12 @@ class AxialAttention(nn.Module):
     self.attn = Attention(dim_q=dim_node, dim_kv=dim_node, heads=heads, **kwargs)
     # FIX: to be backward compatible
     accept_edge_norm = env('AxialAttention_accept_edge_norm', defval=1, dtype=int)
+    accept_edge_bias = env(
+        'AxialAttention_accept_edge_bias', defval=not accept_edge_norm, dtype=int
+    )
     self.edges_to_attn_bias = nn.Sequential(
         nn.LayerNorm(dim_edge) if accept_edge_norm else nn.Identity(dim_edge),
-        nn.Linear(dim_edge, heads, bias=not accept_edge_norm),
+        nn.Linear(dim_edge, heads, bias=accept_edge_bias),
         Rearrange('... i j h -> ... h i j')
     ) if accept_edges else None
     accept_kernel_fn = env('AxialAttention_accept_kernel_fn', defval=0, dtype=int)
@@ -561,19 +564,29 @@ class AxialAttention(nn.Module):
 class TriangleMultiplicativeModule(nn.Module):
   """TriangleMultiplicative
     """
-  def __init__(self, *, dim, hidden_dim=None, mix='ingoing'):
+  def __init__(
+      self,
+      *,
+      dim,
+      hidden_dim=None,
+      mix='ingoing',
+      q_use_bias=True,
+      kv_use_bias=True,
+      o_use_bias=True,
+      g_use_bias=True
+  ):
     super().__init__()
     assert mix in {'ingoing', 'outgoing'}, 'mix must be either ingoing or outgoing'
 
     hidden_dim = default(hidden_dim, dim)
     self.norm = nn.LayerNorm(dim)
 
-    self.left_proj = nn.Linear(dim, hidden_dim)
-    self.right_proj = nn.Linear(dim, hidden_dim)
+    self.left_proj = nn.Linear(dim, hidden_dim, bias=q_use_bias)
+    self.right_proj = nn.Linear(dim, hidden_dim, bias=kv_use_bias)
 
-    self.left_gate = nn.Linear(dim, hidden_dim)
-    self.right_gate = nn.Linear(dim, hidden_dim)
-    self.out_gate = nn.Linear(dim, dim)
+    self.left_gate = nn.Linear(dim, hidden_dim, bias=q_use_bias)
+    self.right_gate = nn.Linear(dim, hidden_dim, bias=kv_use_bias)
+    self.out_gate = nn.Linear(dim, dim, bias=g_use_bias)
 
     # initialize all gating to be identity
 
@@ -588,7 +601,7 @@ class TriangleMultiplicativeModule(nn.Module):
       self.shard_dim = -2
 
     self.to_out_norm = nn.LayerNorm(hidden_dim)
-    self.to_out = nn.Linear(hidden_dim, dim)
+    self.to_out = nn.Linear(hidden_dim, dim, bias=o_use_bias)
 
   def forward(self, x, mask=None, shard_size=None):
     assert x.shape[-2] == x.shape[-3], 'feature map must be symmetrical'
@@ -705,6 +718,7 @@ class PairwiseAttentionBlock(nn.Module):
       dropout=0.,
       disabled_outer_mean=False,
       multiplication_first=True,
+      **kwargs
   ):
     super().__init__()
     self.multiplication_first = multiplication_first
@@ -719,7 +733,8 @@ class PairwiseAttentionBlock(nn.Module):
         dim_head=dim_head,
         row_attn=True,
         col_attn=False,
-        accept_edges=True
+        accept_edges=True,
+        **kwargs
     )
     self.triangle_attention_ingoing = AxialAttention(
         dim_node=dim_pairwise,
@@ -728,13 +743,14 @@ class PairwiseAttentionBlock(nn.Module):
         dim_head=dim_head,
         row_attn=False,
         col_attn=True,
-        accept_edges=True
+        accept_edges=True,
+        **kwargs
     )
     self.triangle_multiply_outgoing = TriangleMultiplicativeModule(
-        dim=dim_pairwise, mix='outgoing'
+        dim=dim_pairwise, mix='outgoing', **kwargs
     )
     self.triangle_multiply_ingoing = TriangleMultiplicativeModule(
-        dim=dim_pairwise, mix='ingoing'
+        dim=dim_pairwise, mix='ingoing', **kwargs
     )
 
     _, dropout = embedd_dropout_get(dropout)
