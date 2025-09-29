@@ -320,7 +320,6 @@ class PairformerBlock(nn.Module):
       dim_head,
       attn_dropout,
       ff_dropout,
-      **kwargs
   ):
     super().__init__()
 
@@ -330,10 +329,14 @@ class PairformerBlock(nn.Module):
         heads=heads,
         dim_head=dim_head,
         disabled_outer_mean=True,
-        dropout=attn_dropout
+        dropout=attn_dropout,
+        q_use_bias=False,
+        kv_use_bias=False,
+        g_use_bias=False,
+        o_use_bias=False
     )
     self.pair_ff = commons.FeedForward(
-        dim=dim_pairwise, dropout=ff_dropout, activation='SwiGLU'
+        dim=dim_pairwise, dropout=ff_dropout, activation='SwiGLU', use_bias=False
     )
     self.seq_attn = commons.AttentionPairBias(
         dim_node=dim_single,
@@ -341,10 +344,13 @@ class PairformerBlock(nn.Module):
         heads=heads,
         dim_head=dim_head,
         dropout=attn_dropout,
-        **kwargs
+        q_use_bias=True,
+        kv_use_bias=False,
+        g_use_bias=False,
+        o_use_bias=False
     )
     self.seq_ff = commons.FeedForward(
-        dim=dim_single, dropout=ff_dropout, activation='SwiGLU'
+        dim=dim_single, dropout=ff_dropout, activation='SwiGLU', use_bias=False
     )
 
   def forward(self, s, x, cond=None, mask=None, seq_mask=None, shard_size=None):
