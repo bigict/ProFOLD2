@@ -597,6 +597,10 @@ class TriangleMultiplicativeModule(nn.Module):
       self.mix_einsum_eq = '... i k d, ... j k d -> ... i j d'
       self.shard_dim = -3
     elif mix == 'ingoing':
+      # FIXME: As AlphaFold3:
+      #    self.mix_einsum_eq = '... k i d, ... k j d -> ... i j d'
+      # but in AlphaFold2 and here
+      #    self.mix_einsum_eq = '... k j d, ... k i d -> ... i j d'
       self.mix_einsum_eq = '... k j d, ... k i d -> ... i j d'
       self.shard_dim = -2
 
@@ -622,6 +626,10 @@ class TriangleMultiplicativeModule(nn.Module):
 
       out = torch.einsum(self.mix_einsum_eq, left, right)
 
+      # FIXME: as AlphaFold
+      #    z_ij = g_ij * Linear(LayerNorm(z_ij))
+      # but, here
+      #    z_ij = Linear(g_ij * LayerNorm(z_ij))
       out = self.to_out_norm(out)
       out = tensor_mul(out, self.out_gate(x).sigmoid())
       out = self.to_out(out)
