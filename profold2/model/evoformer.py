@@ -323,11 +323,14 @@ class PairformerBlock(nn.Module):
   ):
     super().__init__()
 
+    heads_seq, heads_pair = commons.default_list_get(heads, 2)
+    dim_head_seq, dim_head_pair = commons.default_list_get(dim_head, 2)
+
     self.pair_attn = commons.PairwiseAttentionBlock(
         dim_msa=dim_single,
         dim_pairwise=dim_pairwise,
-        heads=heads,
-        dim_head=dim_head,
+        heads=heads_pair,
+        dim_head=dim_head_pair,
         disabled_outer_mean=True,
         dropout=attn_dropout,
         q_use_bias=False,
@@ -341,8 +344,8 @@ class PairformerBlock(nn.Module):
     self.seq_attn = commons.AttentionPairBias(
         dim_node=dim_single,
         dim_edge=dim_pairwise,
-        heads=heads,
-        dim_head=dim_head,
+        heads=heads_seq,
+        dim_head=dim_head_seq,
         dropout=attn_dropout,
         q_use_bias=True,
         kv_use_bias=False,
@@ -361,7 +364,9 @@ class PairformerBlock(nn.Module):
 
     # seq attention and transition
     with profiler.record_function('seq_attn'):
-      s = self.seq_attn(s, x, cond=cond, mask=seq_mask, edge_mask=mask)
+      s = commons.tensor_add(
+          s, self.seq_attn(s, x, cond=cond, mask=seq_mask, edge_mask=mask)
+      )
       s = commons.tensor_add(s, self.seq_ff(s, shard_size=shard_size))
 
     return s, x
