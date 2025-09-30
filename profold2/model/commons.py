@@ -602,6 +602,7 @@ class TriangleMultiplicativeModule(nn.Module):
 
     self.to_out_norm = nn.LayerNorm(hidden_dim)
     self.to_out = nn.Linear(hidden_dim, dim, bias=o_use_bias)
+    init_linear_(self.to_out)
 
   def forward(self, x, mask=None, shard_size=None):
     assert x.shape[-2] == x.shape[-3], 'feature map must be symmetrical'
