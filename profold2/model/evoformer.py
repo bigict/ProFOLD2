@@ -356,7 +356,7 @@ class PairformerBlock(nn.Module):
         dim=dim_single, dropout=ff_dropout, activation='SwiGLU', use_bias=False
     )
 
-  def forward(self, s, x, cond=None, mask=None, seq_mask=None, shard_size=None):
+  def forward(self, x, s, cond=None, mask=None, seq_mask=None, shard_size=None):
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
       x = self.pair_attn(x, mask=mask, shard_size=shard_size)
@@ -369,7 +369,7 @@ class PairformerBlock(nn.Module):
       )
       s = commons.tensor_add(s, self.seq_ff(s, shard_size=shard_size))
 
-    return s, x
+    return x, s
 
 
 def Pairformer(depth, *args, **kwargs):
