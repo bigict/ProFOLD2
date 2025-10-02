@@ -48,6 +48,8 @@ def torch_allow_tf32(allow=True):
 
 # helpers
 def init_linear_(layer, w=0., b=0.):
+  if env('profold2_init_linear_disabled', defval=0, dtype=int):
+    return
   nn.init.constant_(layer.weight, w)
   if exists(layer.bias):
     nn.init.constant_(layer.bias, b)
@@ -597,7 +599,7 @@ class TriangleMultiplicativeModule(nn.Module):
       self.mix_einsum_eq = '... i k d, ... j k d -> ... i j d'
       self.shard_dim = -3
     elif mix == 'ingoing':
-      # FIXME: As AlphaFold3:
+      # FIXME: in AlphaFold3:
       #    self.mix_einsum_eq = '... k i d, ... k j d -> ... i j d'
       # but in AlphaFold2 and here
       #    self.mix_einsum_eq = '... k j d, ... k i d -> ... i j d'
@@ -626,10 +628,11 @@ class TriangleMultiplicativeModule(nn.Module):
 
       out = torch.einsum(self.mix_einsum_eq, left, right)
 
-      # FIXME: as AlphaFold
+      # FIXME: in AlphaFold
       #    z_ij = g_ij * Linear(LayerNorm(z_ij))
       # but, here
       #    z_ij = Linear(g_ij * LayerNorm(z_ij))
+      # it follows the gated-self-attention style.
       out = self.to_out_norm(out)
       out = tensor_mul(out, self.out_gate(x).sigmoid())
       out = self.to_out(out)
