@@ -1282,7 +1282,9 @@ class AttentionWithBias(nn.Module):
       context = self.norm['context'](context, cond=context_cond)
 
     if exists(pair_mask):
-      pair_bias = pair_bias.masked_fill(~pair_mask, max_neg_value(pair_bias))
+      pair_bias = pair_bias.masked_fill(
+          ~pair_mask[...,None, :, :], max_neg_value(pair_bias)
+      )
     x = self.attn(
         x,
         mask=mask,
