@@ -1,6 +1,7 @@
 """Utils from data module
  """
 import re
+from typing import Any, Optional, Union
 
 import numpy as np
 import torch
@@ -79,7 +80,8 @@ _seq_type_pattern = 'mol:((protein|rna|dna)(,(protein|rna|dna))*)'
 seq_type_dict = {
     'protein': residue_constants.PROT,
     'rna': residue_constants.RNA,
-    'dna': residue_constants.DNA}
+    'dna': residue_constants.DNA
+}
 
 
 def seq_index_split(text):
@@ -177,23 +179,21 @@ def embedding_get_labels(name, mat):
   return None
 
 
-def tensor_to_numpy(t):
+def tensor_to_numpy(t: torch.Tensor) -> np.ndarray:
   if t.dtype in (torch.float16, torch.bfloat16):
     t = t.float()
   return t.detach().cpu().numpy()
 
 
-def pdb_from_prediction(batch, headers, idx=None):
-  def to_pdb_str(b):
+def pdb_from_model(
+    batch: dict[str, Any],
+    pcoord: torch.Tensor,
+    plddt: Optional[torch.Tensor] = None,
+    idx: Optional[int] = None
+) -> Union[str, list[str]]:
+  def to_pdb_str(b: int) -> str:
     str_seq = batch['str_seq'][b]
     seq_len = len(str_seq)
-    # aatype = np.array(
-    #     [
-    #         residue_constants.restype_order_with_x.get(
-    #             aa, residue_constants.unk_restype_index
-    #         ) for aa in str_seq
-    #     ]
-    # )
     aatype = tensor_to_numpy(batch['seq'][b])
     if 'seq_index' in batch and exists(batch['seq_index'][b]):
       seq_index = tensor_to_numpy(batch['seq_index'][b])
@@ -206,16 +206,15 @@ def pdb_from_prediction(batch, headers, idx=None):
     if 'seq_color' in batch:
       features['seq_color'] = tensor_to_numpy(batch['seq_color'][b] - 1)
 
-    coords = tensor_to_numpy(headers['folding']['coords'][b, ...])  # (b l c d)
+    coords = tensor_to_numpy(pcoord[b, ...])  # (b i c d)
     restype_atom14_mask = np.copy(residue_constants.restype_atom14_mask)
     if 'coord_exists' in batch:
       coord_mask = tensor_to_numpy(batch['coord_exists'][b, ...])
     else:
       coord_mask = np.asarray([restype_atom14_mask[restype] for restype in aatype])
     b_factors = None
-    if 'confidence' in headers and 'plddt' in headers['confidence']:
-      plddt = tensor_to_numpy(headers['confidence']['plddt'][b, ...])  # (b l)
-      b_factors = coord_mask * plddt[..., None]
+    if exists(plddt):  # (b i)
+      b_factors = coord_mask * tensor_to_numpy(plddt[b, ..., None])
 
     result = dict(
         structure_module=dict(final_atom_mask=coord_mask, final_atom_positions=coords)
@@ -228,3 +227,12 @@ def pdb_from_prediction(batch, headers, idx=None):
   if exists(idx):
     return to_pdb_str(idx)
   return [to_pdb_str(i) for i in range(len(batch['pid']))]
+
+
+def pdb_from_prediction(
+    batch: dict[str, Any], headers: dict[str, Any], idx: Optional[int] = None
+) -> Union[str, list[str]]:
+  plddt = None
+  if 'confidence' in headers and 'plddt' in headers['confidence']:
+    plddt = headers['confidence']['plddt']
+  return pdb_from_model(batch, headers['folding']['coords'], plddt=plddt, idx=idx)
