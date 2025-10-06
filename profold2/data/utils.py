@@ -213,8 +213,8 @@ def pdb_from_model(
     else:
       coord_mask = np.asarray([restype_atom14_mask[restype] for restype in aatype])
     b_factors = None
-    if exists(plddt):  # (b i)
-      b_factors = coord_mask * tensor_to_numpy(plddt[b, ..., None])
+    if exists(plddt):  # (b i c)
+      b_factors = coord_mask * tensor_to_numpy(plddt[b, ...])
 
     result = dict(
         structure_module=dict(final_atom_mask=coord_mask, final_atom_positions=coords)
@@ -234,5 +234,5 @@ def pdb_from_prediction(
 ) -> Union[str, list[str]]:
   plddt = None
   if 'confidence' in headers and 'plddt' in headers['confidence']:
-    plddt = headers['confidence']['plddt']
+    plddt = headers['confidence']['plddt'][..., None]
   return pdb_from_model(batch, headers['folding']['coords'], plddt=plddt, idx=idx)
