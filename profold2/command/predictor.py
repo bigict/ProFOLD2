@@ -190,44 +190,13 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
 
       unrelaxed_pdbs, relaxed_pdbs = {}, {}
       ranking_scores = {}
-      for model_name, (features, model) in model_runners.items():
-        # Build features.
-        with timing(
-            f'Building features for model {model_name} on {fasta_name}',
-            print_fn=logging.info,
-            callback_fn=functools.partial(
-                timing_callback, timings, f'build_features_{model_name}'
-            )
-        ):
-          feats = features(batch, is_training=False)
 
-        # Predict - out is (batch, L * 3, 3)
-        with torch.no_grad():
-          with timing(
-              f'Running model {model_name} on {fasta_name}',
-              print_fn=logging.info,
-              callback_fn=functools.partial(
-                  timing_callback, timings, f'predict_{model_name}'
-              )
-          ):
-            with autocast_ctx(args.amp_enabled):
-              r = ReturnValues(
-                  **model(
-                      batch=feats,
-                      num_recycle=args.model_recycles,
-                      shard_size=args.model_shard_size
-                  )
-              )
-
+      def process_structure(model_name, pdb_str, plddt=None):
         ranking_scores[model_name] = 0
-        if 'confidence' in r.headers:
-          ranking_scores[model_name] = r.headers['confidence']['loss'].item()
+        if exists(plddt):
+          ranking_scores[model_name] = plddt.item()
 
-        # Save the model outputs.
-        if not args.no_pth:
-          torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
-
-        unrelaxed_pdbs[model_name] = pdb_from_prediction(batch, r.headers, idx=0)
+        unrelaxed_pdbs[model_name] = pdb_str
         unrelaxed_pdb_path = os.path.join(output_dir, f'unrelaxed_{model_name}.pdb')
         with open(unrelaxed_pdb_path, 'w') as f:
           f.write(unrelaxed_pdbs[model_name])
@@ -263,6 +232,45 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
           with open(relaxed_output_path, 'w') as f:
             f.write(relaxed_pdb_str)
 
+      for model_name, (features, model) in model_runners.items():
+        # Build features.
+        with timing(
+            f'Building features for model {model_name} on {fasta_name}',
+            print_fn=logging.info,
+            callback_fn=functools.partial(
+                timing_callback, timings, f'build_features_{model_name}'
+            )
+        ):
+          feats = features(batch, is_training=False)
+
+        # Predict - out is (b, i, c, 3)
+        with torch.no_grad():
+          with timing(
+              f'Running model {model_name} on {fasta_name}',
+              print_fn=logging.info,
+              callback_fn=functools.partial(
+                  timing_callback, timings, f'predict_{model_name}'
+              )
+          ):
+            with autocast_ctx(args.amp_enabled):
+              r = ReturnValues(
+                  **model(
+                      batch=feats,
+                      num_recycle=args.model_recycles,
+                      shard_size=args.model_shard_size
+                  )
+              )
+
+        # Save the model outputs.
+        if not args.no_pth:
+          torch.save(r, os.path.join(output_dir, f'result_{model_name}.pth'))
+
+        plddt = None
+        if 'confidence' in r.headers:
+          plddt = r.headers['confidence']['loss'][0]  # idx = 0
+        process_structure(
+            model_name, pdb_from_prediction(batch, r.headers, idx=0), plddt=plddt
+        )
       # Rank by model confidence and write out relaxed PDBs in rank order.
       ranked_order = []
       for i, (model_name, _) in enumerate(
