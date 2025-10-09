@@ -26,26 +26,6 @@ from profold2.utils import exists, timing
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
 
-def _a3m_add_pseudo_linker(sequences, descriptions, pseudo_linker_len=100):
-  s, d = [], []
-
-  delta, domains = 1, []
-  for seq, desc in zip(sequences, descriptions):
-    residue_index = torch.arange(len(seq), dtype=torch.int)
-    residue_index = parse_seq_index(desc, seq, residue_index)
-    residue_index = residue_index - residue_index[0] + delta
-    domains += [str_seq_index(residue_index)]
-
-    s += [seq]
-    d += [desc.split()[0]]
-    delta = residue_index[-1] + pseudo_linker_len + 1
-
-  if domains:
-    domains = ','.join(domains)
-    d += [f':{domains}']
-  return [''.join(s)], [' '.join(d)]
-
-
 def _read_fasta(args):  # pylint: disable=redefined-outer-name
   def filename_get(fasta_file):
     fasta_file = os.path.basename(fasta_file)
@@ -82,33 +62,23 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
 
   sequences, descriptions, msa = [], [], []
   for fasta_name, fasta_str in _read_fasta(args):
-    if args.fasta_fmt == 'a4m':
-      s = fasta_str.splitlines()
-      d = [None] * len(s)
-    else:
-      s, d = parse_fasta(fasta_str)
-      if len(s) > 1 and args.fasta_fmt == 'single' and args.add_pseudo_linker:
-        # Add a pseudo linker between each chain.
-        s, d = _a3m_add_pseudo_linker(s, d, args.pseudo_linker_len)
-        assert len(s) == 1
+    s, d = parse_fasta(fasta_str)
     d[0] = f'{fasta_name} {d[0]}' if exists(d[0]) else fasta_name
     if args.fasta_fmt == 'single':
-      sequences += s
-      descriptions += d
-      msa += [None] * len(s)
+      sequences += [s]
+      descriptions += [d]
+      msa += [[None] * len(s)]
     else:
-      sequences += s[:1]
-      descriptions += d[:1]
+      sequences += [s[:1]]
+      descriptions += [d[:1]]
       if len(s) > args.max_msa_size:
         s = s[:1] + list(
             np.random.choice(
                 s, size=args.max_msa_size - 1, replace=False
             ) if args.max_msa_size > 1 else []
         )
-      msa += [s]
-  data = ProteinSequenceDataset(
-      sequences, descriptions, msa=msa, domain_as_seq=args.add_pseudo_linker
-  )
+      msa += [[s]]
+  data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
   if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(
         data,
@@ -181,7 +151,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
         print_fn=logging.info,
         callback_fn=functools.partial(timing_callback, timings, 'predict_structure')
     ):
-      logging.debug('Sequence %d shape %s: %s', idx, fasta_name, batch['seq'].shape)
+      logging.debug('Sequence [%d] %s shape : %s', idx, fasta_name, batch['seq'].shape)
       if args.fasta_fmt in ('a3m', 'a4m'):
         logging.debug('msa shape %s: %s', fasta_name, batch['msa'].shape)
 
@@ -340,7 +310,7 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       '--fasta_fmt',
       type=str,
       default='single',
-      choices=['single', 'a3m', 'a4m'],
+      choices=['single', 'a3m'],
       help='format of fasta files.'
   )
 
@@ -348,15 +318,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       '--data_dir', type=str, default=None, help='load data from dataset.'
   )
   parser.add_argument('--data_idx', type=str, default=None, help='dataset idx.')
-  parser.add_argument(
-      '--add_pseudo_linker', action='store_true', help='enable loading complex data.'
-  )
-  parser.add_argument(
-      '--pseudo_linker_len',
-      type=int,
-      default=100,
-      help='add a pseudolinker with length=PSEUDO_LINKER_LEN.'
-  )
 
   parser.add_argument(
       '--models',
