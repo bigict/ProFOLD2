@@ -13,6 +13,7 @@ import pathlib
 import pickle
 import re
 import string
+from typing import Optional
 import zipfile
 import weakref
 
@@ -968,6 +969,117 @@ def _protein_crop_fmt(clip):
   return clip
 
 
+def concat_seq_feats(ret, feat, seq_index_gap=128):
+  assert 'seq' in feat
+
+  for field in ('str_seq', ):
+    ret[field] = ret.get(field, '') + feat[field]
+  for field in ('seq', 'seq_color', 'seq_entity', 'seq_sym', 'mask'):
+    assert field in feat, (field, pid, chain)
+    if field not in ret:
+      ret[field] = feat[field]
+    else:
+      ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+
+  for field in ('seq_index', ):
+    seq_index = feat['seq_index'] + ret.get('seq_index_offset', 0)
+    if 'seq_index' not in ret:
+      ret['seq_index'] = seq_index
+    else:
+      ret['seq_index'] = torch.cat((ret['seq_index'], seq_index), dim=0)
+    ret['seq_index_offset'] = seq_index[-1] + seq_index_gap
+
+  return ret
+
+
+def concat_coord_feats(ret, feat):
+  for field in ('coord', 'coord_mask'):
+    assert field in feat, field
+    if field not in ret:
+      ret[field] = feat[field]
+    else:
+      ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+  for field in ('coord_plddt', ):
+    assert 'coord_mask' in feat
+    if field not in feat:
+      feat['coord_plddt'] = torch.ones_like(feat['coord_mask'], dtype=torch.float32)
+    if field not in ret:
+      ret[field] = feat[field]
+    else:
+      ret[field] = torch.cat((ret[field], feat[field]), dim=0)
+
+  return ret
+
+
+def concat_msa_feats(ret, feat):
+  for field in ('msa_idx', 'num_msa'):
+    ret[field] = max(ret.get(field, 0), feat[field])
+  m, n = len(ret.get('str_msa', [])), len(feat['str_msa'])
+  gap_idx = residue_constants.restype_order_with_x_and_gap[
+      (residue_constants.restypes_gap[feat['seq_type'] - 1], feat['seq_type'])
+  ]
+  if m < n and 'msa' in ret:
+    seq_len = len(ret['str_msa'][0])
+    ret['str_msa'] += ['-' * seq_len] * (n - m)
+    ret['msa'] = torch.cat(
+        (ret['msa'], torch.full((n - m, seq_len), gap_idx, dtype=ret['msa'].dtype)),
+        dim=0
+    )
+    ret['msa_mask'] = torch.cat(
+        (ret['msa_mask'], torch.zeros(n - m, seq_len, dtype=ret['msa_mask'].dtype)),
+        dim=0
+    )
+    ret['del_msa'] = torch.cat((ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0)
+  elif 0 <= n < m:
+    seq_len = len(feat['str_msa'][0])
+    feat['str_msa'] += ['-' * seq_len] * (m - n)
+    feat['msa'] = torch.cat(
+        (feat['msa'], torch.full((m - n, seq_len), gap_idx, dtype=feat['msa'].dtype)),
+        dim=0
+    )
+    feat['msa_mask'] = torch.cat(
+        (feat['msa_mask'], torch.zeros(m - n, seq_len, dtype=feat['msa_mask'].dtype)),
+        dim=0
+    )
+    feat['del_msa'] = torch.cat((feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0)
+  # Rand permute msa relate feat
+  if 'str_msa' not in ret:
+    ret['str_msa'] = feat['str_msa']
+  else:
+    for i in range(max(m, n)):
+      ret['str_msa'][i] += feat['str_msa'][i]
+  for field in ('msa', 'msa_mask', 'del_msa'):
+    if field not in ret:
+      ret[field] = feat[field]
+    else:
+      ret[field] = torch.cat((ret[field], feat[field]), dim=1)
+
+  return ret
+
+
+def concat_var_feats(ret, feat):
+  if 'var' not in ret:
+    ret['var'] = defaultdict(dict)
+
+  if 'length' not in ret:
+    ret['length'] = []
+  ret['length'].append(len(feat['str_seq']))
+
+  if 'variant' in feat:
+    for var_idx, desc in enumerate(feat['desc_var']):
+      # remove domains pid/1-100
+      var_pid = _make_var_pid(desc)
+      ret['var'][var_pid] = (
+          feat['variant'][var_idx],
+          feat['variant_mask'][var_idx],
+          chains[idx],
+          feat['str_var'][var_idx],
+          feat['del_var'][var_idx]
+      )
+
+  return ret
+
+
 class FileSystem(contextlib.AbstractContextManager):
   def __init__(self, data_dir):
     if zipfile.is_zipfile(data_dir):
@@ -1064,92 +1176,57 @@ class FoldcompDB(object):
     return pdb_type, pdb_string
 
 
+Msa = list[str]
+
+
 class ProteinSequenceDataset(torch.utils.data.Dataset):
   """Construct a `Dataset` from sequences
    """
   def __init__(
       self,
-      sequences,
-      descriptions=None,
-      domain_as_seq=False,
-      msa=None,
-      msa_as_seq=False
+      sequences: list[list[str]],
+      descriptions: Optional[list[list[str]]] = None,
+      msa: Optional[list[list[Msa]]] = None
   ):
     self.sequences = sequences
-    self.domain_as_seq = domain_as_seq
     self.descriptions = descriptions
     self.msa = msa
     assert not exists(self.descriptions) or len(self.sequences
                                                ) == len(self.descriptions)
     assert not exists(self.msa) or len(self.sequences) == len(self.msa)
-    assert (not msa_as_seq) or exists(msa)
-    self.msa_depth = np.cumsum(
-        np.asarray([len(m) for m in self.msa])
-    ) if msa_as_seq else None
 
   def __getitem__(self, idx):
-    seq_idx, msa_idx = idx, 0
-    if exists(self.msa_depth):
-      seq_idx = np.sum(self.msa_depth < idx)
-      msa_idx = idx - (self.msa_depth[seq_idx - 1] if seq_idx > 0 else 0)  # pylint: disable=unsubscriptable-object
-    input_sequence = self.sequences[seq_idx]
-    seq = torch.as_tensor(
-        residue_constants.sequence_to_onehot(
-            sequence=input_sequence,
-            mapping=residue_constants.restype_order_with_x,
-            map_unknown_to_x=True
-        ),
-        dtype=torch.int
-    ).argmax(-1).to(torch.int)
-    residue_index = torch.arange(len(input_sequence), dtype=torch.int)
-    str_seq = ''.join(
-        map(
-            lambda a: a if a in residue_constants.restype_order_with_x else
-            residue_constants.restypes_with_x[-1], input_sequence
-        )
-    )
-    mask = torch.ones(len(input_sequence), dtype=torch.bool)
-    if exists(self.descriptions) and exists(self.descriptions[seq_idx]):
-      desc = self.descriptions[seq_idx]
-      residue_index = parse_seq_index(desc, input_sequence, residue_index)
-      seq_type = parse_seq_type(desc)
-      if isinstance(seq_type, list):
-        seq_type = [seq_type_dict[s] for s in seq_type]
-      else:
-        seq_type = seq_type_dict[seq_type]
-      desc = desc.split()[0]
-    else:
-      seq_type = residue_constants.PROT
-      desc = str(seq_idx)
-    seq_color = torch.ones(len(input_sequence), dtype=torch.int)
-    if self.domain_as_seq:
-      seq_color += torch.cat(
-          (
-              torch.zeros(1, dtype=torch.int),
-              torch.cumsum(residue_index[:-1] + 1 != residue_index[1:], dim=-1)
-          )
-      )
-      chains = torch.unique_consecutive(seq_color)
-      assert isinstance(seq_type, list) or len(chains) == 1
+    seq_entity_map, seq_sym_map = defaultdict(int), defaultdict(int)
 
-    ret = dict(
-        pid=desc,
-        seq=seq,
-        seq_index=residue_index,
-        seq_color=seq_color,
-        seq_type=seq_type,
-        str_seq=str_seq,
-        mask=mask
-    )
-    if exists(self.msa) and exists(self.msa[seq_idx]):
-      ret.update(_make_msa_features(self.msa[seq_idx], seq_type, msa_idx=msa_idx))
-    if msa_idx > 0:
-      ret = _msa_as_seq(ret, msa_idx)
+    ret = {'seq_index_offset': 0}
+    input_sequences = self.sequences[idx]
+    for seq_idx, input_sequence in enumerate(input_sequences):
+      desc = None
+      if exists(self.descriptions) and exists(self.descriptions[idx]):
+        desc = self.descriptions[idx][seq_idx]
+      if not exists(desc):
+        desc = f'{idx}_{seq_idx}'
+
+      if 'pid' not in ret:
+        ret['pid'] = desc.split()[0]
+      feat = _make_seq_features(input_sequence, desc, seq_color=seq_idx + 1)
+      # fix seq_entity
+      assert 'str_seq' in feat
+      if feat['str_seq'] not in seq_entity_map:
+        seq_entity_map[feat['str_seq']] = len(seq_entity_map) + 1
+      seq_sym_map[feat['str_seq']] += 1
+      feat['seq_entity'] = torch.ones_like(feat['seq_entity']
+                                          ) * seq_entity_map[feat['str_seq']]
+      feat['seq_sym'] = torch.ones_like(feat['seq_sym']) * seq_sym_map[feat['str_seq']]
+
+      ret = concat_seq_feats(ret, feat)
+      if exists(self.msa) and exists(self.msa[idx][seq_idx]):
+        feat.update(_make_msa_features(self.msa[idx][seq_idx], feat['seq_type']))
+        ret = concat_msa_feats(ret, feat)
+
     return ret
 
   def __len__(self):
-    if exists(self.msa_depth):
-      return int(self.msa_depth[-1])  # pylint: disable=unsubscriptable-object
     return len(self.sequences)
 
   @staticmethod
@@ -1489,11 +1566,10 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     if self.pseudo_linker_shuffle:
       np.random.shuffle(chains)
 
-    seq_index_offset, seq_index_gap = 0, 128
     seq_entity_map, seq_sym_map = defaultdict(int), defaultdict(int)
 
     # Concat all the feats
-    ret = {'seq_anchor': 0, 'clip': None}
+    ret = {'seq_anchor': 0, 'clip': None, 'seq_index_offset': 0}
     for idx, chain in enumerate(chains):
       with self._setattr(
           msa_as_seq_prob=self.msa_as_seq_prob if chain == selected_chain else 0,
@@ -1512,116 +1588,21 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         feat['seq_sym'] = torch.ones_like(feat['seq_sym']
                                          ) * seq_sym_map[feat['str_seq']]
       # Sequence related
-      for field in ('str_seq', ):
-        ret[field] = ret.get(field, '') + feat[field]
-      assert 'seq' in feat
-      for field in (
-          'seq', 'seq_color', 'seq_entity', 'seq_sym', 'mask', 'coord', 'coord_mask'
-      ):
-        assert field in feat, (field, pid, chain)
-        if field not in ret:
-          ret[field] = feat[field]
-        else:
-          ret[field] = torch.cat((ret[field], feat[field]), dim=0)
-      for field in ('coord_plddt', ):
-        assert 'coord_mask' in feat, (pid, chain)
-        if field not in feat:
-          feat['coord_plddt'] = torch.ones_like(feat['coord_mask'], dtype=torch.float32)
-        if field not in ret:
-          ret[field] = feat[field]
-        else:
-          ret[field] = torch.cat((ret[field], feat[field]), dim=0)
-
-      for field in ('seq_index', ):
-        seq_index = feat['seq_index'] + seq_index_offset
-        if 'seq_index' not in ret:
-          ret['seq_index'] = seq_index
-        else:
-          ret['seq_index'] = torch.cat((ret['seq_index'], seq_index), dim=0)
-        seq_index_offset = seq_index[-1] + seq_index_gap
+      ret = concat_seq_feats(ret, feat)
+      # Coord related
+      ret = concat_coord_feats(ret, feat)
+      # Meta related
       ret['resolu'] = feat['resolu']
       # MSA related
       if self.feat_flags & FEAT_MSA:
-        for field in ('msa_idx', 'num_msa'):
-          ret[field] = max(ret.get(field, 0), feat[field])
-        m, n = len(ret.get('str_msa', [])), len(feat['str_msa'])
-        gap_idx = residue_constants.restype_order_with_x_and_gap[
-            (residue_constants.restypes_gap[feat['seq_type'] - 1], feat['seq_type'])]
-        if m < n and 'msa' in ret:
-          seq_len = len(ret['str_msa'][0])
-          ret['str_msa'] += ['-' * seq_len] * (n - m)
-          ret['msa'] = torch.cat(
-              (
-                  ret['msa'],
-                  torch.full((n - m, seq_len), gap_idx, dtype=ret['msa'].dtype)
-              ),
-              dim=0
-          )
-          ret['msa_mask'] = torch.cat(
-              (
-                  ret['msa_mask'],
-                  torch.zeros(n - m, seq_len, dtype=ret['msa_mask'].dtype)
-              ),
-              dim=0
-          )
-          ret['del_msa'] = torch.cat(
-              (ret['del_msa'], torch.zeros(n - m, seq_len)), dim=0
-          )
-        elif 0 <= n < m:
-          seq_len = len(feat['str_msa'][0])
-          feat['str_msa'] += ['-' * seq_len] * (m - n)
-          feat['msa'] = torch.cat(
-              (
-                  feat['msa'],
-                  torch.full((m - n, seq_len), gap_idx, dtype=feat['msa'].dtype)
-              ),
-              dim=0
-          )
-          feat['msa_mask'] = torch.cat(
-              (
-                  feat['msa_mask'],
-                  torch.zeros(m - n, seq_len, dtype=feat['msa_mask'].dtype)
-              ),
-              dim=0
-          )
-          feat['del_msa'] = torch.cat(
-              (feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0
-          )
-        # Rand permute msa relate feat
-        if 'str_msa' not in ret:
-          ret['str_msa'] = feat['str_msa']
-        else:
-          for i in range(max(m, n)):
-            ret['str_msa'][i] += feat['str_msa'][i]
-        for field in ('msa', 'msa_mask', 'del_msa'):
-          if field not in ret:
-            ret[field] = feat[field]
-          else:
-            ret[field] = torch.cat((ret[field], feat[field]), dim=1)
+        ret = concat_msa_feats(ret, feat)
         # Update chain_id
         if feat.get('msa_idx', 0) > 0:
           msa_idx = feat['msa_idx']
           chains[idx] = f'{chain}@{msa_idx}'
       # Var related
       if self.feat_flags & FEAT_VAR:
-        if 'var' not in ret:
-          ret['var'] = defaultdict(dict)
-
-        if 'length' not in ret:
-          ret['length'] = []
-        ret['length'].append(len(feat['str_seq']))
-
-        if 'variant' in feat:
-          for var_idx, desc in enumerate(feat['desc_var']):
-            # remove domains pid/1-100
-            var_pid = _make_var_pid(desc)
-            ret['var'][var_pid] = (
-                feat['variant'][var_idx],
-                feat['variant_mask'][var_idx],
-                chains[idx],
-                feat['str_var'][var_idx],
-                feat['del_var'][var_idx]
-            )
+        ret = concat_var_feats(ret, feat)
 
     ret['pid'] = compose_pid(pid, ','.join(chains))
     if self.feat_flags & FEAT_VAR and 'var' in ret and ret['var']:
