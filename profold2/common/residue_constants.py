@@ -1052,6 +1052,7 @@ restype_1to3 = {
     ('W', PROT): 'TRP',
     ('Y', PROT): 'TYR',
     ('V', PROT): 'VAL',
+    ('X', PROT): 'UNK',
     ('A', DNA ): ' DA',
     ('C', DNA ): ' DC',
     ('G', DNA ): ' DG',
