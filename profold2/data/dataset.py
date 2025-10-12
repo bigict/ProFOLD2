@@ -975,7 +975,7 @@ def concat_seq_feats(ret, feat, seq_index_gap=128):
   for field in ('str_seq', ):
     ret[field] = ret.get(field, '') + feat[field]
   for field in ('seq', 'seq_color', 'seq_entity', 'seq_sym', 'mask'):
-    assert field in feat, (field, pid, chain)
+    assert field in feat, field
     if field not in ret:
       ret[field] = feat[field]
     else:
@@ -1053,29 +1053,6 @@ def concat_msa_feats(ret, feat):
       ret[field] = feat[field]
     else:
       ret[field] = torch.cat((ret[field], feat[field]), dim=1)
-
-  return ret
-
-
-def concat_var_feats(ret, feat):
-  if 'var' not in ret:
-    ret['var'] = defaultdict(dict)
-
-  if 'length' not in ret:
-    ret['length'] = []
-  ret['length'].append(len(feat['str_seq']))
-
-  if 'variant' in feat:
-    for var_idx, desc in enumerate(feat['desc_var']):
-      # remove domains pid/1-100
-      var_pid = _make_var_pid(desc)
-      ret['var'][var_pid] = (
-          feat['variant'][var_idx],
-          feat['variant_mask'][var_idx],
-          chains[idx],
-          feat['str_var'][var_idx],
-          feat['del_var'][var_idx]
-      )
 
   return ret
 
@@ -1602,7 +1579,24 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           chains[idx] = f'{chain}@{msa_idx}'
       # Var related
       if self.feat_flags & FEAT_VAR:
-        ret = concat_var_feats(ret, feat)
+        if 'var' not in ret:
+          ret['var'] = defaultdict(dict)
+
+        if 'length' not in ret:
+          ret['length'] = []
+        ret['length'].append(len(feat['str_seq']))
+
+        if 'variant' in feat:
+          for var_idx, desc in enumerate(feat['desc_var']):
+            # remove domains pid/1-100
+            var_pid = _make_var_pid(desc)
+            ret['var'][var_pid] = (
+                feat['variant'][var_idx],
+                feat['variant_mask'][var_idx],
+                chains[idx],
+                feat['str_var'][var_idx],
+                feat['del_var'][var_idx]
+            )
 
     ret['pid'] = compose_pid(pid, ','.join(chains))
     if self.feat_flags & FEAT_VAR and 'var' in ret and ret['var']:
