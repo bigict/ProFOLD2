@@ -310,16 +310,16 @@ def lddt(
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
       Inputs:
-      * pred_coords: (..., l, d) array of predicted 3D points.
-      * true_points: (..., l, d) array of true 3D points.
-      * points_mask : (..., l) binary-valued array. 1 for points that exist in
+      * pred_coords: (..., i, d) array of predicted 3D points.
+      * true_points: (..., i, d) array of true 3D points.
+      * points_mask : (..., i) binary-valued array. 1 for points that exist in
           the true points
       * cutoff: maximum inclusion radius in reference struct.
       Outputs:
-      * (..., l) lddt scores ranging between 0 and 1
+      * (..., i) lddt scores ranging between 0 and 1
   """
-  assert len(pred_points.shape) == 3 and pred_points.shape[-1] == 3
-  assert len(true_points.shape) == 3 and true_points.shape[-1] == 3
+  assert len(pred_points.shape) >= 2 and pred_points.shape[-1] == 3
+  assert len(true_points.shape) >= 2 and true_points.shape[-1] == 3
   cutoff = default(cutoff, 15.0)
 
   eps = 1e-10
