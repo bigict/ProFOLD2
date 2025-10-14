@@ -706,7 +706,7 @@ class FoldingHead(nn.Module):
     return dict(loss=loss)
 
 
-class LDDTHead(nn.Module):
+class PLDDTHead(nn.Module):
   """Head to predict the pLDDT to be used as a per-residue configence score.
     """
   def __init__(
@@ -1631,7 +1631,7 @@ class HeaderBuilder:
       distogram=DistogramHead,
       fitness=FitnessHead,
       folding=FoldingHead,
-      lddt=LDDTHead,
+      lddt=PLDDTHead,
       metric=MetricDictHead,
       pae=PAEHead,
       pairing=PairingHead,
