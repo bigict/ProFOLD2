@@ -36,6 +36,21 @@ def autocast_ctx(cond):
     yield
 
 
+@contextlib.contextmanager
+def env_ctx(**kwargs):
+  old_env = dict(os.environ)
+  for key, value in kwargs.items():
+    if exists(value):
+      os.environ[key] = str(value)
+
+  yield
+
+  for key in kwargs:
+    if key not in old_env:
+      del os.environ[key]
+  os.environ.update(old_env)
+
+
 class _WorkerLogRecordFactory(object):
   """Preprocess tensor args before creating a LogRecord
   """
