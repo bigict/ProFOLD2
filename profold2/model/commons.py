@@ -531,7 +531,7 @@ class AxialAttention(nn.Module):
       output_fold_eq = '... h w d -> ... h w d'
 
     def run_attn(x, mask, attn_bias):
-      _, h, w, _ = x.shape
+      *_, h, w, _ = x.shape
 
       attn_fn = None
       if exists(attn_bias):
