@@ -713,8 +713,8 @@ class PLDDTHead(nn.Module):
   ):
     super().__init__()
     dim, _ = commons.embedd_dim_get(dim)
-    num_channels = default(num_channels, dim)
 
+    num_channels = default(num_channels, dim)
     self.net = nn.Sequential(
         nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
         nn.Linear(num_channels, num_channels), nn.ReLU(),
@@ -730,21 +730,21 @@ class PLDDTHead(nn.Module):
       x = headers['folding']['act']
     else:
       x = representations['single']
-    assert 'folding' in headers and 'coords' in headers['folding']
-    return dict(logits=self.net(x), coords=headers['folding']['coords'])
+    ret = dict(logits=self.net(x))
+    if self.training:
+      assert 'folding' in headers and 'coords' in headers['folding']
+      ret.update(coords=headers['folding']['coords'])
+    return ret
 
   def loss(self, value, batch):
     assert 'coords' in value and 'logits' in value
 
-    ca_idx = residue_constants.atom_order['CA']
     # Shape (b, l, d)
-    pred_points = value['coords'][..., ca_idx, :]
+    pred_points = value['coords']
 
     if 'coord' in batch:
-      # Shape (b, l, d)
-      true_points = batch['coord'][..., ca_idx, :]
-      # Shape (b, l)
-      points_mask = batch['coord_mask'][..., ca_idx]
+      # Shape (b, l, d) and (b, l)
+      true_points, points_mask = batch['coord'], batch['coord_mask']
     else:
       with torch.no_grad():
         true_points = pred_points
@@ -752,11 +752,16 @@ class PLDDTHead(nn.Module):
           pred_points.shape[:-1], device=pred_points.device, dtype=torch.bool
       )
 
+    seq = batch['seq']
+    ca_idx = residue_constants.atom_order['CA']
+    pred_points = pred_points[..., ca_idx, :]
+    true_points = true_points[..., ca_idx, :]
+    points_mask = points_mask[..., ca_idx]
+    cutoff = lddt_cutoff(seq)
+
     with torch.no_grad():
       # Shape (..., l)
-      lddt_ca = functional.lddt(
-          pred_points, true_points, points_mask, cutoff=lddt_cutoff(batch['seq'])
-      )
+      lddt_ca = functional.lddt(pred_points, true_points, points_mask, cutoff=cutoff)
       # protect against out of range for lddt_ca == 1
       bin_index = torch.clamp(
           torch.floor(lddt_ca * self.buckets_num).long(), max=self.buckets_num - 1
