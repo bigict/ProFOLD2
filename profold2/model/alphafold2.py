@@ -6,6 +6,8 @@ import logging
 import random
 from typing import Optional
 
+from tqdm.auto import tqdm
+
 import torch
 from torch import nn
 from einops import rearrange
@@ -353,7 +355,7 @@ class AlphaFold2WithRecycling(nn.Module):
     )
 
     with torch.no_grad():
-      for i in range(num_recycle):
+      for i in tqdm(range(num_recycle), disable=self.training, desc='Trunk Recycling'):
         ret = ReturnValues(**cycling_function(batch))
         if 'tmscore' in ret.headers:
           logger.debug(
