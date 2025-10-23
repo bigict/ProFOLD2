@@ -338,17 +338,23 @@ def lddt(
   # Shift unscored distances to be far away
   dist_l1 = torch.abs(true_cdist - pred_cdist)
 
+  # Normalize over the appropriate axes.
+  reduce_dim = -1 if per_residue else (-2, -1)
+
   # True lDDT uses a number of fixed bins.
   # We ignore the physical plausibility correction to lDDT, though.
   if smooth:
-    score = 0.25 * sum(F.sigmoid(t - dist_l1) for t in (0.5, 1.0, 2.0, 4.0))
+    score = 0.25 * sum(
+        torch.sum(cdist_to_score * F.sigmoid(t - dist_l1), dim=reduce_dim)
+        for t in (0.5, 1.0, 2.0, 4.0)
+    )
   else:
-    score = 0.25 * sum(dist_l1 < t for t in (0.5, 1.0, 2.0, 4.0))
+    score = 0.25 * sum(
+        torch.sum(cdist_to_score * (dist_l1 < t), dim=reduce_dim)
+        for t in (0.5, 1.0, 2.0, 4.0)
+    )
 
-  # Normalize over the appropriate axes.
-  reduce_dim = -1 if per_residue else (-2, -1)
-  return (torch.sum(cdist_to_score * score, dim=reduce_dim) +
-          eps) / (torch.sum(cdist_to_score, dim=reduce_dim) + eps)
+  return (score + eps) / (torch.sum(cdist_to_score, dim=reduce_dim) + eps)
 
 
 def plddt(logits):
