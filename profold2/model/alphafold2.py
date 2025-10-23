@@ -205,7 +205,7 @@ class AlphaFold2(nn.Module):
     del seq_embed, msa_embed
     recyclables, = map(batch.get, ('recyclables', ))
 
-    representations = {}
+    representations = {'recycling': return_recyclables}
 
     # input embeddings
     x, m, x_mask, msa_mask = self.embedder(
