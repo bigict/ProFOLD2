@@ -840,9 +840,8 @@ def _protein_clips_fn(
       return None
 
     ca_idx = residue_constants.atom_order['CA']
-    ca_coord, ca_coord_mask = protein['coord'][...,
-                                               ca_idx, :], protein['coord_mask'][...,
-                                                                                 ca_idx]
+    ca_coord = protein['coord'][..., ca_idx, :]
+    ca_coord_mask = protein['coord_mask'][..., ca_idx]
     logger.debug('knn_sampler: seq_len=%d', n)
 
     min_len = 32  # default(min_crop_len, 32)
@@ -850,16 +849,23 @@ def _protein_clips_fn(
     max_len = _crop_length(n, np.random.random() < crop_probability)
     gamma = 0.004
 
-    ridx = np.random.randint(n)
     eps = 1e-1
-    dist2 = torch.sum(
-        torch.square(
-            rearrange(ca_coord, 'i d -> i () d') - rearrange(ca_coord, 'j d -> () j d')
-        ),
-        dim=-1
-    )
-    mask = rearrange(ca_coord_mask, 'i -> i ()') * rearrange(ca_coord_mask, 'j -> () j')
+    dist2 = torch.sum(torch.square(ca_coord[:, None, :] - ca_coord[None, :, :]), dim=-1)
+    mask = ca_coord_mask[:, None] * ca_coord_mask[None, :]
     dist2 = dist2.masked_fill(~mask, torch.max(dist2))
+
+    spatial_interface_ratio = kwargs.get('crop_spatial_interface_ratio', 0.0)
+    if (np.random.random() < spatial_interface_ratio):
+      cutoff = kwargs.get('crop_spatial_interface_cutoff', 15)
+      seq_color = protein['seq_color']
+      p = torch.sum(
+          (seq_color[:, None] != seq_color[None, :]) * (dist2 < cutoff**2), dim=-1
+      ) + 1e-3
+      p /= torch.sum(p, dim=-1)
+      ridx = np.random.choice(n, p=p.numpy())
+    else:
+      ridx = np.random.randint(n)
+
     dist2 = dist2[ridx]
     opt_h = torch.zeros(n + 1, max_len + 1, dtype=torch.float)
 
@@ -2108,6 +2114,8 @@ def load(
     max_crop_plddt=False,
     crop_probability=0,
     crop_algorithm='random',
+    crop_spatial_interface_ratio=0.0,
+    crop_spatial_interface_cutoff=15,
     feat_flags=FEAT_ALL,
     **kwargs
 ):
@@ -2147,12 +2155,24 @@ def load(
   )
 
   if 'data_crop_fn' not in kwargs:
+    crop_spatial_interface_ratio = env(
+        'profold2_data_crop_spatial_interface_ratio',
+        defval=crop_spatial_interface_ratio,
+        dtype=float
+    )
+    crop_spatial_interface_cutoff = env(
+        'profold2_data_crop_spatial_interface_cutoff',
+        defval=crop_spatial_interface_cutoff,
+        dtype=float
+    )
     data_crop_fn = functools.partial(
         _protein_clips_fn,
         min_crop_len=min_crop_len,
         max_crop_len=max_crop_len,
         min_crop_pae=min_crop_pae,
         max_crop_plddt=max_crop_plddt,
+        crop_spatial_interface_ratio=crop_spatial_interface_ratio,
+        crop_spatial_interface_cutoff=crop_spatial_interface_cutoff,
         crop_probability=crop_probability,
         crop_algorithm=crop_algorithm
     )
