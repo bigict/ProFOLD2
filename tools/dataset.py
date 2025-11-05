@@ -588,6 +588,7 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
   data = ProteinStructureDataset(
       data_dir=args.data_dir,
       data_idx=args.data_idx,
+      chain_idx=args.data_chain,
       pseudo_linker_prob=args.pseudo_linker_prob,
       pseudo_linker_shuffle=False,
       data_rm_mask_prob=args.data_rm_mask_prob,
@@ -621,12 +622,9 @@ if __name__ == '__main__':
         cmd, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    cmd_parser.add_argument(
-        '--data_dir', type=str, default=None, help='train dataset dir.'
-    )
-    cmd_parser.add_argument(
-        '--data_idx', type=str, default=None, help='dataset idx.'
-    )
+    cmd_parser.add_argument('--data_dir', type=str, default=None, help='dataset dir.')
+    cmd_parser.add_argument('--data_idx', type=str, default=None, help='dataset idx.')
+    cmd_parser.add_argument('--data_chain', type=str, default=None, help='dataset chain.')
     cmd_parser.add_argument(
         '--data_rm_mask_prob', type=float, default=0.0, help='data_rm_mask'
     )
