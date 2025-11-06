@@ -24,6 +24,13 @@ from profold2.utils import exists, timing
 logger = logging.getLogger(__file__)
 
 
+CHAIN_TYPE_DICT = {
+    'mol:protein': residue_constants.PROT,
+    'mol:dna': residue_constants.DNA,
+    'mol:rna': residue_constants.RNA
+}
+
+
 def output_get_basename(filename):
   filename = os.path.basename(filename)
   if filename.endswith('.gz'):
@@ -174,6 +181,8 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
 
     chain_type = chain_type_dict.get(chain_id)
     if not exists(chain_type):  # FIX: 146d
+      continue
+    if CHAIN_TYPE_DICT.get(chain_type) not in residue_constants.restype_list:
       continue
 
     int_resseq = label_seq_id_list[i]
