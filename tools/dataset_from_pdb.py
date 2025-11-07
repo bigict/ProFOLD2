@@ -104,8 +104,8 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
 
   def _get_residue_id(residue_id, chain_type):
     del chain_type
-    while len(residue_id) < 3:
-      residue_id = f' {residue_id}'
+    # while len(residue_id) < 3:
+    #   residue_id = f' {residue_id}'
     return fix_residue_id(residue_id)
 
   def _get_unktype(chain_type):
@@ -144,7 +144,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
   def _make_domain(start, end, delta=0):
     return (start + delta, end + delta)
 
-  chain_id, seq, domains = None, [], []
+  chain_id, seq, domains, chain_skip = None, [], [], False
   int_resseq_start, int_resseq_end = None, None
   int_resseq_delta, int_resseq_offset = 0, 0
   coord_list, coord_mask_list, bfactor_list = [], [], []
@@ -160,7 +160,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
       continue
 
     if chain_id_list[i] != chain_id:
-      if exists(chain_id) and seq:  # FIX: 5wj3
+      if exists(chain_id) and seq and not chain_skip:  # FIX: 5wj3
         domains += [
             _make_domain(
                 int_resseq_start, int_resseq_end + int_resseq_offset, int_resseq_delta
@@ -172,7 +172,7 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
           bfactor_list.append(bfactors)
         npz = _make_npz(coord_list, coord_mask_list, bfactor_list)
         yield chain_id, chain_type_dict[chain_id], seq, domains, npz
-      chain_id, seq, domains = chain_id_list[i], [], []
+      chain_id, seq, domains, chain_skip = chain_id_list[i], [], [], False
       # assert chain_id in chain_type_dict
       int_resseq_start, int_resseq_end = None, None
       int_resseq_delta, int_resseq_offset = 0, 0
@@ -256,8 +256,14 @@ def mmcif_yield_chain(mmcif_dict, args):  # pylint: disable=redefined-outer-name
         logger.debug(
             'residue_id: %s, chain_type: %s, exception: %s', residue_id, chain_type, e
         )
+      except IndexError as e:  # FIX: 5HT2
+        logger.error(
+            'entry.id: %s, residue_id: %s, chain_type: %s, exception: %s',
+            mmcif_dict['_entry.id'], residue_id, chain_type, e
+        )
+        chain_skip = True
 
-  if exists(chain_id) and seq:
+  if exists(chain_id) and seq and not chain_skip:
     domains += [
         _make_domain(
             int_resseq_start, int_resseq_end + int_resseq_offset, int_resseq_delta
