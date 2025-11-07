@@ -91,8 +91,8 @@ def mmcif_yield_chain(mmcif_dict, _):  # pylint: disable=redefined-outer-name
 
   def _get_residue_id(residue_id, chain_type):
     del chain_type
-    while len(residue_id) < 3:
-      residue_id = f' {residue_id}'
+    # while len(residue_id) < 3:
+    #   residue_id = f' {residue_id}'
     if residue_id == 'MSE':
       return 'MET'
     return residue_id
