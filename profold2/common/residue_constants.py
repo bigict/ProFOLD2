@@ -954,7 +954,7 @@ else:
   rna_gap_idx = -1
 del restype_from_idx
 
-def moltype(mol_idx):
+def moltype(mol_idx: int) -> int:
   if dna_from_idx <= mol_idx <= dna_to_idx or mol_idx == dna_gap_idx:    # dna gap .
     return DNA
   elif rna_from_idx <= mol_idx <= rna_to_idx or mol_idx == rna_gap_idx:  # rna gap *
@@ -967,7 +967,7 @@ restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
 
-def is_aa(restype):
+def is_aa(restype: int) -> bool:
   return moltype(restype) == PROT
 
 
@@ -1075,6 +1075,11 @@ restype_3to1 = {v: k for k, v in restype_1to3.items()}
 unk_restype = 'UNK'
 unk_dnatype =  'DX'
 unk_rnatype =   'X'
+
+
+def is_std(resname: str) -> bool:
+  return restype_3to1.get(resname, unk_restype) == unk_restype
+
 
 resnames = [restype_1to3[(r, moltype(i))]
             for i, r in enumerate(restypes)] + [(unk_restype, PROT)]
