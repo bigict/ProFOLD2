@@ -1,14 +1,17 @@
 import sys
+import functools
 import logging
 
+import numpy as np
 import torch
 from torch import nn
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional, folding
+from profold2.model import commons, functional, diffusion, folding, evoformer
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
@@ -80,6 +83,23 @@ def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
       seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
   )
   return torch.where(is_prot[..., None], prot_cutoff, na_cutoff)
+
+
+class AtomwiseBinPred(nn.Module):
+  def __init__(self, dim, bin_num, max_atoms):
+    super().__init__()
+
+    self.norm = nn.LayerNorm(dim)
+    self.w = nn.Parameter(data=torch.empty(max_atoms, dim, bin_num))
+
+  def forward(self, act, batch):
+    act = functional.batched_gather(
+        act, batch['atom_to_token_idx'], dim=-2, has_batch_dim=True
+    )
+    act = self.norm(act)
+    return torch.einsum(
+        '... i d, ... i d c -> ... i c', act, self.w[batch['atom_within_token_idx']]
+    )
 
 
 class ConfidenceHead(nn.Module):
@@ -408,6 +428,234 @@ class DistogramHead(nn.Module):
     return dict(loss=avg_error)
 
 
+class DonfidenceHead(nn.Module):
+  """Head to predict diffusion generation confidence.
+    """
+  def __init__(
+      self,
+      dim,
+      dim_inputs=None,
+      pairformer_depth=4,
+      pairformer_head_num=(16, 4),
+      pairformer_head_dim=(24, 32),
+      pairformer_attn_dropout=0.,
+      pairformer_ff_dropout=0.,
+      pairformer_shard_size=None,
+      max_atoms_per_token=20,
+      pae_bin_min=0,
+      pae_bin_max=32,
+      pae_bin_num=64,
+      pae_weight=0.0,
+      pde_bin_min=0,
+      pde_bin_max=32,
+      pde_bin_num=64,
+      pde_weight=1.0,
+      plddt_bin_num=50,
+      plddt_weight=1.0,
+      dgram_bin_min=3.25,
+      dgram_bin_max=50.75,
+      dgram_bin_num=39,
+      min_resolution=.0,
+      max_resolution=sys.float_info.max
+  ):
+    super().__init__()
+
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
+
+    dgram_breaks = torch.linspace(dgram_bin_min, dgram_bin_max, steps=dgram_bin_num)
+    self.register_buffer('dgram_breaks', dgram_breaks, persistent=False)
+
+    self.from_inputs = nn.Linear(
+        dim_inputs, dim_pairwise * 2, bias=False
+    ) if exists(dim_inputs) else None
+    self.from_dij = nn.Linear(dgram_bin_num, dim_pairwise, bias=False)
+
+    self.pairformer = evoformer.Pairformer(
+        depth=pairformer_depth,
+        dim_single=dim_single,
+        dim_pairwise=dim_pairwise,
+        heads=pairformer_head_num,
+        dim_head=pairformer_head_dim,
+        attn_dropout=pairformer_attn_dropout,
+        ff_dropout=pairformer_ff_dropout
+    )
+    self.pairformer_shard_size = pairformer_shard_size
+
+    self.to_pae = PAEHead(
+        dim,
+        buckets_num=pae_bin_num,
+        buckets_first_break=pae_bin_min,
+        buckets_last_break=pae_bin_max,
+        min_resolution=min_resolution,
+        max_resolution=max_resolution
+    )
+    self.to_pde = PDEHead(
+        dim,
+        buckets_num=pde_bin_num,
+        buckets_first_break=pde_bin_min,
+        buckets_last_break=pde_bin_max,
+        min_resolution=min_resolution,
+        max_resolution=max_resolution
+    )
+
+    self.to_plddt = LDDTHead(
+        dim, buckets_num=plddt_bin_num, atoms_per_token=max_atoms_per_token
+    )
+
+    self.pae_weight = pae_weight
+    self.pde_weight = pde_weight
+    self.plddt_weight = plddt_weight
+
+  def forward(self, headers, representations, batch):
+    assert 'diffusion' in headers and 'coords' in headers['diffusion']
+
+    inputs, single_repr, pairwise_repr = map(
+        lambda key: representations[key].detach(), ('inputs', 'single', 'pair')
+    )
+
+    s_i, s_j = torch.chunk(self.from_inputs(inputs), 2, dim=-1)
+    pairwise_repr = commons.tensor_add(
+        s_i[..., :, None, :] + s_j[..., None, :, :], pairwise_repr
+    )
+
+    # embed pair distance of representative atoms
+    with torch.no_grad():
+      ca_idx = residue_constants.atom_order['CA']
+      dij = functional.distogram_from_positions(
+          headers['diffusion']['coords'][..., ca_idx, :], self.dgram_breaks
+      )
+    pairwise_repr = commons.tensor_add(pairwise_repr, self.from_dij(dij))
+
+    pairwise_repr, single_repr = self.pairformer(
+        pairwise_repr,
+        single_repr,
+        mask=batch['mask'][..., :, None] * batch['mask'][..., None, :],
+        seq_mask=batch['mask'],
+        shard_size=self.pairformer_shard_size
+    )
+
+    # NOTE: faked headers & representations ^_~
+    headers = {'folding': {'frames': None, 'coords': headers['diffusion']['coords']}}
+    representations = {'single': single_repr, 'pair': pairwise_repr}
+    pae = self.to_pae(headers, representations, batch)
+    pde = self.to_pde(headers, representations, batch)
+    plddt = self.to_plddt(headers, representations, batch)
+
+    return dict(pae=pae, pde=pde, plddt=plddt)
+
+
+class DiffusionHead(nn.Module):
+  """Head to generate 3d struct.
+    """
+  def __init__(
+      self,
+      dim,
+      has_inputs=True,
+      diffuser_batch_size=None,
+      diffuser_shard_size=None,
+      **kwargs
+  ):
+    super().__init__()
+
+    if has_inputs:
+      dim_token = kwargs.pop('inputs_dim_token', 384)
+      num_tokens = kwargs.pop(
+          'inputs_num_tokens',
+          len(residue_constants.restypes_with_x) + 1
+      )
+
+      self.embedder = diffusion.InputFeatureEmbedder(
+          dim_token=dim_token, num_tokens=num_tokens
+      )
+
+      kwargs['dim_inputs'] = dim_token + num_tokens + 1
+    self.diffuser_module = diffusion.DiffusionSampler(dim=dim, **kwargs)
+    self.diffuser_batch_size = env(
+        'profold2_diffusion_batch_size', defval=diffuser_batch_size, dtype=int
+    )
+    self.diffuser_shard_size = env(
+        'profold2_diffusion_shard_size', defval=diffuser_shard_size, dtype=int
+    )
+    assert not exists(self.diffuser_shard_size) or self.diffuser_shard_size > 0
+
+  def forward(self, headers, representations, batch):
+    assert hasattr(self, 'embedder') ^ ('inputs' in representations)
+    if hasattr(self, 'embedder'):
+      inputs = self.embedder(batch)
+    else:
+      inputs = representations['inputs']
+    use_conditioning = batch.get('diffuser_use_conditioning', True)
+
+    if not self.training:  # inference
+      diffuser_steps = env('profold2_diffusion_steps', defval=200, dtype=int)
+      step_scale_eta = env('profold2_diffusion_step_scale_eta', defval=1.5, dtype=float)
+      x = self.diffuser_module.sample(
+          batch,
+          inputs=inputs,
+          trunk_single_cond=representations['single'],
+          trunk_pair_cond=representations['pair'],
+          steps=diffuser_steps,
+          step_scale_eta=step_scale_eta,
+          use_conditioning=use_conditioning,
+          diffuser_batch_size=self.diffuser_batch_size,
+          shard_size=self.diffuser_shard_size
+      )
+      return dict(
+          coords=x,
+          batch_size=self.diffuser_batch_size,
+          use_conditioning=use_conditioning
+      )
+
+    # training
+    x_true, x_mask, x_noisy, x_denoised, noise_level = self.diffuser_module(
+        batch,
+        inputs=inputs,
+        trunk_single_cond=representations['single'],
+        trunk_pair_cond=representations['pair'],
+        use_conditioning=use_conditioning,
+        diffuser_batch_size=self.diffuser_batch_size,
+        shard_size=self.diffuser_shard_size
+    )
+    return dict(
+        x_true=x_true,
+        x_mask=x_mask,
+        x_noisy=x_noisy,
+        x_denoised=x_denoised,
+        noise_level=noise_level,
+        batch_size=self.diffuser_batch_size,
+        use_conditioning=use_conditioning
+    )
+
+  def loss(self, value, batch):
+    if not self.training:  # inference
+      return None
+
+    use_conditioning = value.get('use_conditioning')
+    # training
+    noise_level = value['noise_level']
+    x_true, x_pred, x_mask = value['x_true'], value['x_denoised'], value['x_mask']
+
+    if exists(value.get('batch_size')):
+      x_true, x_mask = x_true[..., None, :, :], x_mask[..., None, :]
+
+    # weighted_align
+    with torch.no_grad():
+      with autocast(enabled=False):
+        # TODO: change x_mask to weight
+        R, t = functional.kabsch_transform(x_pred.float(), x_true.float(), x_mask)
+        x_true = functional.rigids_apply(
+            (R[..., None, :, :], t[..., None, :]), x_true.float()
+        )
+
+    # loss weight on every noise scale
+    sigma_scale = self.diffuser_module.loss_scale(noise_level)
+    errors = sigma_scale[..., None] * torch.sum((x_pred - x_true)**2, dim=-1)
+
+    loss = torch.mean(functional.masked_mean(value=errors, mask=x_mask, dim=-1)) / 3.
+    logger.debug('DiffusionHead.loss(use_conditioning=%s): %s', use_conditioning, loss)
+    return dict(loss=loss)
+
+
 class FoldingHead(nn.Module):
   """Head to predict 3d struct.
     """
@@ -707,19 +955,32 @@ class PLDDTHead(nn.Module):
       self,
       dim,
       num_channels=None,
+      atoms_per_token=1,
       buckets_num=50,
       min_resolution=.0,
       max_resolution=sys.float_info.max
   ):
     super().__init__()
     dim, _ = commons.embedd_dim_get(dim)
-
     num_channels = default(num_channels, dim)
-    self.net = nn.Sequential(
-        nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
-        nn.Linear(num_channels, num_channels), nn.ReLU(),
-        nn.Linear(num_channels, buckets_num)
-    )
+
+    if atoms_per_token == 1:
+
+      class TokenwiseBinPred(nn.Sequential):
+        def __init__(self, *args):
+          super().__init__(*args)
+
+        def forward(self, act, batch):
+          del batch
+          return super().forward(act)
+
+      self.net = TokenwiseBinPred(
+          nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
+          nn.Linear(num_channels, num_channels), nn.ReLU(),
+          nn.Linear(num_channels, buckets_num)
+      )
+    else:
+      self.net = AtomwiseBinPred(dim, buckets_num, atoms_per_token)
     self.buckets_num = buckets_num
 
     self.min_resolution = min_resolution
@@ -730,11 +991,8 @@ class PLDDTHead(nn.Module):
       x = headers['folding']['act']
     else:
       x = representations['single']
-    ret = dict(logits=self.net(x))
-    if self.training:
-      assert 'folding' in headers and 'coords' in headers['folding']
-      ret.update(coords=headers['folding']['coords'])
-    return ret
+    assert 'folding' in headers and 'coords' in headers['folding']
+    return dict(logits=self.net(x, batch), coords=headers['folding']['coords'])
 
   def loss(self, value, batch):
     assert 'coords' in value and 'logits' in value
@@ -879,6 +1137,69 @@ class PAEHead(nn.Module):
     sq_mask = torch.einsum('b,b ... -> b ...', mask, sq_mask)
     loss = torch.sum(errors * sq_mask) / (1e-8 + torch.sum(sq_mask))
     logger.debug('PAEHead.loss: %s', loss)
+    return dict(loss=loss)
+
+
+class PDEHead(nn.Module):
+  """Head for predicted distance loss
+    """
+  def __init__(
+      self,
+      dim,
+      buckets_num=64,
+      buckets_first_break=0.,
+      buckets_last_break=31.,
+      min_resolution=.0,
+      max_resolution=sys.float_info.max
+  ):
+    super().__init__()
+    _, dim = commons.embedd_dim_get(dim)
+
+    buckets = torch.linspace(
+        buckets_first_break, buckets_last_break, steps=buckets_num - 1
+    )
+    self.register_buffer('buckets', buckets, persistent=False)
+    self.net = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, buckets_num, bias=False))
+
+  def forward(self, headers, representations, batch):
+    assert 'folding' in headers and 'coords' in headers['folding']
+    pairwise_repr = representations['pair']
+    pde = self.net(
+        pairwise_repr + rearrange(pairwise_repr, '... i j d -> ... j i d')  # symmetric
+    )
+    return {'logits': pde, 'coords': headers['folding']['coords']}
+
+  def loss(self, value, batch):
+    x_pred, logits = value['coords'], value['logits']
+    x_true, x_mask = batch.get('coord'), batch.get('coord_mask')
+
+    x_true = default(x_true, x_pred.detach())
+    x_mask = default(x_mask, batch['coord_exists'])
+
+    with torch.no_grad():
+      ca_idx = residue_constants.atom_order['CA']
+      x_pred = x_pred[..., ca_idx, :]
+      x_true, x_mask = x_true[..., ca_idx, :], x_mask[..., ca_idx]
+
+    assert 0 <= x_pred.dim() - x_true.dim() <= 1
+    if x_pred.dim() > x_true.dim():  # batched
+      x_true, x_mask = x_true[..., None, :, :], x_mask = x_mask[..., None, :]
+
+    true_bins = torch.abs(torch.cdist(x_pred, x_pred) - torch.cdist(x_true, x_true))
+
+    errors = softmax_cross_entropy(
+        labels=F.one_hot(true_bins, self.num_buckets), logits=logits
+    )
+
+    # Filter by resolution
+    mask = torch.logical_and(
+        self.min_resolution <= batch['resolution'],
+        batch['resolution'] < self.max_resolution
+    )
+    sq_mask = x_mask[..., None] * x_mask[..., None, :]
+    sq_mask = torch.einsum('b,b ... -> b ...', mask, sq_mask)
+    loss = torch.sum(errors * sq_mask) / (1e-8 + torch.sum(sq_mask))
+    logger.debug('PDEHead.loss: %s', loss)
     return dict(loss=loss)
 
 
@@ -1530,6 +1851,58 @@ class SequenceProfileHead(nn.Module):
     return dict(loss=avg_error)
 
 
+class SmoothLDDTHead(nn.Module):
+  """Head to calc the LDDT loss.
+    """
+  def __init__(self, dim, shard_size=None):
+    super().__init__()
+    del dim
+
+    self.shard_size = shard_size
+
+  def forward(self, headers, representations, batch):
+    assert 'diffusion' in headers
+    if self.training:
+      return {
+          key: headers['diffusion'][key]
+          for key in ('x_true', 'x_mask', 'x_denoised', 'batch_size')
+      }
+    return None
+
+  def loss(self, value, batch):
+    x_pred, x_true, x_mask = value['x_denoised'], value['x_true'], value['x_mask']
+    seq = functional.batched_gather(
+        batch['seq'], batch['atom_to_token_idx'], dim=-1, has_batch_dim=True
+    )
+    cutoff = lddt_cutoff(seq)
+    shard_size = None
+    if exists(value.get('batch_size')):
+      x_true, x_mask = x_true[..., None, :, :], x_mask[..., None, :]
+      cutoff = cutoff[..., None, :, :]
+      shard_size = self.shard_size
+
+    lddt_fn = functools.partial(
+        functional.lddt, per_residue=False, cutoff=cutoff, smooth=True
+    )
+    if exists(shard_size):
+      lddt_fn = functools.partial(checkpoint, lddt_fn, use_reentrant=True)
+
+    errors = 1. - functional.sharded_apply(
+        lddt_fn, [x_pred],
+        x_true,
+        x_mask,
+        shard_size=shard_size,
+        shard_dim=-3,
+        cat_dim=-1
+    )
+    # errors = 1. - functional.lddt(
+    #     x_pred, x_true, x_mask, per_residue=False, cutoff=cutoff, smooth=True
+    # )
+    loss = torch.mean(errors)
+    logger.debug('SmoothLDDTHead.loss: %s', loss)
+    return dict(loss=loss)
+
+
 class TMscoreHead(nn.Module):
   """Head to predict TM-score.
     """
@@ -1628,14 +2001,18 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      donfidence=DonfidenceHead,
+      diffusion=DiffusionHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=PLDDTHead,
       metric=MetricDictHead,
       pae=PAEHead,
+      pde=PDEHead,
       pairing=PairingHead,
       profile=SequenceProfileHead,
       roberta=RobertaLMHead,
+      smooth=SmoothLDDTHead,
       tmscore=TMscoreHead,
       violation=ViolationHead
   )
