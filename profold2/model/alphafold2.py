@@ -13,7 +13,7 @@ from torch import nn
 from einops import rearrange
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional
+from profold2.model import commons, folding, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
 from profold2.utils import env, exists
@@ -259,9 +259,7 @@ class AlphaFold2(nn.Module):
       if 'representations' in value:
         representations.update(value['representations'])
     if 'folding' in ret.headers:
-      batch = functional.multi_chain_permutation_alignment(
-          ret.headers['folding'], batch
-      )
+      batch = folding.multi_chain_permutation_alignment(ret.headers['folding'], batch)
     if self.training and compute_loss:
       for name, module, options in self.headers:
         if not hasattr(module, 'loss') or name not in ret.headers:
