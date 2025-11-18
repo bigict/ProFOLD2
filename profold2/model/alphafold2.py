@@ -13,7 +13,7 @@ from torch import nn
 from einops import rearrange
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional
+from profold2.model import commons, folding, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
 from profold2.utils import env, exists
@@ -159,7 +159,7 @@ class AlphaFold2(nn.Module):
         accept_frame_update=accept_frame_update,
         attn_dropout=attn_dropout,
         ff_dropout=ff_dropout
-    )
+    ) if evoformer_depth > 0 else None
 
     # msa to single activations
     self.to_single_repr = nn.Linear(dim_msa, dim_single)
@@ -234,14 +234,13 @@ class AlphaFold2(nn.Module):
       quaternions = torch.tensor([1., 0., 0., 0.], device=device)
       quaternions = torch.tile(quaternions, b + (n, 1))
       translations = torch.zeros(b + (n, 3), device=device)
+    t = (quaternions, translations)
 
     # trunk
-    x, m, t = self.evoformer(
-        x, m, (quaternions, translations),
-        mask=x_mask,
-        msa_mask=msa_mask,
-        shard_size=shard_size
-    )
+    if exists(self.evoformer):
+      x, m, t = self.evoformer(
+          x, m, t, mask=x_mask, msa_mask=msa_mask, shard_size=shard_size
+      )
 
     s = self.to_single_repr(m[..., 0, :, :])
 
@@ -259,9 +258,7 @@ class AlphaFold2(nn.Module):
       if 'representations' in value:
         representations.update(value['representations'])
     if 'folding' in ret.headers:
-      batch = functional.multi_chain_permutation_alignment(
-          ret.headers['folding'], batch
-      )
+      batch = folding.multi_chain_permutation_alignment(ret.headers['folding'], batch)
     if self.training and compute_loss:
       for name, module, options in self.headers:
         if not hasattr(module, 'loss') or name not in ret.headers:

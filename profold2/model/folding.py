@@ -210,3 +210,7 @@ class StructureModule(nn.Module):
           )
 
     return outputs
+
+
+def multi_chain_permutation_alignment(value, batch):
+  return functional.multi_chain_permutation_alignment(value, batch)
