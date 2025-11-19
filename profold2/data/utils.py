@@ -236,3 +236,25 @@ def pdb_from_prediction(
   if 'confidence' in headers and 'plddt' in headers['confidence']:
     plddt = headers['confidence']['plddt'][..., None]
   return pdb_from_model(batch, headers['folding']['coords'], plddt=plddt, idx=idx)
+
+
+def pdb_from_generation(
+    batch: dict[str, Any],
+    headers: dict[str, Any],
+    generation_batch_size: Optional[int] = None,
+    idx: Optional[int] = None
+) -> Union[str, list[str], list[list[str]]]:
+  plddt = None
+  if 'donfidence' in headers and 'plddt' in headers['donfidence']:
+    plddt = headers['donfidence']['plddt']
+  pcoord = headers['diffusion']['coords']
+  if exists(generation_batch_size):
+    return [
+        pdb_from_model(
+            batch,
+            pcoord[:, m],  # (b m i c d)
+            plddt=plddt[:, m] if exists(plddt) else None,
+            idx=idx
+        ) for m in range(generation_batch_size)
+    ]
+  return pdb_from_model(batch, pcoord, plddt=plddt, idx=idx)
