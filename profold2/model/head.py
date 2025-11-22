@@ -79,7 +79,14 @@ def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
   is_prot = torch.logical_and(
       seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
   )
-  return torch.where(is_prot[..., None], prot_cutoff, na_cutoff)
+  return torch.where(is_prot[..., None, :], prot_cutoff, na_cutoff)
+
+
+def lddt_mask(points_mask):
+  m = 1.0 - torch.eye(
+      points_mask.shape[-1], device=points_mask.device
+  )  # Exclude self-interaction
+  return points_mask[..., :, None] * points_mask[..., None, :] * m
 
 
 class ConfidenceHead(nn.Module):
@@ -752,16 +759,16 @@ class PLDDTHead(nn.Module):
           pred_points.shape[:-1], device=pred_points.device, dtype=torch.bool
       )
 
-    seq = batch['seq']
     ca_idx = residue_constants.atom_order['CA']
-    pred_points = pred_points[..., ca_idx, :]
-    true_points = true_points[..., ca_idx, :]
-    points_mask = points_mask[..., ca_idx]
-    cutoff = lddt_cutoff(seq)
+    pred_cdist = torch.cdist(pred_points[..., ca_idx, :], pred_points[..., ca_idx, :])
+    true_cdist = torch.cdist(true_points[..., ca_idx, :], true_points[..., ca_idx, :])
+    cdist_mask = lddt_mask(points_mask[..., ca_idx])
 
     with torch.no_grad():
       # Shape (..., l)
-      lddt_ca = functional.lddt(pred_points, true_points, points_mask, cutoff=cutoff)
+      lddt_ca = functional.lddt(
+          pred_cdist, true_cdist, cdist_mask, cutoff=lddt_cutoff(batch['seq'])
+      )
       # protect against out of range for lddt_ca == 1
       bin_index = torch.clamp(
           torch.floor(lddt_ca * self.buckets_num).long(), max=self.buckets_num - 1
@@ -1179,13 +1186,15 @@ class MetricDictHead(nn.Module):
         if 'coord' in batch:
           ca_idx = residue_constants.atom_order['CA']
           # Shape (b, l, d)
-          pred_points = points[..., ca_idx, :]
-          true_points = batch['coord'][..., ca_idx, :]
-          points_mask = point_mask[..., ca_idx]
+          pred_cdist = torch.cdist(points[..., ca_idx, :], points[..., ca_idx, :])
+          true_cdist = torch.cdist(
+              batch['coord'][..., ca_idx, :], batch['coord'][..., ca_idx, :]
+          )
+          cdist_mask = lddt_mask(point_mask[..., ca_idx])
 
           # Shape (b, l)
           lddt_ca = functional.lddt(
-              pred_points, true_points, points_mask, cutoff=lddt_cutoff(batch['seq'])
+              pred_cdist, true_cdist, cdist_mask, cutoff=lddt_cutoff(batch['seq'])
           )
           avg_lddt_ca = functional.masked_mean(value=lddt_ca, mask=points_mask)
           metrics['lddt'] = avg_lddt_ca

@@ -305,35 +305,25 @@ def distogram_from_positions(coords, breaks):
 
 
 def lddt(
-    pred_points, true_points, points_mask, cutoff=None, per_residue=True, smooth=False
+    pred_cdist, true_cdist, cdist_mask, cutoff=None, per_residue=True, smooth=False
 ):
   """Computes the lddt score for a batch of coordinates.
       https://academic.oup.com/bioinformatics/article/29/21/2722/195896
       Inputs:
-      * pred_coords: (..., i, d) array of predicted 3D points.
-      * true_points: (..., i, d) array of true 3D points.
-      * points_mask : (..., i) binary-valued array. 1 for points that exist in
-          the true points
+      * pred_cdist: (..., i, j, d) array of predicted cdist of 3D points.
+      * true_cdist: (..., i, j, d) array of true cdist of 3D points.
+      * cdist_mask : (..., i, j) binary-valued array. 1 for cdist that exist in
+          the true cdist
       * cutoff: maximum inclusion radius in reference struct.
       Outputs:
       * (..., i) lddt scores ranging between 0 and 1
   """
-  assert len(pred_points.shape) >= 2 and pred_points.shape[-1] == 3
-  assert len(true_points.shape) >= 2 and true_points.shape[-1] == 3
+  assert len(pred_cdist.shape) >= 2 and len(true_cdist.shape) >= 2
   cutoff = default(cutoff, 15.0)
-
   eps = 1e-10
 
-  # Compute true and predicted distance matrices.
-  pred_cdist = torch.cdist(pred_points, pred_points, p=2)
-  true_cdist = torch.cdist(true_points, true_points, p=2)
-
-  cdist_to_score = (
-      (true_cdist < cutoff) * (
-          rearrange(points_mask, '... i -> ... i ()') *
-          rearrange(points_mask, '... j -> ... () j')
-      ) * (1.0 - torch.eye(true_cdist.shape[-2], device=points_mask.device))
-  )  # Exclude self-interaction
+  # NOTE: cdist_mask should exclude self-interaction
+  cdist_to_score = (true_cdist < cutoff) * cdist_mask
 
   # Shift unscored distances to be far away
   dist_l1 = torch.abs(true_cdist - pred_cdist)
