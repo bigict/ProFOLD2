@@ -714,6 +714,7 @@ class PLDDTHead(nn.Module):
       self,
       dim,
       num_channels=None,
+      atoms_per_token=1,
       buckets_num=50,
       min_resolution=.0,
       max_resolution=sys.float_info.max
@@ -721,12 +722,25 @@ class PLDDTHead(nn.Module):
     super().__init__()
     dim, _ = commons.embedd_dim_get(dim)
 
-    num_channels = default(num_channels, dim)
-    self.net = nn.Sequential(
-        nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
-        nn.Linear(num_channels, num_channels), nn.ReLU(),
-        nn.Linear(num_channels, buckets_num)
-    )
+    if atoms_per_token == 1:
+
+      class TokenwiseBinPred(nn.Sequential):
+        def __init__(self, *args):
+          super().__init__(*args)
+
+        def forward(self, act, batch, batch_size=None):
+          del batch, batch_size
+          return super().forward(act)
+
+      num_channels = default(num_channels, dim)
+      self.net = TokenwiseBinPred(
+          nn.LayerNorm(dim), nn.Linear(dim, num_channels), nn.ReLU(),
+          nn.Linear(num_channels, num_channels), nn.ReLU(),
+          nn.Linear(num_channels, buckets_num)
+      )
+    else:
+      raise NotImplementedError
+    self.atoms_per_token = atoms_per_token
     self.buckets_num = buckets_num
 
     self.min_resolution = min_resolution
@@ -737,7 +751,10 @@ class PLDDTHead(nn.Module):
       x = headers['folding']['act']
     else:
       x = representations['single']
-    ret = dict(logits=self.net(x))
+
+    batch_size = None
+
+    ret = dict(logits=self.net(x, batch, batch_size=batch_size), batch_size=batch_size)
     if self.training:
       assert 'folding' in headers and 'coords' in headers['folding']
       ret.update(coords=headers['folding']['coords'])
@@ -760,9 +777,11 @@ class PLDDTHead(nn.Module):
       )
 
     ca_idx = residue_constants.atom_order['CA']
-    pred_cdist = torch.cdist(pred_points[..., ca_idx, :], pred_points[..., ca_idx, :])
-    true_cdist = torch.cdist(true_points[..., ca_idx, :], true_points[..., ca_idx, :])
-    cdist_mask = lddt_mask(points_mask[..., ca_idx])
+    if self.atoms_per_token == 1:
+      pred_cdist = torch.cdist(pred_points[..., ca_idx, :], pred_points[..., ca_idx, :])
+      true_cdist = torch.cdist(true_points[..., ca_idx, :], true_points[..., ca_idx, :])
+      cdist_mask = lddt_mask(points_mask[..., ca_idx])
+      points_mask = points_mask[..., ca_idx]
 
     with torch.no_grad():
       # Shape (..., l)
@@ -782,7 +801,7 @@ class PLDDTHead(nn.Module):
         self.min_resolution <= batch['resolution'],
         batch['resolution'] < self.max_resolution
     )
-    points_mask = torch.einsum('b,b ... -> b ...', mask, points_mask)
+    points_mask = torch.einsum('...,... i -> ... i', mask, points_mask)
     loss = torch.sum(errors * points_mask) / (1e-6 + torch.sum(points_mask))
     logger.debug('LDDTHead.loss: %s', loss)
     return dict(loss=loss)
