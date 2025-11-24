@@ -1215,7 +1215,9 @@ class MetricDictHead(nn.Module):
           lddt_ca = functional.lddt(
               pred_cdist, true_cdist, cdist_mask, cutoff=lddt_cutoff(batch['seq'])
           )
-          avg_lddt_ca = functional.masked_mean(value=lddt_ca, mask=points_mask)
+          avg_lddt_ca = functional.masked_mean(
+              value=lddt_ca, mask=point_mask[..., ca_idx]
+          )
           metrics['lddt'] = avg_lddt_ca
           logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
 
