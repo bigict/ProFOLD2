@@ -318,6 +318,9 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       '--data_dir', type=str, default=None, help='load data from dataset.'
   )
   parser.add_argument('--data_idx', type=str, default=None, help='dataset idx.')
+  parser.add_argument(
+      '--add_pseudo_linker', action='store_true', help='enable loading complex data.'
+  )
 
   parser.add_argument(
       '--models',
