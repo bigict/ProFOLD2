@@ -1,11 +1,15 @@
 """Wrap distibuted env
 """
 import os
+from dataclasses import dataclass
 import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
 import re
 import resource
+from typing import Optional
+
+from omegaconf import OmegaConf
 
 import torch
 import torch.multiprocessing as mp
@@ -52,7 +56,7 @@ class _WorkerLogFilter(logging.Filter):
 class _WorkerLogging(object):
   """Initialize distibuted logger
   """
-  def __init__(self, work_fn, args):  # pylint: disable=redefined-outer-name
+  def __init__(self, task, args):  # pylint: disable=redefined-outer-name
     # logging
     os.makedirs(args.prefix, exist_ok=True)
 
@@ -61,7 +65,7 @@ class _WorkerLogging(object):
         logging.StreamHandler(),
         logging.FileHandler(
             os.path.join(
-                args.prefix, f'{work_fn.__name__}_{args.node_rank}{local_rank}.log'
+                args.prefix, f'{task.__name__}_{args.node_rank}{local_rank}.log'
             )
         )
     ]
@@ -225,14 +229,33 @@ class WorkerFunction(object):
     xpu.destroy_process_group()
 
 
-def main(args, fn):  # pylint: disable=redefined-outer-name
+@dataclass
+class Args:
+  nnodes: Optional[int] = env('SLURM_NODEID', defval=None, dtype=int)  # number of nodes
+  node_rank: int = env('SLURM_NODEID', defval=0, dtype=int)  # rank of the node
+  local_rank: int = env('LOCAL_RANK', defval=0, dtype=int)   # local rank of xpu
+  init_method: Optional[str] = None  # method to initialize the process group
+
+  prefix: str = '.'  # prefix of output directory
+
+  amp_enabled: bool = False  # enable automatic mixed precision
+  enable_profiler: bool = False  # enable profiler
+  enable_memory_snapshot: bool = False  # enable memory snapshot
+
+  verbose: bool = False  # verbose
+
+
+def main(task, args):  # pylint: disable=redefined-outer-name
+  args = OmegaConf.to_object(
+      OmegaConf.merge(OmegaConf.structured(task.Args), args)
+  )
   if exists(args.nnodes):
     mp.set_start_method('spawn', force=True)
 
   #--------------
   # setup logging
   #--------------
-  work_log = _WorkerLogging(fn, args)
+  work_log = _WorkerLogging(task, args)
   work_log.start()
 
   logging.info('-----------------')
@@ -242,10 +265,10 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
   #--------------
   # run fn with args
   #--------------
-  if hasattr(fn, 'preprocess'):
-    fn.preprocess(args)
+  if hasattr(task, 'preprocess'):
+    task.preprocess(args)
 
-  work_fn = WorkerFunction(fn, work_log.queue)
+  work_fn = WorkerFunction(task.run, work_log.queue)
   if exists(args.nnodes):
     #mp.set_start_method('spawn', force=True)
     mp.spawn(
@@ -257,8 +280,8 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
   else:
     work_fn(args.local_rank, args)
 
-  if hasattr(fn, 'postprocess'):
-    fn.postprocess(args)
+  if hasattr(task, 'postprocess'):
+    task.postprocess(args)
 
   logging.info('-----------------')
   logging.info('Resources(myself): %s', resource.getrusage(resource.RUSAGE_SELF))

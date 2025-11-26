@@ -7,10 +7,12 @@
 import os
 import contextlib
 import copy
+from dataclasses import dataclass, make_dataclass
 import json
 import logging
 import random
 import re
+from typing import Any, Optional
 from urllib.parse import urlparse, parse_qsl
 
 import numpy as np
@@ -66,13 +68,86 @@ def no_sync_ctx(cond, module):
     yield
 
 
+@dataclass
+class Args(worker.Args):
+  model_dim: tuple[int, int, int] = (384, 256, 128)
+  model_num_tokens: int = len(residue_constants.restypes_with_x)
+  model_evoformer_depth: int = 48
+  model_evoformer_head_num: int = 8
+  model_evoformer_head_dim: int = 32
+  model_evoformer_accept_msa_attn: bool = True
+  model_evoformer_accept_frame_attn: bool = False
+  model_evoformer_accept_frame_update: bool = False
+  model_dropout: tuple[float, float] = (0.15, 0.25)
+  model_shard_size: Optional[int] = None
+  model_recycles: int = 2  # number of recycles in model
+  model_recycling_pos: bool = False
+  model_recycling_frames: bool = False
+  model_features: Optional[str] = None
+  model_headers: Optional[str] = None
+  model_params_requires_grad: Optional[str] = None
+  model_params_requires_hook: Optional[str] = None
+  model_params_optim_option: Optional[str] = None
+
+  train_data: str = 'train.zip'  # train dataset dir
+  train_idx: Optional[str] = None  # train name idx
+  train_chain: Optional[str] = None  #  train dataset chain idx
+  train_attr: Optional[str] = None  # train dataset attr idx
+  train_data_weights: Optional[str] = None
+  train_crop_probability: float = 0.0
+  train_pseudo_linker_prob: float = 0.0
+  train_msa_as_seq_prob: float = 0.0
+  train_msa_as_seq_topn: Optional[int] = None
+  train_msa_as_seq_clustering: bool = False
+  train_msa_as_seq_min_alr: Optional[float] = None
+  train_msa_as_seq_min_ident: Optional[float] = None
+
+  tuning_data: Optional[str] = None  # tuning dataset dir
+  tuning_idx: Optional[str] = None  # tuning name idx
+  tuning_chain: Optional[str] = None  #  tuning dataset chain idx
+  tuning_attr: Optional[str] = None  # tuning dataset attr idx
+  tuning_data_weights: Optional[str] = None
+
+  eval_data: Optional[str] = None  # eval dataset dir
+  eval_idx: Optional[str] = None  # eval name idx
+  eval_chain: Optional[str] = None  #  eval dataset chain idx
+  eval_attr: Optional[str] = None  # eval dataset attr idx
+
+  min_protein_len: int = 50
+  max_protein_len: int = 1024
+  min_crop_len: int = 80
+  max_crop_len: int = 256
+  crop_algorithm: str = 'auto'
+  crop_probability: float = 0.0
+  data_rm_mask_prob: float = 0.0
+  max_msa_size: int = 1024
+  max_var_size: int = 8192
+
+  num_var_task: int = 1
+
+  num_batches: int = 100000  # number of batches
+  batch_size: int = 1  # batch size
+  num_workers: int = 1  # num of workers
+  prefetch_factor: int = 2  # num of batches loaded in advance by each worker
+  gradient_accumulate_every: int = 16  # accumulate grads every k times
+  learning_rate: float = 1e-3  # learning rate
+  amp_enabled: bool = False  # enable automatic mixed precision
+  random_seed: Optional[int] = None  # random seed
+  checkpoint_every: int = 100
+  checkpoint_max_to_keep: int = 5  # the maximum number of checkpoints to keep
+
+  wandb_enabled: bool = False  # enable wandb for experient tracking
+  wandb_project: str = 'profold2'  # wandb project name
+  wandb_mode: str = 'online'
+
+
 def preprocess(args):  # pylint: disable=redefined-outer-name
   assert args.model_evoformer_accept_msa_attn or args.model_evoformer_accept_frame_attn  # pylint: disable=line-too-long
   if args.checkpoint_every > 0:
     os.makedirs(os.path.join(args.prefix, 'checkpoints'), exist_ok=True)
 
 
-def train(rank, args):  # pylint: disable=redefined-outer-name
+def run(rank, args):  # pylint: disable=redefined-outer-name
   from torch.utils.tensorboard import SummaryWriter  # pylint: disable=import-outside-toplevel
 
   random.seed(args.random_seed)
@@ -483,408 +558,33 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     wm.save(os.path.join(args.prefix, 'model.pth'), feats, model)
 
 
-setattr(train, 'preprocess', preprocess)
-
-
-def add_arguments(parser):  # pylint: disable=redefined-outer-name
-  parser.add_argument(
-      '-t', '--train_data', type=str, default='train.zip', help='train dataset dir.'
-  )
-  parser.add_argument('--train_idx', type=str, default=None, help='train dataset idx.')
-  parser.add_argument(
-      '--train_chain', type=str, default=None, help='train dataset chain idx.'
-  )
-  parser.add_argument(
-      '--train_attr', type=str, default=None, help='train dataset attr idx.'
-  )
-  parser.add_argument(
-      '--train_data_weights',
-      type=str,
-      default=None,
-      help='sample train data by weights.'
-  )
-  parser.add_argument(
-      '-n', '--num_batches', type=int, default=100000, help='number of batches.'
-  )
-  parser.add_argument(
-      '-e', '--eval_data', type=str, default=None, help='eval dataset dir.'
-  )
-  parser.add_argument('--eval_idx', type=str, default=None, help='eval dataset idx.')
-  parser.add_argument(
-      '--eval_chain', type=str, default=None, help='eval dataset chain idx.'
-  )
-  parser.add_argument(
-      '--eval_attr', type=str, default=None, help='eval dataset attr idx.'
-  )
-  parser.add_argument('--tuning_data', type=str, default=None, help='eval dataset dir.')
-  parser.add_argument(
-      '--tuning_idx', type=str, default=None, help='tuning dataset idx.'
-  )
-  parser.add_argument(
-      '--tuning_chain', type=str, default=None, help='tuning dataset chain idx.'
-  )
-  parser.add_argument(
-      '--tuning_attr', type=str, default=None, help='tuning dataset attr idx.'
-  )
-  parser.add_argument(
-      '--tuning_data_weights',
-      type=str,
-      default=None,
-      help='sample tuning data by weights.'
-  )
-  parser.add_argument(
-      '--tuning_with_coords', action='store_true', help='use `coord` when tuning.'
-  )
-  parser.add_argument(
-      '--min_protein_len',
-      type=int,
-      default=50,
-      help='filter out proteins whose length<LEN.'
-  )
-  parser.add_argument(
-      '--max_protein_len',
-      type=int,
-      default=1024,
-      help='filter out proteins whose length>LEN.'
-  )
-  parser.add_argument(
-      '--max_msa_size', type=int, default=1024, help='sampling MSAs with depth<=SIZE.'
-  )
-  parser.add_argument(
-      '--max_var_size', type=int, default=8192, help='sampling VARs with depth<=SIZE.'
-  )
-  parser.add_argument(
-      '--num_var_task', type=int, default=1, help='number of tasks in VARs.'
-  )
-  parser.add_argument(
-      '--min_crop_len',
-      type=int,
-      default=80,
-      help='do not crop protein whose length<LEN.'
-  )
-  parser.add_argument(
-      '--max_crop_len', type=int, default=255, help='crop protein whose length>LEN.'
-  )
-  parser.add_argument(
-      '--train_apply_sqrt_length_scale',
-      action='store_true',
-      help='multiply the final loss of each training example by the srqt of the number '
-           'of residues after cropping.'
-  )
-  parser.add_argument(
-      '--crop_algorithm',
-      type=str,
-      default='auto',
-      choices=['auto', 'random', 'knn'],
-      help='type of crop algorithm.'
-  )
-  parser.add_argument(
-      '--train_crop_probability',
-      type=float,
-      default=0.0,
-      help='crop protein with probability CROP_PROBABILITY when it\'s '
-      'length>MIN_CROP_LEN.'
-  )
-  parser.add_argument(
-      '--train_pseudo_linker_prob',
-      type=float,
-      default=0.0,
-      help='enable loading complex data.'
-  )
-  parser.add_argument(
-      '--data_rm_mask_prob',
-      type=float,
-      default=0.0,
-      help='remove masked amino acid with probability DATA_RM_MASK_PROB.'
-  )
-  parser.add_argument(
-      '--train_msa_as_seq_prob',
-      type=float,
-      default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.'
-  )
-  parser.add_argument(
-      '--train_msa_as_seq_topn',
-      type=int,
-      default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.'
-  )
-  parser.add_argument(
-      '--train_msa_as_seq_clustering',
-      action='store_true',
-      help='take msa_{i} as sequence sampling from clusters.'
-  )
-  parser.add_argument(
-      '--train_msa_as_seq_min_alr',
-      type=float,
-      default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.'
-  )
-  parser.add_argument(
-      '--train_msa_as_seq_min_ident',
-      type=float,
-      default=None,
-      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.'
-  )
-  parser.add_argument(
-      '--tuning_pseudo_linker_prob',
-      type=float,
-      default=0.0,
-      help='enable loading complex data.'
-  )
-  parser.add_argument(
-      '--tuning_crop_probability',
-      type=float,
-      default=0.0,
-      help='crop protein with probability CROP_PROBABILITY when it\'s '
-      'length>MIN_CROP_LEN.'
-  )
-  parser.add_argument(
-      '--tuning_msa_as_seq_prob',
-      type=float,
-      default=0.0,
-      help='take msa_{i} as sequence with probability DATA_MSA_AS_SEQ_PROB.'
-  )
-  parser.add_argument(
-      '--tuning_msa_as_seq_topn',
-      type=int,
-      default=None,
-      help='take msa_{i} as sequence belongs to DATA_MSA_AS_SEQ_TOPN.'
-  )
-  parser.add_argument(
-      '--tuning_msa_as_seq_clustering',
-      action='store_true',
-      help='take msa_{i} as sequence sampling from clusters.'
-  )
-  parser.add_argument(
-      '--tuning_msa_as_seq_min_alr',
-      type=float,
-      default=None,
-      help='take msa_{i} as sequence with alr <= DATA_MSA_AS_SEQ_MIN_ALR.'
-  )
-  parser.add_argument(
-      '--tuning_msa_as_seq_min_ident',
-      type=float,
-      default=None,
-      help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.'
-  )
-  parser.add_argument('--random_seed', type=int, default=None, help='random seed.')
-
-  parser.add_argument(
-      '--checkpoint_max_to_keep',
-      type=int,
-      default=5,
-      help='the maximum number of checkpoints to keep.'
-  )
-  parser.add_argument(
-      '--checkpoint_every',
-      type=int,
-      default=100,
-      help='save a checkpoint every K times.'
-  )
-  parser.add_argument(
-      '--tuning_every', type=int, default=10, help='tuning model every K times.'
-  )
-  parser.add_argument(
-      '--eval_every', type=int, default=100, help='eval model every K times.'
-  )
-  parser.add_argument(
-      '--gradient_accumulate_every',
-      type=int,
-      default=16,
-      help='accumulate grads every k times.'
-  )
-  parser.add_argument('-b', '--batch_size', type=int, default=1, help='batch size')
-  parser.add_argument('--num_workers', type=int, default=1, help='number of workers.')
-  parser.add_argument(
-      '--prefetch_factor',
-      type=int,
-      default=2,
-      help='number of batches loaded in advance by each worker.'
-  )
-  parser.add_argument(
-      '-l', '--learning_rate', type=float, default='1e-3', help='learning rate.'
-  )
-  parser.add_argument(
-      '--lr_scheduler',
-      type=str,
-      default=optim.SchedulerType.CONSTANT.value,
-      choices=[m.value for m in optim.SchedulerType],
-      help='lr scheduler.'
-  )
-  parser.add_argument(
-      '--lr_scheduler_warmup_steps',
-      type=int,
-      default=None,
-      help='num of warmup steps for lr scheduler.'
-  )
-  parser.add_argument(
-      '--lr_scheduler_training_steps',
-      type=int,
-      default=None,
-      help='num of training steps for applying lr scheduler.'
-  )
-  parser.add_argument(
-      '--lr_scheduler_eta_min',
-      type=float,
-      default=0.0,
-      help='eta_min for applying lr scheduler.'
-  )
-
-  parser.add_argument(
-      '--model_features',
-      type=str,
-      default='model_features_main.json',
-      help='json format features of model.'
-  )
-  parser.add_argument(
-      '--model_headers',
-      type=str,
-      default='model_headers_main.json',
-      help='json format headers of model.'
-  )
-  parser.add_argument(
-      '--model_recycles', type=int, default=2, help='number of recycles in model.'
-  )
-  parser.add_argument(
-      '--model_recycling_frames', action='store_true', help='enable frame recycling.'
-  )
-  parser.add_argument(
-      '--model_recycling_pos',
-      action='store_true',
-      help='enable backbone atom position recycling.'
-  )
-  parser.add_argument(
-      '--model_dim',
-      type=int,
-      nargs=3,
-      default=(384, 256, 128),
-      help='dimension of model.'
-  )
-  parser.add_argument(
-      '--model_num_tokens',
-      type=int,
-      default=len(residue_constants.restypes_with_x),
-      help='number of tokens in the model.'
-  )
-  parser.add_argument(
-      '--model_evoformer_depth',
-      type=int,
-      default=1,
-      help='depth of evoformer in model.'
-  )
-  parser.add_argument(
-      '--model_evoformer_head_num',
-      type=int,
-      default=48,
-      help='number of heads in evoformer model.'
-  )
-  parser.add_argument(
-      '--model_evoformer_head_dim',
-      type=int,
-      default=32,
-      help='dimensions of each head in evoformer model.'
-  )
-  parser.add_argument(
-      '--model_shard_size',
-      type=int,
-      default=None,
-      help='shard size in evoformer model.'
-  )
-  parser.add_argument(
-      '--model_dropout',
-      type=float,
-      nargs=2,
-      default=(0.15, 0.25),
-      help='dropout of evoformer(single & pair) in model.'
-  )
-  parser.add_argument(
-      '--model_evoformer_accept_msa_attn',
-      action='store_true',
-      help='enable MSATransformer in evoformer.'
-  )
-  parser.add_argument(
-      '--model_evoformer_accept_frame_attn',
-      action='store_true',
-      help='enable FrameTransformer in evoformer.'
-  )
-  parser.add_argument(
-      '--model_evoformer_accept_frame_update',
-      action='store_true',
-      help='enable FrameUpdater in evoformer.'
-  )
-  parser.add_argument(
-      '--model_params_requires_grad',
-      type=str,
-      default=None,
-      help='learn partial parameters only.'
-  )
-  parser.add_argument(
-      '--model_params_requires_hook',
-      type=str,
-      default=None,
-      help='hook partial parameters.'
-  )
-  parser.add_argument(
-      '--model_params_optim_option',
-      type=str,
-      default=None,
-      help='optimizer arguments accepted by partial parameters only.'
-  )
-
-  parser.add_argument(
-      '--wandb_enabled',
-      action='store_true',
-      help='Enable wandb for experient tracking'
-  )
-  parser.add_argument(
-      '--wandb_project', type=str, default='profold2', help='Wandb project name'
-  )
-  parser.add_argument('--wandb_dir', type=str, default=None, help='Wandb dir')
-  parser.add_argument('--wandb_name', type=str, default=None, help='Wandb name name')
-  parser.add_argument(
-      '--wandb_mode',
-      type=str,
-      default='online',
-      choices=['online', 'offline', 'disabled'],
-      help='Wandb mode'
-  )
-  parser.add_argument(
-      '--amp_enabled', action='store_true', help='enable automatic mixed precision.'
-  )
-
-
 if __name__ == '__main__':
   import argparse
+  import hydra
 
-  parser = argparse.ArgumentParser()
-
-  # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
-  parser.add_argument(
-      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
-  )
-  parser.add_argument(
-      '--init_method',
-      type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-      'default=\'file:///tmp/profold2.dist\''
+  parser = argparse.ArgumentParser(
+      formatter_class=argparse.ArgumentDefaultsHelpFormatter
   )
 
-  # output dir
+  parser.add_argument('-c', '--config', type=str, default=None, help='config file.')
   parser.add_argument(
-      '-o',
-      '--prefix',
-      type=str,
-      default='.',
-      help='prefix of out directory, default=\'.\''
+      'overrides',
+      nargs='*',
+      metavar='KEY=VAL',
+      help='override configs, see: https://hydra.cc'
   )
-  add_arguments(parser)
-  # verbose
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
+  config_dir, config_name = os.path.split(
+      os.path.abspath(args.config)
+  ) if exists(args.config) else (os.getcwd(), None)
 
-  worker.main(args, train)
+  with hydra.initialize_config_dir(
+      version_base=None, config_dir=config_dir, job_name=__file__
+  ):
+    worker.main(
+        make_dataclass('t', [], namespace={
+            'Args': Args,
+            'run': run
+        }), hydra.compose(config_name, args.overrides)
+    )
