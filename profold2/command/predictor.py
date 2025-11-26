@@ -5,10 +5,12 @@
         for further help.
 """
 import os
+from dataclasses import dataclass, field, make_dataclass
 import functools
 import glob
 import json
 import logging
+from typing import Optional
 
 import numpy as np
 import torch
@@ -128,7 +130,33 @@ def _load_models(rank, args):  # pylint: disable=redefined-outer-name
     yield model_name, (features, model)
 
 
-def predict(rank, args):  # pylint: disable=redefined-outer-name
+@dataclass
+class Args(worker.Args):
+  models: list[str] = field(default_factory=list) # models to be loaded
+                                                  # using[model_name=model_location]
+                                                  # format
+  model_recycles: int = 0  # number of recycles
+  model_shard_size: Optional[int] = 0  # shard size in the evoformer model
+  map_location: str = 'cpu'  # remapped to an alternative set of devices
+
+  no_relaxer: bool = False   # do NOT run relaxer
+  no_gpu_relax: bool = False  # force to run relax on cpu
+  no_pth: bool = False  # do NOT dump prediction headers
+
+  data_dir: Optional[str] = None  # dataset dir
+  data_idx: Optional[str] = None  # dataset idx
+  add_pseudo_linker: bool = False  # enable loading complex data
+
+  fasta_files: list[str] = field(default_factory=list)  # fasta files
+  fasta_file_list: Optional[str] = None  # file listing fasta files by line
+  fasta_fmt: str = 'single'  # single or a3m
+
+  num_workers: int = 1  # number of workers
+
+  max_msa_size: int = 1024
+
+
+def run(rank, args):  # pylint: disable=redefined-outer-name
   model_runners = dict(_load_models(rank, args))
   logging.info('Have %d models: %s', len(model_runners), list(model_runners.keys()))
 
@@ -360,35 +388,31 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
 if __name__ == '__main__':
   import argparse
+  import hydra
 
-  parser = argparse.ArgumentParser()
-
-  # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
-  parser.add_argument(
-      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
-  )
-  parser.add_argument(
-      '--init_method',
-      type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-      'default=\'file:///tmp/profold2.dist\''
+  parser = argparse.ArgumentParser(
+      formatter_class=argparse.ArgumentDefaultsHelpFormatter
   )
 
-  # output dir
+  parser.add_argument('-c', '--config', type=str, default=None, help='config file.')
   parser.add_argument(
-      '-o',
-      '--prefix',
-      type=str,
-      default='.',
-      help='prefix of out directory, default=\'.\''
+      'overrides',
+      nargs='*',
+      metavar='KEY=VAL',
+      help='override configs, see: https://hydra.cc'
   )
-  add_arguments(parser)
-  # verbose
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
+  config_dir, config_name = os.path.split(
+      os.path.abspath(args.config)
+  ) if exists(args.config) else (os.getcwd(), None)
 
-  worker.main(args, predict)
+  with hydra.initialize_config_dir(
+      version_base=None, config_dir=config_dir, job_name=__file__
+  ):
+    worker.main(
+        make_dataclass('t', [], namespace={
+            'Args': Args,
+            'run': run
+        }), hydra.compose(config_name, args.overrides)
+    )

@@ -4,75 +4,56 @@
      ```
      for further help.
 """
+import os
 import argparse
 
-from profold2.command import (evaluator, predictor, trainer, worker)
-from profold2.utils import env
+import hydra
 
-_COMMANDS = [
-    ('train', trainer.train, trainer.add_arguments),
-    ('evaluate', evaluator.evaluate, evaluator.add_arguments),
-    ('predict', predictor.predict, predictor.add_arguments),
-]
+from profold2.command import (evaluator, predictor, trainer, worker)
+from profold2.utils import env, exists
+
+_COMMANDS = [('train', trainer), ('evaluate', evaluator), ('predict', predictor)]
 
 
 def create_args():
   formatter_class = argparse.ArgumentDefaultsHelpFormatter
   parser = argparse.ArgumentParser(formatter_class=formatter_class)
 
-  # distributed args
-  parser.add_argument(
-      '--nnodes',
-      type=int,
-      default=env('SLURM_NNODES', defval=None, dtype=int),
-      help='number of nodes.'
-  )
-  parser.add_argument(
-      '--node_rank',
-      type=int,
-      default=env('SLURM_NODEID', defval=0, dtype=int),
-      help='rank of the node.'
-  )
-  parser.add_argument(
-      '--local_rank',
-      type=int,
-      default=int(env('LOCAL_RANK', defval=0, dtype=int)),
-      help='local rank of xpu.'
-  )
-  parser.add_argument(
-      '--init_method',
-      type=str,
-      default=None,
-      help='method to initialize the process group.'
-  )
-
   # command args
   subparsers = parser.add_subparsers(dest='command', required=True)
-  for cmd, _, add_arguments in _COMMANDS:
+  for cmd, _ in _COMMANDS:
     cmd_parser = subparsers.add_parser(cmd, formatter_class=formatter_class)
-
-    # output dir
     cmd_parser.add_argument(
-        '-o', '--prefix', type=str, default='.', help='prefix of out directory.'
+        '-c', '--config', type=str, default=None, help='config file.'
     )
-    add_arguments(cmd_parser)
-    # verbose
-    cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+    cmd_parser.add_argument(
+        'overrides',
+        nargs='*',
+        metavar='KEY=VAL',
+        help='override configs, see: https://hydra.cc'
+    )
 
   return parser.parse_args()
 
 
-def create_fn(args):  # pylint: disable=redefined-outer-name
-  for cmd, fn, _ in _COMMANDS:
+def create_task(args):  # pylint: disable=redefined-outer-name
+  for cmd, task in _COMMANDS:
     if cmd == args.command:
-      return fn
+      return task
   return None
 
 
 def main():
   args = create_args()
-  work_fn = create_fn(args)
-  worker.main(args, work_fn)
+  config_dir, config_name = os.path.split(
+      os.path.abspath(args.config)
+  ) if exists(args.config) else (os.getcwd(), None)
+
+  with hydra.initialize_config_dir(
+      version_base=None, config_dir=config_dir, job_name=args.command
+  ):
+    task = create_task(args)
+    worker.main(task, hydra.compose(config_name, args.overrides))
 
 
 if __name__ == '__main__':
