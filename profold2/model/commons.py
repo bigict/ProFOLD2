@@ -1243,6 +1243,8 @@ class AttentionWithBias(nn.Module):
     self.norm = nn.ModuleDict({'query': AdaLN(dim, dim_cond=dim_cond)})
     if has_context:
       self.norm['context'] = AdaLN(dim, dim_cond=dim_cond)
+    if 'dropout' in kwargs:
+      kwargs['dropout'], _ = embedd_dropout_get(kwargs['dropout'])
     self.attn = Attention(dim_q=dim, dim_kv=dim, heads=heads, **kwargs)
     if exists(dim_cond):
       self.gating = nn.Linear(dim_cond, dim)
