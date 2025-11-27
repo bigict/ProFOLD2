@@ -47,6 +47,49 @@ def masked_mean(mask, value, dim=None, keepdim=False, epsilon=1e-10):
   return torch.sum(mask * value) / (epsilon + torch.sum(mask))
 
 
+def scatter_add(
+    index: torch.Tensor,
+    src: torch.Tensor,
+    dim: Optional[int] = -1,
+    out: Optional[torch.Tensor] = None,
+    out_dim: Optional[int] = None
+) -> torch.Tensor:
+  if not exists(out):
+    size = list(src.shape)
+    if exists(out_dim):
+      size[dim] = out_dim
+    else:
+      size[dim] = int(torch.max(index)) + 1
+    out = torch.zeros(size, dtype=src.dtype, device=src.device)
+  return torch.scatter_add(out, dim, index.long(), src)
+
+
+def scatter_sum(
+    index: torch.Tensor,
+    src: torch.Tensor,
+    dim: Optional[int] = -1,
+    out: Optional[torch.Tensor] = None,
+    out_dim: Optional[int] = None
+) -> torch.Tensor:
+  return scatter_add(index, src, dim=dim, out=out, out_dim=out_dim)
+
+
+def scatter_mean(
+    index: torch.Tensor,
+    src: torch.Tensor,
+    dim: Optional[int] = -1,
+    out: Optional[torch.Tensor] = None,
+    out_dim: Optional[int] = None
+):
+  out = scatter_sum(index, src, dim=dim, out=out, out_dim=out_dim)
+  out_dim = out.shape[dim]
+
+  one = torch.ones_like(index, dtype=src.dtype, device=src.device)
+  count = torch.clamp(scatter_sum(index, one, dim=dim, out_dim=out_dim), min=1)
+
+  return out / count
+
+
 @functools.lru_cache(maxsize=8)
 def make_mask(restypes, mask, device=None):
   num_class = len(restypes)
@@ -294,12 +337,12 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   return pseudo_beta
 
 
-def distogram_from_positions(coords, breaks):
+def distogram_from_positions(x, breaks, y=None):
   lo_breaks = torch.square(breaks)
   hi_breaks = torch.cat(
       (lo_breaks[1:], torch.full((1, ), 1e8, device=breaks.device)), dim=-1
   )
-  dist2 = squared_cdist(coords, coords, keepdim=True)
+  dist2 = squared_cdist(x, default(y, x), keepdim=True)
   dgram = (dist2 > lo_breaks) * (dist2 < hi_breaks)
   return dgram.float()
 
