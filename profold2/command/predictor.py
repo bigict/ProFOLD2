@@ -5,6 +5,7 @@
         for further help.
 """
 import os
+from dataclasses import dataclass, make_dataclass
 import functools
 import glob
 import json
@@ -23,6 +24,7 @@ from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_in
 from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
+from profold2.command import worker
 from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
 
 
@@ -128,7 +130,21 @@ def _load_models(rank, args):  # pylint: disable=redefined-outer-name
     yield model_name, (features, model)
 
 
-def predict(rank, args):  # pylint: disable=redefined-outer-name
+@dataclass
+class Args(worker.Args):
+  models: list[str]  # models to be loaded using[model_name=model_location] format
+  model_recycles: int = 0  # number of recycles
+  model_shard_size: Optional[int] = 0  # shard size in the evoformer model
+  map_location: str = 'cpu'  # remapped to an alternative set of devices
+
+  data_dir: Optional[str] = None  # dataset dir
+  data_idx: Optional[str] = None  # dataset idx
+  add_pseudo_linker: bool = False  # enable loading complex data
+
+  max_msa_size: int = 1024
+
+
+def run(rank, args):  # pylint: disable=redefined-outer-name
   model_runners = dict(_load_models(rank, args))
   logging.info('Have %d models: %s', len(model_runners), list(model_runners.keys()))
 
@@ -360,35 +376,31 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
 if __name__ == '__main__':
   import argparse
+  import hydra
 
-  parser = argparse.ArgumentParser()
-
-  # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
-  parser.add_argument(
-      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
-  )
-  parser.add_argument(
-      '--init_method',
-      type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-      'default=\'file:///tmp/profold2.dist\''
+  parser = argparse.ArgumentParser(
+      formatter_class=argparse.ArgumentDefaultsHelpFormatter
   )
 
-  # output dir
+  parser.add_argument('-c', '--config', type=str, default=None, help='config file.')
   parser.add_argument(
-      '-o',
-      '--prefix',
-      type=str,
-      default='.',
-      help='prefix of out directory, default=\'.\''
+      'overrides',
+      nargs='*',
+      metavar='KEY=VAL',
+      help='override configs, see: https://hydra.cc'
   )
-  add_arguments(parser)
-  # verbose
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
+  config_dir, config_name = os.path.split(
+      os.path.abspath(args.config)
+  ) if exists(args.config) else (os.getcwd(), None)
 
-  main(args, predict)
+  with hydra.initialize_config_dir(
+      version_base=None, config_dir=config_dir, job_name=__file__
+  ):
+    worker.main(
+        make_dataclass('t', [], namespace={
+            'Args': Args,
+            'run': run
+        }), hydra.compose(config_name, args.overrides)
+    )
