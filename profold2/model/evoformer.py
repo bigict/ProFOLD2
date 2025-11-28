@@ -67,7 +67,7 @@ class SingleTemplateEmbedding(nn.Module):
     template_mask_2d = rearrange(template_mask, '... i -> ... i ()'
                                 ) * rearrange(template_mask, '... j -> ... () j')
     template_dgram = functional.distogram_from_positions(
-        batch['template_pseudo_beta'], self.dgram_breaks
+        self.dgram_breaks, batch['template_pseudo_beta']
     )
     to_concat = [template_dgram, template_mask_2d[..., None]]
 

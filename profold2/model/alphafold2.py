@@ -217,7 +217,7 @@ class AlphaFold2(nn.Module):
       if exists(recyclables.coords) and exists(self.recycling_pos_linear):
         pseudo_beta = functional.pseudo_beta_fn(seq, recyclables.coords)
         dgram = functional.distogram_from_positions(
-            pseudo_beta, self.recycling_pos_breaks
+            self.recycling_pos_breaks, pseudo_beta
         )
         x = commons.tensor_add(x, self.recycling_pos_linear(dgram))  # pylint: disable=not-callable
       m[..., 0, :, :] = commons.tensor_add(

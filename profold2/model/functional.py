@@ -337,7 +337,7 @@ def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks=None):
   return pseudo_beta
 
 
-def distogram_from_positions(x, breaks, y=None):
+def distogram_from_positions(breaks, x, y=None):
   lo_breaks = torch.square(breaks)
   hi_breaks = torch.cat(
       (lo_breaks[1:], torch.full((1, ), 1e8, device=breaks.device)), dim=-1
