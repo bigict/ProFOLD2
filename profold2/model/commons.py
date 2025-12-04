@@ -519,18 +519,19 @@ class AxialAttention(nn.Module):
 
     # axial attention
     if self.col_attn:
-      axial_dim = 2
+      axial_dim = -2
       mask_fold_axial_eq = '... h w -> ... w h'
       input_fold_eq = '... h w d -> ... w h d'
       output_fold_eq = '... w h d -> ... h w d'
 
     elif self.row_attn:
-      axial_dim = 1
+      axial_dim = -3
       mask_fold_axial_eq = '... h w -> ... h w'
       input_fold_eq = '... h w d -> ... h w d'
       output_fold_eq = '... h w d -> ... h w d'
 
     def run_attn(x, mask, attn_bias):
+      mask = torch.squeeze(mask, dim=-1)
       *_, h, w, _ = x.shape
 
       attn_fn = None
@@ -555,7 +556,7 @@ class AxialAttention(nn.Module):
       attn_bias = rearrange(attn_bias, '... i j -> ... j i')
 
     return functional.sharded_apply(
-        run_attn, [x, mask],
+        run_attn, [x, mask[..., None]],
         attn_bias,
         shard_size=None if self.training else shard_size,
         shard_dim=axial_dim,
