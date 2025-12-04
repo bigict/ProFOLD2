@@ -1192,7 +1192,10 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
 
       if 'pid' not in ret:
         ret['pid'] = desc.split()[0]
-      feat = _make_seq_features(input_sequence, desc, seq_color=seq_idx + 1)
+      seq_type = seq_type_dict[parse_seq_type(desc)]
+      feat = _make_seq_features(
+          input_sequence, desc, seq_color=seq_idx + 1, seq_type=seq_type
+      )
       # fix seq_entity
       assert 'str_seq' in feat
       if feat['str_seq'] not in seq_entity_map:
