@@ -21,6 +21,13 @@ while true; do
   esac
 done
 
+cleanup() {
+  if [ ${do_cleanup} -ne 0 ]; then
+    pip cache purge
+    conda clean -a -y -f
+  fi
+}
+
 cuda_version=${cuda_version:-"12.1.1"}
 gcc_version=${gcc_version:-"12.4.0"}
 openmm_version=${openmm_version:-"8.0.0"}
@@ -32,31 +39,32 @@ pytorch_cuda=$(echo ${cuda_version}|cut -d. -f1-2)
 
 conda install -y -c conda-forge \
     gxx=${gcc_version} \
-    ninja
+    ninja \
+    && cleanup
 
 conda install -y -c conda-forge \
     openmm=${openmm_version} \
     cuda-version=${pytorch_cuda} \
-    pdbfixer
+    pdbfixer \
+    && cleanup
 
 pip install torch==${pytorch_version} \
-    -f https://download.pytorch.org/whl/cu${pytorch_cuda//./}
+    -f https://download.pytorch.org/whl/cu${pytorch_cuda//./} \
+    && cleanup
 
 conda install -y -c nvidia \
     cuda-cccl=${pytorch_cuda} \
     cuda-libraries-dev=${pytorch_cuda} \
-    cuda-nvcc=${pytorch_cuda}
+    cuda-nvcc=${pytorch_cuda} \
+    && cleanup
 
 conda install -y -c nvidia/label/cuda-${cuda_version} \
-    libcurand-dev
+    libcurand-dev \
+    && cleanup
 
 conda install -y -c conda-forge \
     biopython \
     einops \
     tensorboard \
-    tqdm
-
-if [ ${do_cleanup} -ne 0 ]; then
-  pip cache purge
-  conda clean -a -y -f
-fi
+    tqdm \
+    && cleanup
