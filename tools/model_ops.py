@@ -113,6 +113,61 @@ def strip_optim_add_argument(parser):
   return parser
 
 
+def relpos_modify_main(args):
+  def _linear_key(key):
+    return f'{key}.weight', f'{key}.bias'
+
+  x = torch.load(args.model_files[0], map_location='cpu')
+  logging.debug(x.keys())
+
+  aa_num, base_num = 21, 5
+  mol_num = aa_num + base_num * 2
+  gap_num = 2
+
+  # relpos embed.
+  # impl.embedder.to_pairwise_emb.relative_pos_emb.embedding.weight
+  token_emb_key = f'{args.key_prefix}relative_pos_emb.embedding.weight'
+  print(token_emb_key)
+  assert token_emb_key in x['model']
+  m = x['model'][token_emb_key]
+  assert len(m.shape) == 2
+  print(m.shape)
+
+  padd_dim = 1
+  if args.s_max:
+    padd_dim += 2 * args.r_max + 2 * args.s_max + 5
+  padd = torch.zeros(padd_dim, m.shape[1]).float()
+  m = torch.cat((m, padd), dim=0)
+  m = rearrange(m, 'c d -> d c')
+  print(m.shape)
+  x['model'][token_emb_key] = m
+
+  if 'optimizer' in x:
+    del x['optimizer']
+
+  torch.save(x, args.model_files[1])
+  logging.info('done.')
+
+def relpos_modify_add_argument(parser):
+  parser.add_argument('model_files',
+                      type=str,
+                      nargs=2,
+                      help='list of model files')
+  parser.add_argument('-k',
+                      '--key_prefix',
+                      type=str,
+                      default='module.impl.',
+                      help='prefix of key.')
+  parser.add_argument('--r_max',
+                      type=int,
+                      default=32,
+                      help='prefix of key.')
+  parser.add_argument('--s_max',
+                      type=int,
+                      default=None,
+                      help='prefix of key.')
+  return parser
+
 def tokens_modify_main(args):
   def _linear_key(key):
     return f'{key}.weight', f'{key}.bias'
@@ -280,6 +335,7 @@ if __name__ == '__main__':
       'params_modify': (params_modify_main, params_modify_add_argument),
       'strip_optim': (strip_optim_main, strip_optim_add_argument),
       'tokens_modify': (tokens_modify_main, tokens_modify_add_argument),
+      'relpos_modify': (relpos_modify_main, relpos_modify_add_argument),
       'to_state_dict': (to_state_dict_main, to_state_dict_add_argument),
   }
 

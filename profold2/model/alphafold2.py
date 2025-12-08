@@ -67,7 +67,8 @@ class InputEmbeddings(nn.Module):
       dim,
       num_seq_tokens=len(residue_constants.restypes_with_x),
       num_msa_tokens=0,
-      max_rel_dist=0
+      r_max=0,
+      s_max=0
   ):
     super().__init__()
 
@@ -78,14 +79,25 @@ class InputEmbeddings(nn.Module):
 
     if num_msa_tokens > 0:
       self.to_pairwise_emb = commons.PairwiseEmbedding(
-          num_seq_tokens, dim_pairwise, max_rel_dist=max_rel_dist
+          num_seq_tokens, dim_pairwise, r_max=r_max, s_max=s_max
       )
     else:
       self.to_pairwise_emb = commons.PairwiseEmbedding(
-          dim_msa, dim_pairwise, max_rel_dist=max_rel_dist
+          dim_msa, dim_pairwise, r_max=r_max, s_max=s_max
       )
 
-  def forward(self, target_feat, target_mask, seq_index, msa_feat=None, msa_mask=None):
+  def forward(
+      self,
+      target_feat,
+      target_mask,
+      seq_index,
+      seq_color=None,
+      seq_sym=None,
+      seq_entity=None,
+      token_index=None,
+      msa_feat=None,
+      msa_mask=None
+  ):
     s = self.to_single_emb(target_feat)
     if exists(self.to_msa_emb) and exists(msa_feat):
       m = self.to_msa_emb(msa_feat)
@@ -101,7 +113,15 @@ class InputEmbeddings(nn.Module):
 
     if not exists(msa_feat):
       target_feat = s
-    x, x_mask = self.to_pairwise_emb(target_feat, target_mask, seq_index=seq_index)
+    x, x_mask = self.to_pairwise_emb(
+        target_feat,
+        target_mask,
+        seq_index=seq_index,
+        seq_color=seq_color,
+        seq_sym=seq_sym,
+        seq_entity=seq_entity,
+        token_index=token_index
+    )
     return x, m, x_mask, m_mask
 
 
@@ -115,7 +135,8 @@ class AlphaFold2(nn.Module):
       evoformer_depth=48,
       evoformer_head_num=8,
       evoformer_head_dim=32,
-      max_rel_dist=32,
+      relative_pos_r_max=32,
+      relative_pos_s_max=env('profold2_relative_pos_s_max', defval=0, dtype=int),
       num_tokens=len(residue_constants.restypes_with_x),
       num_msa_tokens=0,
       attn_dropout=0.,
@@ -141,7 +162,8 @@ class AlphaFold2(nn.Module):
         dim=(dim_msa, dim_pairwise),
         num_seq_tokens=num_tokens,
         num_msa_tokens=num_msa_tokens,
-        max_rel_dist=max_rel_dist
+        r_max=relative_pos_r_max,
+        s_max=relative_pos_s_max
     )
 
     # main trunk modules
@@ -191,9 +213,11 @@ class AlphaFold2(nn.Module):
   def forward(
       self, batch, *, return_recyclables=False, compute_loss=True, shard_size=None
   ):
-    seq, mask, seq_embed, seq_index = map(
-        batch.get, ('seq', 'mask', 'emb_seq', 'seq_index')
+    seq, mask, seq_embed, seq_index, seq_color, seq_sym, seq_entity = map(
+        batch.get,
+        ('seq', 'mask', 'emb_seq', 'seq_index', 'seq_color', 'seq_sym', 'seq_entity')
     )
+    token_index = batch.get('token_index', batch['seq_index'])
     target_feat, = map(batch.get, ('target_feat',))
     if not exists(target_feat):
       target_feat = seq
@@ -209,7 +233,15 @@ class AlphaFold2(nn.Module):
 
     # input embeddings
     x, m, x_mask, msa_mask = self.embedder(
-        target_feat, mask, seq_index, msa_feat=msa, msa_mask=msa_mask
+        target_feat,
+        mask,
+        seq_index,
+        seq_color=seq_color,
+        seq_sym=seq_sym,
+        seq_entity=seq_entity,
+        token_index=token_index,
+        msa_feat=msa,
+        msa_mask=msa_mask
     )
 
     # add recyclables, if present
