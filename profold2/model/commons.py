@@ -1188,36 +1188,113 @@ class FrameUpdater(nn.Module):
 class RelativePositionEmbedding(nn.Module):
   """RelativePositionEmbedding
     """
-  def __init__(self, dim, max_rel_dist):
+  def __init__(self, dim, r_max=32, s_max=None):
     super().__init__()
 
-    self.max_rel_dist = max_rel_dist
-    self.embedding = nn.Embedding(max_rel_dist * 2 + 1, dim)
+    self.r_max = r_max
+    self.s_max = s_max
 
-  def forward(self, seq_index):
-    seq_rel_dist = rearrange(seq_index, '... i -> ... i ()'
-                            ) - rearrange(seq_index, '... j -> ... () j')
-    seq_rel_dist = seq_rel_dist.clamp(
-        -self.max_rel_dist, self.max_rel_dist
-    ) + self.max_rel_dist
-    return self.embedding(seq_rel_dist)
+    if exists(self.s_max):
+      self.embedding = nn.Linear(
+          2 * 2 * self.r_max + 2 * self.s_max + 7, dim, bias=False
+      )
+    else:
+      self.embedding = nn.Embedding(self.r_max * 2 + 1, dim)
+
+  def forward(
+      self,
+      seq_index,
+      seq_color=None,
+      seq_sym=None,
+      seq_entity=None,
+      token_index=None,
+      shard_size=None
+  ):
+    def run_proj(
+        seq_index_j,
+        seq_color_j=None,
+        seq_sym_j=None,
+        seq_entity_j=None,
+        token_index_j=None
+    ):
+      dij_seq_index = torch.clamp(
+          seq_index[..., :, None] - seq_index_j[..., None, :],
+          min=-self.r_max, max=self.r_max
+      ) + self.r_max
+
+      feats = []
+      if exists(self.s_max):
+        bij_seq_index = (seq_index[..., :, None] == seq_index_j[..., None, :])
+        bij_seq_color = (seq_color[..., :, None] == seq_color_j[..., None, :])
+        bij_seq_entity = (seq_entity[..., :, None] == seq_entity_j[..., None, :])
+        dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max + 1)
+
+        dij_token_index = F.one_hot(  # pylint: disable=not-callable
+            torch.where(
+                bij_seq_color * bij_seq_index,
+                torch.clamp(
+                    token_index[..., :, None] - token_index_j[..., None, :],
+                    min=-self.r_max, max=self.r_max
+                ) + self.r_max,
+                2 * self.r_max + 1
+            ).long(),
+            2 * (self.r_max + 1)
+        )
+        dij_seq_sym = F.one_hot(  # pylint: disable=not-callable
+            torch.where(
+                seq_entity[..., :, None] == seq_entity_j[..., None, :],
+                torch.clamp(
+                    seq_sym[..., :, None] - seq_sym_j[..., None, :],
+                    min=-self.s_max, max=self.s_max
+                ) + self.s_max,
+                2 * self.s_max + 1
+            ).long(),
+            2 * (self.s_max + 1)
+        )
+        feats = [dij_token_index, bij_seq_entity[..., None], dij_seq_sym]
+
+      if exists(self.s_max):
+        dij_seq_index = torch.cat(
+            [F.one_hot(dij_seq_index.long(), 2 * (self.r_max + 1))] + feats, dim=-1
+        ).float()
+      return self.embedding(dij_seq_index)
+
+    args = [seq_index]
+    if exists(self.s_max):
+      args = args + [seq_color, seq_sym, seq_entity, token_index]
+
+    return functional.sharded_apply(
+        run_proj, args,
+        shard_size=None if self.training else shard_size,
+        shard_dim=-1,
+        cat_dim=-2
+    )
 
 
 class PairwiseEmbedding(nn.Module):
   """PairwiseEmbedding
     """
-  def __init__(self, dim_msa, dim_pairwise, max_rel_dist=0):
+  def __init__(self, dim_msa, dim_pairwise, r_max=0, s_max=None):
     super().__init__()
 
     self.to_pairwise_repr = nn.Linear(dim_msa, dim_pairwise * 2)
     self.relative_pos_emb = RelativePositionEmbedding(
-        dim_pairwise, max_rel_dist
-    ) if max_rel_dist > 0 else None
+        dim_pairwise, r_max, s_max=s_max
+    ) if r_max > 0 else None
 
   def embeddings(self):
     return {'position': self.relative_pos_emb.embedding.weight}
 
-  def forward(self, x, x_mask=None, seq_index=None):
+  def forward(
+      self,
+      x,
+      x_mask=None,
+      seq_index=None,
+      seq_color=None,
+      seq_sym=None,
+      seq_entity=None,
+      token_index=None
+  ):
     (_, n), device = x.shape[:2], x.device
 
     x_left, x_right = self.to_pairwise_repr(x).chunk(2, dim=-1)
@@ -1226,7 +1303,16 @@ class PairwiseEmbedding(nn.Module):
     )  # create pair-wise residue embeds
     if exists(self.relative_pos_emb):
       seq_index = default(seq_index, lambda: torch.arange(n, device=device))
-      x = tensor_add(x, self.relative_pos_emb(seq_index))
+      x = tensor_add(
+          x,
+          self.relative_pos_emb(
+              seq_index,
+              seq_color=seq_color,
+              seq_sym=seq_sym,
+              seq_entity=seq_entity,
+              token_index=token_index
+          )
+      )
     if exists(x_mask):
       x_mask = rearrange(x_mask, '... i -> ... i ()') * rearrange(
           x_mask, '... j -> ... () j'
