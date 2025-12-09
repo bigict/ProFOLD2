@@ -31,6 +31,20 @@ def env(*keys, defval=None, dtype=None):
   return defval
 
 
+@contextlib.contextmanager
+def status(container, **kwargs):
+  backups = {}
+  for k in kwargs:
+    if k in container:
+      backups[k] = container[k]
+  container.update(**kwargs)
+  yield container
+  container.update(**backups)
+  for k in kwargs:
+    if k not in backups:
+      del container[k]
+
+
 def version_cmp(x, y):
   for a, b in zip(x.split('.'), y.split('.')):
     if int(a) > int(b):
