@@ -16,7 +16,7 @@ from profold2.common import residue_constants
 from profold2.model import commons, folding, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
-from profold2.utils import env, exists
+from profold2.utils import env, exists, status
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,7 @@ class AlphaFold2(nn.Module):
         ('seq', 'mask', 'emb_seq', 'seq_index', 'seq_color', 'seq_sym', 'seq_entity')
     )
     token_index = batch.get('token_index', batch['seq_index'])
-    target_feat, = map(batch.get, ('target_feat',))
+    target_feat, = map(batch.get, ('target_feat', ))
     if not exists(target_feat):
       target_feat = seq
     msa_enabled = batch.get('msa_enabled', False)
@@ -383,15 +383,19 @@ class AlphaFold2WithRecycling(nn.Module):
         self.impl, return_recyclables=True, compute_loss=False, **kwargs
     )
 
+    pid = ','.join(batch['pid'])
     with torch.no_grad():
-      for i in tqdm(range(num_recycle), disable=self.training, desc='Trunk Recycling'):
-        ret = ReturnValues(**cycling_function(batch))
-        if 'tmscore' in ret.headers:
-          logger.debug(
-              '%s/%s pid: %s, tmscore: %s', i, num_recycle, ','.join(batch['pid']),
-              ret.headers['tmscore']['loss']
-          )
-        batch['recyclables'] = ret.recyclables
+      with status(batch, recycling=True):
+        for i in tqdm(
+            range(num_recycle), disable=self.training, desc=f'Trunk Recycling [{pid}]'
+        ):
+          ret = ReturnValues(**cycling_function(batch))
+          if 'tmscore' in ret.headers:
+            logger.debug(
+                '%s/%s pid: %s, tmscore: %s', i, num_recycle, pid,
+                ret.headers['tmscore']['loss']
+            )
+          batch['recyclables'] = ret.recyclables
 
     ret = ReturnValues(
         **self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs)
@@ -410,7 +414,7 @@ class AlphaFold2WithRecycling(nn.Module):
     if metrics:
       msg = ', '.join(['%s: %s'] * len(metrics))
       logger.debug(
-          f'%s/%s pid: %s, {msg}', num_recycle, num_recycle, ','.join(batch['pid']),
+          f'%s/%s pid: %s, {msg}', num_recycle, num_recycle, pid,
           *functools.reduce(lambda x, y: x + y, metrics.items())
       )
 
