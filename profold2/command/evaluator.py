@@ -5,6 +5,7 @@
         for further help.
 """
 import os
+from dataclasses import dataclass, make_dataclass
 import logging
 import pickle
 
@@ -17,18 +18,23 @@ from profold2.data.utils import tensor_to_numpy
 from profold2.model import functional, profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
+from profold2.command import worker
 
 
-def evaluate(rank, args):  # pylint: disable=redefined-outer-name
-  worker = WorkerModel(rank, args)
-  feats, model = worker.load(args.model)
-  features = FeatureBuilder(feats).to(worker.device())
+@dataclass
+class Args(worker.Args):
+  pass
+
+
+def run(rank, args):  # pylint: disable=redefined-outer-name
+  runner = worker.WorkerModel(rank, args)
+  feats, model = runner.load(args.model)
+  features = FeatureBuilder(feats).to(runner.device())
   logging.info('feats: %s', feats)
 
   kwargs = {}
-  if rank.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
-    kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
+  if rank.is_available() and worker.world_size(args.nnodes) > 1:
+    kwargs['num_replicas'] = worker.world_size(args.nnodes)
     kwargs['rank'] = rank.rank
   test_loader = dataset.load(
       data_dir=args.eval_data,
@@ -68,7 +74,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
       with torch.no_grad():
-        with autocast_ctx(args.amp_enabled):
+        with worker.autocast_ctx(args.amp_enabled):
           r = ReturnValues(
               **model(
                   batch=batch,  # pylint: disable=not-callable
@@ -320,34 +326,31 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
 
 if __name__ == '__main__':
   import argparse
+  import hydra
 
-  parser = argparse.ArgumentParser()
-
-  # init distributed env
-  parser.add_argument('--nnodes', type=int, default=None, help='number of nodes.')
-  parser.add_argument('--node_rank', type=int, default=0, help='rank of the node.')
-  parser.add_argument(
-      '--local_rank', type=int, default=None, help='local rank of xpu, default=None'
-  )
-  parser.add_argument(
-      '--init_method',
-      type=str,
-      default='file:///tmp/profold2.dist',
-      help='method to initialize the process group, '
-      'default=\'file:///tmp/profold2.dist\''
+  parser = argparse.ArgumentParser(
+      formatter_class=argparse.ArgumentDefaultsHelpFormatter
   )
 
-  # output dir
+  parser.add_argument('-c', '--config', type=str, default=None, help='config file.')
   parser.add_argument(
-      '-o',
-      '--prefix',
-      type=str,
-      default='.',
-      help='prefix of out directory, default=\'.\''
+      'overrides',
+      nargs='*',
+      metavar='KEY=VAL',
+      help='override configs, see: https://hydra.cc'
   )
-  add_arguments(parser)
-  parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
   args = parser.parse_args()
+  config_dir, config_name = os.path.split(
+      os.path.abspath(args.config)
+  ) if exists(args.config) else (os.getcwd(), None)
 
-  main(args, evaluate)
+  with hydra.initialize_config_dir(
+      version_base=None, config_dir=config_dir, job_name=__file__
+  ):
+    worker.main(
+        make_dataclass('t', [], namespace={
+            'Args': Args,
+            'run': run
+        }), hydra.compose(config_name, args.overrides)
+    )
