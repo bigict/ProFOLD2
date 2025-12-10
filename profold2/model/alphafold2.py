@@ -136,7 +136,7 @@ class AlphaFold2(nn.Module):
       evoformer_head_num=8,
       evoformer_head_dim=32,
       relative_pos_r_max=32,
-      relative_pos_s_max=env('profold2_relative_pos_s_max', defval=0, dtype=int),
+      relative_pos_s_max=env('profold2_relative_pos_s_max', defval=None, dtype=int),
       num_tokens=len(residue_constants.restypes_with_x),
       num_msa_tokens=0,
       attn_dropout=0.,
