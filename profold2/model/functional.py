@@ -32,11 +32,7 @@ def l2_norm(v, dim=-1, epsilon=1e-12):
 
 def squared_cdist(x, y, keepdim=False):
   return torch.sum(
-      torch.square(
-          rearrange(x, '... i d -> ... i () d') - rearrange(y, '... j d -> ... () j d')
-      ),
-      dim=-1,
-      keepdim=keepdim
+      (x[..., :, None, :] - y[..., None, :, :])**2, dim=-1, keepdim=keepdim
   )
 
 
@@ -727,7 +723,7 @@ def rigids_to_positions(frames, aatypes):
 
   # Mask out non-existing atoms.
   mask = batched_gather(residue_constants.restype_atom14_mask, aatypes)
-  return positions * rearrange(mask, '... d->... d ()')
+  return positions * mask[..., None]
 
 
 def rigids_slice(frames, start=0, end=None):
@@ -1082,42 +1078,36 @@ def between_residue_clash_loss(
   dists = torch.sqrt(
       epsilon + torch.sum(
           (
-              rearrange(pred_points, '... i m d -> ... i () m () d') -
-              rearrange(pred_points, '... j n d -> ... () j () n d')
+              pred_points[..., :, None, :, None, :] -
+              pred_points[..., None, :, None, :, :]
           )**2,
           dim=-1
       )
   )
 
   # Create the mask for valid distances.
-  dist_mask = (
-      rearrange(points_mask, '... i m -> ... i () m ()') *
-      rearrange(points_mask, '... j n -> ... () j () n')
-  )
+  dist_mask = points_mask[..., :, None, :, None] * points_mask[..., None, :, None, :]
   # Mask out all the duplicate entries in the lower triangular matrix.
   # Also mask out the diagonal (atom-pairs from the same residue) -- these atoms
   # are handled separately.
-  dist_mask *= (
-      rearrange(residue_index, '... i -> ... i () () ()')
-      < rearrange(residue_index, '... j -> ... () j () ()')
+  dist_mask = dist_mask * (
+      residue_index[..., :, None, None, None] < residue_index[..., None, :, None, None]
   )
 
   # Backbone C--N bond between subsequent residues is no clash.
   n_idx = residue_constants.atom_order['N']
   c_idx = residue_constants.atom_order['C']
+  atom_type_num = points_mask.shape[-1]
   c_atom = F.one_hot(  # pylint: disable=not-callable
-      torch.as_tensor(c_idx, dtype=torch.long, device=pred_points.device),
-      points_mask.shape[-1])
-  n_atom = F.one_hot(  # pylint: disable=not-callable
-      torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device),
-      points_mask.shape[-1])
-  neighbour_mask = (
-      rearrange(residue_index, '... i -> ... i () () ()') +
-      1 == rearrange(residue_index, '... j -> ... () j () ()')
+      torch.as_tensor(c_idx, dtype=torch.long, device=pred_points.device), atom_type_num
   )
-  c_n_bonds = (
-      neighbour_mask * rearrange(c_atom, 'm -> () () m ()') *
-      rearrange(n_atom, 'n -> () () () n')
+  n_atom = F.one_hot(  # pylint: disable=not-callable
+      torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device), atom_type_num
+  )
+  neighbour_mask = (residue_index[..., :, None] + 1 == residue_index[..., None, :])
+  c_n_bonds = neighbour_mask[..., None, None] * torch.reshape(
+      c_atom[:, None] * n_atom[None, :],
+      (1, ) * len(neighbour_mask.shape) + (atom_type_num, atom_type_num)
   )
   dist_mask *= (~c_n_bonds.bool())
 
@@ -1125,18 +1115,15 @@ def between_residue_clash_loss(
   cys_sg_idx = residue_constants.restype_name_to_atom14_names['CYS'].index('SG')
   if cys_sg_idx < points_mask.shape[-1]:
     cys_sg_atom = F.one_hot(  # pylint: disable=not-callable
-        torch.as_tensor(cys_sg_idx, dtype=torch.long,
-                        device=pred_points.device), points_mask.shape[-1])
-    disulfide_bonds = (
-        rearrange(cys_sg_atom, 'm -> () () m ()') *
-        rearrange(cys_sg_atom, 'n -> () () () n')
+        torch.as_tensor(cys_sg_idx, dtype=torch.long, device=pred_points.device),
+        points_mask.shape[-1]
     )
+    disulfide_bonds = cys_sg_atom[:, None] * cys_sg_atom[None, :]
     dist_mask *= (~disulfide_bonds.bool())
 
   # Compute the lower bound for the allowed distances.
   dist_lower_bound = dist_mask * (
-      rearrange(atom_radius, '... i m -> ... i () m ()') +
-      rearrange(atom_radius, '... j n -> ... () j () n')
+      atom_radius[..., :, None, :, None] + atom_radius[..., None, :, None, :]
   )
 
   # Compute the error.
@@ -1156,11 +1143,9 @@ def between_residue_clash_loss(
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
   if loss_only:
-    return dict(
-        between_residue_clash_loss=torch.
-        sum(per_atom_clash /  # pylint: disable=use-dict-literal
-            (1e-6 + num_atoms))
-    )
+    return {
+        'between_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms))
+    }
 
   # Compute the hard clash mask.
   clash_mask = dist_mask * (dists < (dist_lower_bound - tau))
@@ -1168,11 +1153,11 @@ def between_residue_clash_loss(
       torch.amax(clash_mask, dim=(-4, -2)), torch.amax(clash_mask, dim=(-3, -1))
   )
 
-  return dict(
-      between_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
-      per_atom_clash=per_atom_clash,
-      per_atom_clash_mask=per_atom_clash_mask
-  )
+  return {
+      'between_residue_clash_loss': clash_loss,
+      'per_atom_clash': per_atom_clash,
+      'per_atom_clash_mask': per_atom_clash_mask
+  }
 
 
 def within_residue_clash_loss(
@@ -1192,22 +1177,14 @@ def within_residue_clash_loss(
   assert aatypes.shape == residue_index.shape
 
   # Compute the mask for each residue.
-  dist_mask = (
-      rearrange(points_mask, '... m -> ... m ()') *
-      rearrange(points_mask, '... n -> ... () n')
-  )
-  dist_mask *= (
+  dist_mask = points_mask[..., :, None] * points_mask[..., None, :] * (
       ~torch.eye(points_mask.shape[-1], dtype=torch.bool, device=points_mask.device)
   )
 
   # Distance matrix
   dists = torch.sqrt(
       epsilon + torch.sum(
-          (
-              rearrange(pred_points, '... m d -> ... m () d') -
-              rearrange(pred_points, '... n d -> ... () n d')
-          )**2,
-          dim=-1
+          (pred_points[..., :, None, :] - pred_points[..., None, :, :])**2, dim=-1
       )
   )
 
@@ -1236,15 +1213,11 @@ def within_residue_clash_loss(
   #     return dict(within_residue_clash_loss=clash_loss)
 
   # Compute the per atom loss sum.
-  per_atom_clash = (torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1))
+  per_atom_clash = torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1)
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
   if loss_only:
-    return dict(
-        within_residue_clash_loss=torch.
-        sum(per_atom_clash /  # pylint: disable=use-dict-literal
-            (1e-6 + num_atoms))
-    )
+    return {'within_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms))}
 
   # Compute the violations mask.
   per_atom_clash_mask = dist_mask * (
@@ -1254,11 +1227,11 @@ def within_residue_clash_loss(
       torch.amax(per_atom_clash_mask, dim=-2), torch.amax(per_atom_clash_mask, dim=-1)
   )
 
-  return dict(
-      within_residue_clash_loss=clash_loss,  # pylint: disable=use-dict-literal
-      per_atom_clash=per_atom_clash,
-      per_atom_clash_mask=per_atom_clash_mask
-  )
+  return {
+      'within_residue_clash_loss': clash_loss,
+      'per_atom_clash': per_atom_clash,
+      'per_atom_clash_mask': per_atom_clash_mask
+  }
 
 
 def symmetric_ground_truth_create_alt(seq, coord, coord_mask):
@@ -1308,10 +1281,7 @@ def symmetric_ground_truth_find_optimal(
   def to_distance(point):
     return torch.sqrt(
         epsilon + torch.sum(
-            (
-                rearrange(point, '... i c r-> ... i () c () r') -
-                rearrange(point, '... j d r -> ... () j () d r')
-            )**2,
+            (points[..., :, None, :, None, :] - points[..., None, :, None, :, :])**2,
             dim=-1
         )
     )
