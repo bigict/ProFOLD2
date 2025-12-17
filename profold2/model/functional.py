@@ -1278,7 +1278,7 @@ def symmetric_ground_truth_find_optimal(
   assert coord_exists.shape == coord_alt_mask.shape
   assert coord_exists.shape == coord_is_symmetric.shape
 
-  def to_distance(point):
+  def to_distance(points):
     return torch.sqrt(
         epsilon + torch.sum(
             (points[..., :, None, :, None, :] - points[..., None, :, None, :, :])**2,
@@ -1306,9 +1306,9 @@ def symmetric_ground_truth_find_optimal(
   # in cols.
   # shape (N ,N, 14, 14)
   mask = (
-      rearrange(coord_mask * coord_is_symmetric, '... i c -> ... i () c ()') *  # rows
-      rearrange(coord_mask * (~coord_is_symmetric), '... j d -> ... () j () d')
-  )  # cols
+      rearrange(coord_mask * coord_is_symmetric, '... i c -> ... i () c ()') *   # rows
+      rearrange(coord_mask * (~coord_is_symmetric), '... j d -> ... () j () d')  # cols
+  )
 
   # Aggregate distances for each residue to the non-amibuguous atoms.
   # shape (N)
@@ -1320,7 +1320,7 @@ def symmetric_ground_truth_find_optimal(
   return per_res_lddt_alt < per_res_lddt  # alt_naming_is_better
 
 
-def symmetric_ground_truth_rename(
+def symmetric_ground_truth_renaming(
     coord_pred,
     coord_exists,
     coord,
@@ -1341,20 +1341,19 @@ def symmetric_ground_truth_rename(
       coord_is_symmetric,
       epsilon=epsilon
   )
-  coord_renamed = (
-      rearrange(~alt_naming_is_better, '... i -> ... i () ()') * coord +
-      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt
-  )
-  coord_renamed_mask = (
-      rearrange(~alt_naming_is_better, '... i -> ... i () ()') * coord_mask +
-      rearrange(alt_naming_is_better, '... i -> ... i () ()') * coord_alt_mask
+
+  def renaming(m, x, y):
+    return (~m) * x + m * y
+  coord_renamed = renaming(alt_naming_is_better[..., None, None], coord, coord_alt)
+  coord_renamed_mask = renaming(
+      alt_naming_is_better[..., None], coord_mask, coord_alt_mask
   )
 
-  return dict(
-      alt_naming_is_better=alt_naming_is_better,  # pylint: disable=use-dict-literal
-      coord_renamed=coord_renamed,
-      coord_renamed_mask=coord_renamed_mask
-  )
+  return {
+      'alt_naming_is_better': alt_naming_is_better,
+      'coord_renamed': coord_renamed,
+      'coord_renamed_mask': coord_renamed_mask
+  }
 
 
 def contact_precision(
@@ -1676,10 +1675,30 @@ def multi_chain_permutation_alignment(value, batch):
 
         # Apply the optimal coordinates
         batch['coord'][bdx], batch['coord_mask'][bdx] = coord_opt, coord_mask_opt
-    if torch.any(batch['seq_anchor'] > 0) and 'coord_alt' in batch:
-      batch.update(
-          symmetric_ground_truth_create_alt(
-              batch['seq'], batch['coord'], batch['coord_mask']
-          )
-      )
+    if torch.any(batch['seq_anchor'] > 0):
+      if 'coord_alt' in batch:
+        batch.update(
+            symmetric_ground_truth_create_alt(
+                batch['seq'], batch['coord'], batch['coord_mask']
+            )
+        )
+      if 'backbone_affine' in batch:
+        n_idx = residue_constants.atom_order['N']
+        ca_idx = residue_constants.atom_order['CA']
+        c_idx = residue_constants.atom_order['C']
+
+        batch['backbone_affine'] = rigids_from_3x3(
+            batch['coord'], indices=(c_idx, ca_idx, n_idx)
+        )
+
+        coord_mask = batch['coord_mask']
+        coord_mask = torch.stack(
+            (coord_mask[..., c_idx], coord_mask[..., ca_idx], coord_mask[..., n_idx]),
+            dim=-1
+        )
+        batch['backbone_affine_mask'] = torch.all(coord_mask != 0, dim=-1)
+      if 'atom_affine' in batch:
+        batch.update(
+            rigids_from_positions(batch['seq'], batch['coord'], batch['coord_mask'])
+        )
   return batch
