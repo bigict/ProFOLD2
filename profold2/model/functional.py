@@ -1701,4 +1701,8 @@ def multi_chain_permutation_alignment(value, batch):
         batch.update(
             rigids_from_positions(batch['seq'], batch['coord'], batch['coord_mask'])
         )
+      if 'torsion_angles' in batch:
+        batch.update(
+            angles_from_positions(batch['seq'], batch['coord'], batch['coord_mask'])
+        )
   return batch
