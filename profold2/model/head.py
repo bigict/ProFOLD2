@@ -355,7 +355,7 @@ class DistogramHead(nn.Module):
            * logits: logits for distogram, shape [N_res, N_res, N_bins].
         """
     x = representations['pair']
-    trunk_embeds = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
+    trunk_embeds = (x + rearrange(x, '... i j d -> ... j i d')) * 0.5  # symmetrize
     return dict(logits=self.net(trunk_embeds), breaks=self.buckets)
 
   def loss(self, value, batch):
@@ -369,15 +369,7 @@ class DistogramHead(nn.Module):
       assert positions.shape[-1] == 3
 
       sq_breaks = torch.square(breaks)
-
-      dist2 = torch.sum(
-          torch.square(
-              rearrange(positions, 'b i c -> b i () c') -
-              rearrange(positions, 'b j c -> b () j c')
-          ),
-          dim=-1,
-          keepdim=True
-      )
+      dist2 = functional.squared_cdist(positions, positions, keepdim=True)
 
       true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
       errors = softmax_cross_entropy(
@@ -391,14 +383,12 @@ class DistogramHead(nn.Module):
         labels = F.softmax(logits, dim=-1)
       errors = softmax_kl_diversity(labels=labels, logits=logits)
 
-    square_mask, square_weight = (
-        rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j'), 1.0
-    )
+    square_mask, square_weight = mask[..., :, None] * mask[..., None, :], 1.0
     if 'coord_plddt' in batch:
       ca_idx = residue_constants.atom_order['CA']
       plddt_weight = torch.minimum(
-          rearrange(batch['coord_plddt'][..., ca_idx], '... i->... i ()'),
-          rearrange(batch['coord_plddt'][..., ca_idx], '... j->... () j')
+          batch['coord_plddt'][..., :, None, ca_idx],
+          batch['coord_plddt'][..., None, :, ca_idx]
       )
       if batch.get('coord_plddt_use_weighted_mask', True):
         square_mask *= plddt_weight
@@ -475,8 +465,8 @@ class FoldingHead(nn.Module):
       if 'coord_plddt' in batch:
         ca_idx = residue_constants.atom_order['CA']
         dij_weight = torch.minimum(
-            rearrange(batch['coord_plddt'][..., ca_idx], '... i -> ... i ()'),
-            rearrange(batch['coord_plddt'][..., ca_idx], '... j -> ... () j')
+            batch['coord_plddt'][..., :, None, ca_idx],
+            batch['coord_plddt'][..., None, :, ca_idx]
         )
 
       if 'loss.folding.w' in batch:
