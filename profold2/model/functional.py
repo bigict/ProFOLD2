@@ -932,13 +932,7 @@ def between_ca_ca_distance_loss(
 
 
 def between_residue_bond_loss(
-    pred_points,
-    points_mask,
-    residue_index,
-    aatypes,
-    tau=12.0,
-    epsilon=1e-6,
-    loss_only=False
+    pred_points, points_mask, residue_index, aatypes, tau=12.0, epsilon=1e-6
 ):
   assert pred_points.shape[-1] == 3
   assert pred_points.shape[:-1] == points_mask.shape
@@ -1020,13 +1014,6 @@ def between_residue_bond_loss(
       this_c_mask * next_n_mask * next_ca_mask * no_gap_mask
   )
 
-  if loss_only:
-    return dict(
-        c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
-        ca_c_n_loss=ca_c_n_loss,
-        c_n_ca_loss=c_n_ca_loss
-    )
-
   # Compute a per residue loss (equally distribute the loss to both
   # neighbouring residues).
   per_residue_violation = c_n_bond_errors + ca_c_n_erros + c_n_ca_errors
@@ -1047,22 +1034,16 @@ def between_residue_bond_loss(
   )
 
   return dict(
-      c_n_loss=c_n_loss,  # pylint: disable=use-dict-literal
-      ca_c_n_loss=ca_c_n_loss,
-      c_n_ca_loss=c_n_ca_loss,
+      c_n_bond_loss=c_n_loss,  # pylint: disable=use-dict-literal
+      ca_c_n_angle_loss=ca_c_n_loss,
+      c_n_ca_angle_loss=c_n_ca_loss,
       per_residue_violation=per_residue_violation,
       per_residue_violation_mask=per_residue_violation_mask
   )
 
 
 def between_residue_clash_loss(
-    pred_points,
-    points_mask,
-    residue_index,
-    aatypes,
-    tau=1.5,
-    epsilon=1e-6,
-    loss_only=False
+    pred_points, points_mask, residue_index, aatypes, tau=1.5, epsilon=1e-6
 ):
   """Loss to penalize steric clashes between residues"""
   assert pred_points.shape[-1] == 3
@@ -1133,19 +1114,12 @@ def between_residue_clash_loss(
   #clash_loss = masked_mean(mask=dist_mask, value=dist_errors, epsilon=epsilon)
   clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-  # if loss_only:
-  #     return dict(between_residue_clash_loss=clash_loss)
-
   # Compute the per atom loss sum.
   per_atom_clash = (
       torch.sum(dist_errors, dim=(-4, -2)) + torch.sum(dist_errors, dim=(-3, -1))
   )
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
-  if loss_only:
-    return {
-        'between_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms))
-    }
 
   # Compute the hard clash mask.
   clash_mask = dist_mask * (dists < (dist_lower_bound - tau))
@@ -1154,21 +1128,14 @@ def between_residue_clash_loss(
   )
 
   return {
-      'between_residue_clash_loss': clash_loss,
-      'per_atom_clash': per_atom_clash,
-      'per_atom_clash_mask': per_atom_clash_mask
+      'between_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms)),
+      'between_residue_per_atom_clash': per_atom_clash,
+      'between_residue_per_atom_clash_mask': per_atom_clash_mask
   }
 
 
 def within_residue_clash_loss(
-    pred_points,
-    points_mask,
-    residue_index,
-    aatypes,
-    tau1=1.5,
-    tau2=15,
-    epsilon=1e-12,
-    loss_only=False
+    pred_points, points_mask, residue_index, aatypes, tau1=1.5, tau2=15, epsilon=1e-12
 ):
   """Loss to penalize steric clashes within residues"""
   assert pred_points.shape[-1] == 3
@@ -1209,15 +1176,10 @@ def within_residue_clash_loss(
   dist_errors = dist_mask * (lower_errors + upper_errors)
   clash_loss = torch.sum(dist_errors) / (epsilon + torch.sum(dist_mask))
 
-  # if loss_only:
-  #     return dict(within_residue_clash_loss=clash_loss)
-
   # Compute the per atom loss sum.
   per_atom_clash = torch.sum(dist_errors, dim=-2) + torch.sum(dist_errors, dim=-1)
 
   num_atoms = torch.sum(points_mask, dim=(-2, -1), keepdim=True)
-  if loss_only:
-    return {'within_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms))}
 
   # Compute the violations mask.
   per_atom_clash_mask = dist_mask * (
@@ -1228,9 +1190,9 @@ def within_residue_clash_loss(
   )
 
   return {
-      'within_residue_clash_loss': clash_loss,
-      'per_atom_clash': per_atom_clash,
-      'per_atom_clash_mask': per_atom_clash_mask
+      'within_residue_clash_loss': torch.sum(per_atom_clash / (1e-6 + num_atoms)),
+      'within_residue_per_atom_clash': per_atom_clash,
+      'within_residue_per_atom_clash_mask': per_atom_clash_mask
   }
 
 
@@ -1344,6 +1306,7 @@ def symmetric_ground_truth_renaming(
 
   def renaming(m, x, y):
     return (~m) * x + m * y
+
   coord_renamed = renaming(alt_naming_is_better[..., None, None], coord, coord_alt)
   coord_renamed_mask = renaming(
       alt_naming_is_better[..., None], coord_mask, coord_alt_mask
