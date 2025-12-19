@@ -157,17 +157,14 @@ class ContactHead(nn.Module):
       with autocast(enabled=False):
         errors = F.binary_cross_entropy(logits, targets, reduction='none')
 
-      square_mask, square_weight = (
-          rearrange(mask, '... i -> ... i ()') * rearrange(mask, '... j -> ... () j'),
-          1.0
-      )
+      square_mask, square_weight = mask[..., :, None] * mask[..., None, :], 1.0
       square_mask = torch.triu(square_mask, diagonal=self.diagonal
                               ) + torch.tril(square_mask, diagonal=-self.diagonal)
       if 'coord_plddt' in batch:
         ca_idx = residue_constants.atom_order['CA']
         plddt_weight = torch.minimum(
-            rearrange(batch['coord_plddt'][..., ca_idx], '... i->... i ()'),
-            rearrange(batch['coord_plddt'][..., ca_idx], '... j->... () j')
+            batch['coord_plddt'][..., :, None, ca_idx],
+            batch['coord_plddt'][..., None, :, ca_idx]
         )
         if batch.get('coord_plddt_use_weighted_mask', True):
           square_mask *= plddt_weight
@@ -252,15 +249,12 @@ class CoevolutionHead(nn.Module):
     num_class = self.mask.shape[0]
 
     si, zij = representations['single'], representations['pair']
-    zij = (zij + rearrange(zij, 'b i j d -> b j i d')) * 0.5  # symmetrize
+    zij = (zij + rearrange(zij, '... i j d -> ... j i d')) * 0.5  # symmetrize
 
     ei, eij = self.single(si), self.pairwise(zij)
 
     # FIX: batch_size > 1
-    mij = (
-        rearrange(batch['mask'], 'b i -> b i () ()') *
-        rearrange(batch['mask'], 'b j -> b () j ()')
-    )
+    mij = batch['mask'][..., :, None, None] * batch['mask'][..., None, :, None]
     if exists(self.states):  # Average Product Correction
       if self.apc:
         eij = functional.apc(eij * mij, dim=(-3, -2))
@@ -275,7 +269,7 @@ class CoevolutionHead(nn.Module):
     else:
       assert 'seq' in batch
       msa = rearrange(
-          F.one_hot(batch['seq'].long(), num_class).float(), 'b i d -> b () i d'
+          F.one_hot(batch['seq'].long(), num_class).float(), '... i d -> ... () i d'
       )
     ret = dict(bi=ei)
     if exists(self.states):  # multi-state potts model
@@ -284,16 +278,16 @@ class CoevolutionHead(nn.Module):
         states = rearrange(states, 'c d -> () c d')
       states = (states + rearrange(states, 'q c d -> q d c')) * 0.5
       hi = torch.einsum(
-          'b m j d,b i j q,q c d,d -> b m i c', msa, eij, states, self.mask
+          '... m j d,b i j q,q c d,d -> ... m i c', msa, eij, states, self.mask
       )
       ret.update(wab=states)
       # eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
     else:  # native potts model
-      eij = rearrange(eij, 'b i j (c d) -> b i j c d', c=num_class, d=num_class)
-      hi = torch.einsum('b m j d,b i j c d,d -> b m i c', msa, eij, self.mask)
+      eij = rearrange(eij, '... i j (c d) -> ... i j c d', c=num_class, d=num_class)
+      hi = torch.einsum('... m j d,b i j c d,d -> ... m i c', msa, eij, self.mask)
     ret.update(wij=eij)
 
-    logits = rearrange(ei, 'b i c -> b () i c') + hi
+    logits = rearrange(ei, '... i c -> ... () i c') + hi
     ret.update(logits=logits, mask=self.mask)
     return ret
 
@@ -311,7 +305,7 @@ class CoevolutionHead(nn.Module):
         labels=labels, logits=logits, mask=self.mask, gammar=self.focal_loss
     )
     mask = torch.einsum(
-        'b i,b m i c,c -> b m i', batch['mask'].float(), labels.float(), self.mask
+        '... i,... m i c,c -> ... m i', batch['mask'].float(), labels.float(), self.mask
     )
     if 'msa_mask' in batch:
       mask = mask * batch['msa_mask']  # (b m i)
@@ -938,7 +932,7 @@ class PairingHead(nn.Module):
            * logits: logits for distogram, shape [N_res, N_res, N_bins].
         """
     x = self.net(representations['pair'])
-    x = (x + rearrange(x, 'b i j d -> b j i d')) * 0.5  # symmetrize
+    x = (x + rearrange(x, '... i j d -> ... j i d')) * 0.5  # symmetrize
 
     # build constrains
     # 1. Only three types of nucleotide combinations can form base pairs
@@ -951,8 +945,7 @@ class PairingHead(nn.Module):
     #     torch.einsum('... i j d,d c -> ... i j c', m, self.pairing) >= 2, dim=-1
     # )
     m = torch.abs(
-        rearrange(batch['seq_index'], '... i -> ... i ()') -
-        rearrange(batch['seq_index'], '... j -> ... () j')
+        batch['seq_index'][..., :, None] - batch['seq_index'][..., None, :]
     ) > 3
     # HACK: experience value
     mask_value = 1e4 if x.dtype == torch.float16 else 1e6  # max_neg_value(q)
@@ -1123,7 +1116,7 @@ class MetricDictHead(nn.Module):
       ) and 'sequence_profile' in batch:
         labels, label_mask = batch['sequence_profile'], 1.0
         if 'sequence_profile_mask' in batch:
-          label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+          label_mask = batch['sequence_profile_mask']
 
         mask = batch['mask']
         if 'profile' in headers:
@@ -1347,19 +1340,19 @@ class FitnessHead(nn.Module):
       variant = F.one_hot(variant.long(), num_class)
       if exists(wab):
         hi = torch.einsum(
-            'b m j d,b i j q,q c d,d -> b m i c', variant.float(), eij, wab, self.mask
+            '... m j d,... i j q,q c d,d -> ... m i c', variant.float(), eij, wab, self.mask
         )
       else:
         hi = torch.einsum(
-            'b m j d,b i j c d,d -> b m i c', variant.float(), eij, self.mask
+            '... m j d,... i j c d,d -> ... m i c', variant.float(), eij, self.mask
         )
-      motifs = rearrange(ei, 'b i c -> b () i c') + hi
+      motifs = rearrange(ei, '... i c -> ... () i c') + hi
       if self.log_softmax:
         logits = torch.einsum(
-            'b m i c,b m i c -> b m i', F.log_softmax(motifs, dim=-1), variant.float()
+            '... m i c,... m i c -> ... m i', F.log_softmax(motifs, dim=-1), variant.float()
         )
       else:
-        logits = torch.einsum('b m i c,b m i c -> b m i', motifs, variant.float())
+        logits = torch.einsum('... m i c,... m i c -> ... m i', motifs, variant.float())
       if self.return_motifs:
         return motifs, logits
       return None, logits
@@ -1375,8 +1368,8 @@ class FitnessHead(nn.Module):
       variant_mask = batch['variant_mask']
     else:
       assert 'seq' in batch
-      variant = rearrange(batch['seq'], 'b i -> b () i')
-      variant_mask = rearrange(batch['mask'], 'b i -> b () i')
+      variant = batch['seq'][..., None, :]
+      variant_mask = batch['mask'][..., None, :]
 
     motifs, logits = functional.sharded_apply(
         _hamiton_run, [variant],
@@ -1464,22 +1457,22 @@ class FitnessHead(nn.Module):
           logger.debug('FitnessHead.ref_idx: %s', ref_idx)
 
           logits_ref = torch.gather(
-              logits, 1, repeat(ref_idx, 'b m -> b m i', i=logits.shape[-1])
+              logits, 1, repeat(ref_idx, '... m -> ... m i', i=logits.shape[-1])
           )
           mask_ref = torch.gather(
               variant_mask, 1,
               repeat(
                   ref_idx,
-                  'b m -> b m i t',
+                  '... m -> ... m i t',
                   i=variant_mask.shape[-2],
                   t=variant_mask.shape[-1]
               )
           )
           label_ref = torch.gather(
-              variant_label, 1, repeat(ref_idx, 'b m -> b m t', t=self.task_num)
+              variant_label, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
           label_mask_ref = torch.gather(
-              variant_label_mask, 1, repeat(ref_idx, 'b m -> b m t', t=self.task_num)
+              variant_label_mask, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
     else:
       variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i ()')
@@ -1494,17 +1487,15 @@ class FitnessHead(nn.Module):
       label_mask_ref = variant_label_mask[:, :1, ...]
 
     # pairwise logistic loss
-    variant_logit = rearrange(logits, 'b m i -> b m () i'
-                             ) - rearrange(logits_ref, 'b n i -> b () n i')
-    variant_mask = rearrange(variant_mask, 'b m i t -> b m () i t'
-                            ) * rearrange(mask_ref, 'b n i t -> b () n i t')
-    variant_label = rearrange(variant_label, 'b m t -> b m () t'
-                             ) - rearrange(label_ref, 'b n t -> b () n t')
+    variant_logit = logits[..., :, None, :] - logits_ref[..., None, :, :]
+    variant_mask = variant_mask[..., :, None, :, :] * mask_ref[..., None, :, :, :]
+    variant_label = variant_label[..., :, None, :] - label_ref[..., None, :, :]
     variant_label = torch.sign(variant_label
                               ) * (torch.abs(variant_label) > self.label_epsilon)
     variant_label = torch.clamp((1. + variant_label) / 2, min=0, max=1)
-    variant_label_mask = rearrange(variant_label_mask, 'b m t -> b m () t'
-                                  ) * rearrange(label_mask_ref, 'b n t -> b () n t')
+    variant_label_mask = (
+        variant_label_mask[..., :, None, :] * label_mask_ref[..., None, :, :]
+    )
     # variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
     variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
@@ -1564,7 +1555,7 @@ class SequenceProfileHead(nn.Module):
     mask = batch['mask']
     label_mask = None
     if 'sequence_profile_mask' in batch:
-      label_mask = rearrange(batch['sequence_profile_mask'], 'c -> () () c')
+      label_mask = batch['sequence_profile_mask']
 
     errors = softmax_kl_diversity(labels=labels, logits=logits, mask=label_mask)
 
