@@ -1176,22 +1176,6 @@ class MetricDictHead(nn.Module):
             'coord_exists', batch.get('coord_mask')
         )
         assert exists(point_mask)
-
-        seq_index = batch.get('seq_index')
-        ca_ca_distance_error = functional.between_ca_ca_distance_loss(
-            points,
-            point_mask * torch.logical_and(  # protein only
-                batch['seq'] >= residue_constants.prot_from_idx,
-                batch['seq'] <= residue_constants.prot_to_idx
-            )[..., None],
-            seq_index
-        )
-        metrics['violation'] = MetricDict()
-        metrics['violation']['ca_ca_distance'] = ca_ca_distance_error
-        logger.debug(
-            'MetricDictHead.violation.ca_ca_distance: %s', ca_ca_distance_error
-        )
-
         if 'coord' in batch:
           ca_idx = residue_constants.atom_order['CA']
           # Shape (b, l, d)
@@ -1210,6 +1194,46 @@ class MetricDictHead(nn.Module):
           )
           metrics['lddt'] = avg_lddt_ca
           logger.debug('MetricDictHead.lddt: %s', avg_lddt_ca)
+
+      if 'violation' in headers and ('coord_mask' in batch or 'coord_exists' in batch):
+        metrics['violation'] = MetricDict()
+
+        ca_ca_distance_error = headers['violation']['ca_ca_distance_error']
+        metrics['violation']['ca_ca_distance'] = ca_ca_distance_error
+        logger.debug(
+            'MetricDictHead.violation.ca_ca_distance: %s', ca_ca_distance_error
+        )
+
+        between_residue_bond = functional.masked_mean(
+            mask=batch['mask'], value=headers['violation']['per_residue_violation_mask']
+        )
+        metrics['violation']['between_residue_bond'] = between_residue_bond
+        logger.debug(
+            'MetricDictHead.violation.between_residue_bond: %s', between_residue_bond
+        )
+
+        between_residue_clash = functional.masked_mean(
+            mask=batch['mask'],
+            value=torch.amax(
+                headers['violation']['between_residue_per_atom_clash_mask'], dim=-1
+            )
+        )
+        metrics['violation']['between_residue_clash'] = between_residue_clash
+        logger.debug(
+            'MetricDictHead.violation.between_residue_clash: %s', between_residue_clash
+        )
+
+        within_residue_clash = functional.masked_mean(
+            mask=batch['mask'],
+            value=torch.amax(
+                headers['violation']['within_residue_per_atom_clash_mask'], dim=-1
+            )
+        )
+        metrics['violation']['within_residue_clash'] = within_residue_clash
+        logger.debug(
+            'MetricDictHead.violation.within_residue_clash: %s', within_residue_clash
+        )
+
 
     return dict(loss=metrics) if metrics else None
 
@@ -1595,19 +1619,12 @@ class ViolationHead(nn.Module):
     del dim
 
   def forward(self, headers, representations, batch):
-    assert 'folding' in headers and 'coords' in headers['folding']
-    return dict(coords=headers['folding']['coords'])
+    ret = {}
 
-  def loss(self, value, batch):
-    assert 'coords' in value
-    seq, mask = batch['seq'], batch['mask']
-    del mask
-    seq_index = batch.get('seq_index')
-    if not exists(seq_index):
-      b, n = seq.shape[:2]
-      seq_index = repeat(torch.arange(n, device=seq.device), 'i -> b i', b=b)
+    assert 'folding' in headers and 'coords' in headers['folding']
+    seq, seq_index = batch['seq'], batch['seq_index']
     if 'coord_mask' in batch or 'coord_exists' in batch:
-      points, point_mask = value['coords'], batch.get(
+      points, point_mask = headers['folding']['coords'], batch.get(
           'coord_exists', batch.get('coord_mask')
       )
       assert exists(point_mask)
@@ -1616,29 +1633,38 @@ class ViolationHead(nn.Module):
           batch['seq'] <= residue_constants.prot_to_idx
       )[..., None]
 
-      # loss_dict.update(ca_ca_distance_loss = functional.between_ca_ca_distance_loss(
-      #         points, point_mask, seq_index))
-      loss_dict = {}
-
-      loss_dict.update(
-          functional.between_residue_bond_loss(
-              points, point_mask, seq_index, seq, loss_only=True
+      ret.update(
+          ca_ca_distance_error = functional.between_ca_ca_distance_loss(
+              points, point_mask, seq_index
           )
       )
-      loss_dict.update(
-          functional.between_residue_clash_loss(
-              points, point_mask, seq_index, seq, loss_only=True
-          )
+      ret.update(
+          functional.between_residue_bond_loss(points, point_mask, seq_index, seq)
       )
-      loss_dict.update(
-          functional.within_residue_clash_loss(
-              points, point_mask, seq_index, seq, loss_only=True
-          )
+      ret.update(
+          functional.between_residue_clash_loss(points, point_mask, seq_index, seq)
+      )
+      ret.update(
+          functional.within_residue_clash_loss(points, point_mask, seq_index, seq)
       )
 
-      for k, v in loss_dict.items():
-        logger.debug('ViolationHead.%s: %s', k, v)
-      return dict(loss=sum(loss_dict.values()))
+    return ret
+
+  def loss(self, value, batch):
+    if 'coord_mask' in batch or 'coord_exists' in batch:
+      loss = 0
+
+      for key in (
+          'c_n_bond_loss',
+          'ca_c_n_angle_loss',
+          'c_n_ca_angle_loss',
+          'between_residue_clash_loss',
+          'within_residue_clash_loss'
+      ):
+        logger.debug('ViolationHead.%s: %s', key, value[key])
+        loss += value[key]
+
+      return dict(loss=loss)
     return None
 
 
