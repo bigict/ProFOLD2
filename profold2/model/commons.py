@@ -167,7 +167,7 @@ def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   mask_value = 1e4 if dtype == torch.float16 else 1e6  # max_neg_value(q)
   if exists(attn_mask) and exists(attn_bias):
     attn_mask = torch.clamp(
-        attn_bias.masked_fill(~attn_mask, mask_value), min=-mask_value
+        attn_bias.masked_fill(~attn_mask, -mask_value), min=-mask_value
     ).to(dtype=dtype_to)
   elif exists(attn_bias):
     attn_mask = attn_bias.to(dtype=dtype_to)
