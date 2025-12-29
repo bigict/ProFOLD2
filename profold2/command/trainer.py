@@ -16,7 +16,6 @@ from urllib.parse import urlparse, parse_qsl
 import numpy as np
 import torch
 from torch import nn
-from torch.amp import GradScaler
 from torch.optim import Adam
 
 from profold2.common import residue_constants
@@ -326,7 +325,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   #     cases, you can just treat a DistributedDataParallel wrapped model, a
   #     DataParallel wrapped model and an ordinary model on a single GPU as the
   #     same (E.g. using the same learning rate for equivalent batch size).
-  grad_scaler = GradScaler(accelerator.device_type(), enabled=args.amp_enabled)
+  grad_scaler = accelerator.GradScaler(enabled=args.amp_enabled)
   loss_scaler = (accelerator.world_size(args.nnodes) or
                  1) / (args.gradient_accumulate_every or 1.0)
 

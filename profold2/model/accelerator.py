@@ -22,6 +22,7 @@ def world_size(nnodes: Optional[int] = None):
   return env('WORLD_SIZE', defval=device_count() * default(nnodes, 1), dtype=int)
 
 autocast = functools.partial(torch.amp.autocast, device_type())
+GradScaler = functools.partial(torch.amp.GradScaler, device_type())
 
 class XPU(object):
   """Wrap distibuted XPU(GPU,MLU etc)
