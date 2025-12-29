@@ -14,10 +14,12 @@ from einops import rearrange
 # models & data
 from profold2.data import dataset
 from profold2.data.utils import tensor_to_numpy
-from profold2.model import functional, profiler, snapshot, FeatureBuilder, ReturnValues
+from profold2.model import (
+    accelerator, functional, profiler, snapshot, FeatureBuilder, ReturnValues
+)
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
+from profold2.command.worker import main, autocast_ctx, WorkerModel
 
 
 def evaluate(rank, args):  # pylint: disable=redefined-outer-name
@@ -27,8 +29,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('feats: %s', feats)
 
   kwargs = {}
-  if rank.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
-    kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
+  if rank.is_available() and accelerator.world_size(args.nnodes) > 1:
+    kwargs['num_replicas'] = accelerator.world_size(args.nnodes)
     kwargs['rank'] = rank.rank
   test_loader = dataset.load(
       data_dir=args.eval_data,

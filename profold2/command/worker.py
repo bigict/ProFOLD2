@@ -2,7 +2,6 @@
 """
 import os
 import contextlib
-from datetime import timedelta
 import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
@@ -10,11 +9,10 @@ import re
 import resource
 
 import torch
-from torch.cuda.amp import autocast
 import torch.multiprocessing as mp
 from torch import nn
 
-from profold2.model import AlphaFold2
+from profold2.model import accelerator, AlphaFold2
 from profold2.model.commons import torch_allow_tf32
 from profold2.utils import default, env, exists, version_cmp
 
@@ -26,7 +24,7 @@ def autocast_ctx(cond):
     if hasattr(torch.cuda, 'is_bf16_supported'):
       if torch.cuda.is_bf16_supported():
         dtype = torch.bfloat16
-    ctx = functools.partial(autocast, dtype=dtype)
+    ctx = functools.partial(accelerator.autocast, dtype=dtype)
     # FIXED ME: cache_enabled=True will crash :(
     if version_cmp(torch.__version__, '1.10.0') >= 0:
       ctx = functools.partial(ctx, cache_enabled=False)
@@ -106,75 +104,6 @@ class _WorkerLogging(object):
   def stop(self):
     if exists(self.listener):
       self.listener.stop()
-
-
-class WorkerXPU(object):
-  """Wrap distibuted XPU(GPU,MLU etc)
-  """
-  def __init__(self, rank, args):
-    self.local_rank = rank
-    self.args = args
-
-  def is_available(self):
-    if self.local_rank != -1:
-      return torch.cuda.is_available()
-    return False
-
-  def is_master(self):
-    if self.is_available():
-      return self.args.node_rank == 0 and self.local_rank == 0
-    return True
-
-  @property
-  def device(self):
-    if self.is_available():
-      return self.local_rank
-    return torch.device('cpu')
-
-  @staticmethod
-  def device_count():
-    return torch.cuda.device_count()
-
-  @property
-  def rank(self):
-    return env(
-        'RANK',
-        defval=WorkerXPU.device_count() * self.args.node_rank + self.local_rank,
-        dtype=int
-    )
-
-  @staticmethod
-  def world_size(nnodes=None):
-    return env(
-        'WORLD_SIZE', defval=WorkerXPU.device_count() * default(nnodes, 1), dtype=int
-    )
-
-  def memory_summary(self):
-    if self.is_available() and hasattr(torch.cuda, 'memory_summary'):
-      return torch.cuda.memory_summary()
-    return 'only cuda supported.'
-
-  def init_process_group(self):
-    if self.is_available():
-      timeout = env('NCCL_TIMEOUT', defval=1800, dtype=int)
-      logging.info(
-          'distributed.init_process_group: rank=%s@%s, world_size=%s@%s, '
-          'init_method=%s, timeout=%s(s)',
-          self.device, WorkerXPU.device_count(), self.rank,
-          WorkerXPU.world_size(self.args.nnodes), self.args.init_method, timeout
-      )
-      torch.distributed.init_process_group(
-          backend='nccl',
-          init_method=self.args.init_method,
-          timeout=timedelta(seconds=timeout),
-          rank=self.rank,
-          world_size=WorkerXPU.world_size(self.args.nnodes)
-      )
-      torch.cuda.set_device(self.local_rank)
-
-  def destroy_process_group(self):
-    if self.is_available():
-      torch.distributed.destroy_process_group()
 
 
 class WorkerModel(object):
@@ -269,7 +198,7 @@ class WorkerFunction(object):
     self.log_queue = log_queue
 
   def __call__(self, rank, args):  # pylint: disable=redefined-outer-name
-    xpu = WorkerXPU(rank, args)
+    xpu = accelerator.XPU(rank, nnodes=args.nnodes, node_rank=args.node_rank)
 
     # logger for Tensors
     record_factory = _WorkerLogRecordFactory(logging.getLogRecordFactory())
@@ -290,7 +219,7 @@ class WorkerFunction(object):
     #--------------
     # setup distributed env if needed
     #--------------
-    xpu.init_process_group()
+    xpu.init_process_group(args.init_method)
 
     # Starting in PyTorch 1.7, there is a new flag called allow_tf32.
     # This flag defaults to True in PyTorch 1.7 to PyTorch 1.11, and
@@ -334,7 +263,7 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
     mp.spawn(
         work_fn,
         args=(args, ),
-        nprocs=WorkerXPU.device_count() if WorkerXPU.device_count() > 0 else 1,
+        nprocs=accelerator.device_count() if accelerator.device_count() > 0 else 1,
         join=True
     )
   else:

@@ -3,12 +3,11 @@ import logging
 
 import torch
 from torch import nn
-from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional, folding
+from profold2.model import accelerator, commons, functional, folding
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
@@ -154,7 +153,7 @@ class ContactHead(nn.Module):
 
       targets = (dist2 <= self.cutoff).float()
 
-      with autocast(enabled=False):
+      with accelerator.autocast(enabled=False):
         errors = F.binary_cross_entropy(logits, targets, reduction='none')
 
       square_mask, square_weight = mask[..., :, None] * mask[..., None, :], 1.0
@@ -973,7 +972,7 @@ class PairingHead(nn.Module):
       y = rearrange(
           F.one_hot(batch['sta'].long(), l + 1)[..., 1:], '... i d j -> ... i j d'
       )
-      with autocast(enabled=False):
+      with accelerator.autocast(enabled=False):
         probs = torch.clamp(
             1. - torch.exp(
                 torch.sum(
@@ -1414,7 +1413,7 @@ class FitnessHead(nn.Module):
         motifs = value['motifs']
         labels = F.one_hot(batch['variant'].long(), num_class)
 
-        with autocast(enabled=False):
+        with accelerator.autocast(enabled=False):
           errors = softmax_cross_entropy(
               labels=labels, logits=motifs, mask=self.mask, gammar=self.focal_loss
           )
@@ -1500,7 +1499,7 @@ class FitnessHead(nn.Module):
     variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
-    with autocast(enabled=False):
+    with accelerator.autocast(enabled=False):
       errors = sigmoid_cross_entropy_with_logits(
           variant_logit.float(),
           variant_label.float(),

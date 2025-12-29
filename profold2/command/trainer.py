@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qsl
 import numpy as np
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.optim import Adam
 
 from profold2.common import residue_constants
@@ -24,10 +24,10 @@ from profold2.data import dataset
 from profold2.data.utils import (
     embedding_get_labels, tensor_to_numpy, weights_from_file
 )
-from profold2.model import FeatureBuilder, MetricDict, ReturnValues
+from profold2.model import accelerator, FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 from profold2.utils import exists
-from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
+from profold2.command.worker import main, autocast_ctx, WorkerModel
 
 
 def wandb_setup(args):  # pylint: disable=redefined-outer-name
@@ -326,8 +326,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   #     cases, you can just treat a DistributedDataParallel wrapped model, a
   #     DataParallel wrapped model and an ordinary model on a single GPU as the
   #     same (E.g. using the same learning rate for equivalent batch size).
-  grad_scaler = GradScaler(enabled=args.amp_enabled)
-  loss_scaler = (WorkerXPU.world_size(args.nnodes) or
+  grad_scaler = GradScaler(accelerator.device_type(), enabled=args.amp_enabled)
+  loss_scaler = (accelerator.world_size(args.nnodes) or
                  1) / (args.gradient_accumulate_every or 1.0)
 
   def _step(data_loader, it, writer, stage='train', batch_callback=None):

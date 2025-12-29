@@ -4,11 +4,11 @@ from typing import Optional, Union
 
 import numpy as np
 import torch
-from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
+from profold2.model import accelerator
 from profold2.utils import default, exists
 
 
@@ -1398,7 +1398,7 @@ def kabsch_rotation(
   if exists(mask):
     y = y * mask[..., None]
 
-  with autocast(enabled=False):
+  with accelerator.autocast(enabled=False):
     x, y = x.float(), y.float()
 
     # optimal rotation matrix via SVD of the convariance matrix {x.T * y}

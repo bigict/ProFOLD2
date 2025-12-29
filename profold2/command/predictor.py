@@ -20,10 +20,10 @@ from profold2.data import dataset
 from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
 from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_index
-from profold2.model import profiler, snapshot, FeatureBuilder, ReturnValues
+from profold2.model import accelerator, profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, autocast_ctx, WorkerModel, WorkerXPU
+from profold2.command.worker import main, autocast_ctx, WorkerModel
 
 
 def _read_fasta(args):  # pylint: disable=redefined-outer-name
@@ -47,8 +47,8 @@ def _read_fasta(args):  # pylint: disable=redefined-outer-name
 def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
   kwargs = {'pin_memory': True, 'shuffle': False}
   if exists(args.data_dir):
-    if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
-      kwargs['num_replicas'] = WorkerXPU.world_size(args.nnodes)
+    if xpu.is_available() and accelerator.world_size(args.nnodes) > 1:
+      kwargs['num_replicas'] = accelerator.world_size(args.nnodes)
       kwargs['rank'] = xpu.rank
     return dataset.load(
         data_dir=args.data_dir,
@@ -79,10 +79,10 @@ def _create_dataloader(xpu, args):  # pylint: disable=redefined-outer-name
         )
       msa += [[s]]
   data = ProteinSequenceDataset(sequences, descriptions, msa=msa)
-  if xpu.is_available() and WorkerXPU.world_size(args.nnodes) > 1:
+  if xpu.is_available() and accelerator.world_size(args.nnodes) > 1:
     kwargs['sampler'] = DistributedSampler(
         data,
-        num_replicas=WorkerXPU.world_size(args.nnodes),
+        num_replicas=accelerator.world_size(args.nnodes),
         rank=xpu.rank,
         shuffle=False
     )

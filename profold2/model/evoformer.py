@@ -3,11 +3,10 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.cuda.amp import autocast
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional, profiler
+from profold2.model import accelerator, commons, functional, profiler
 from profold2.utils import exists
 
 
@@ -273,7 +272,7 @@ class EvoformerBlock(nn.Module):
     # frame attention and transition
     if hasattr(self, 'frame_attn'):
       with profiler.record_function('frame_attn'):
-        with autocast(enabled=False):
+        with accelerator.autocast(enabled=False):
           # to default float
           m, x, t = m.float(), x.float(), tuple(map(lambda x: x.float(), t))
           s = self.frame_attn(
@@ -286,14 +285,14 @@ class EvoformerBlock(nn.Module):
     # frame update
     if hasattr(self, 'frame_update'):
       with profiler.record_function('frame_update'):
-        with autocast(enabled=False):
+        with accelerator.autocast(enabled=False):
           # to default float
           m, t = m.float(), tuple(map(lambda x: x.float(), t))
           t = self.frame_update(m[..., 0, :, :], frames=t)
 
     # pairwise attention and transition
     with profiler.record_function('pair_attn'):
-      # with autocast(enabled=False):
+      # with accelerator.autocast(enabled=False):
       x = self.pair_attn(
           x, mask=mask, msa_repr=m, msa_mask=msa_mask, shard_size=shard_size
       )
