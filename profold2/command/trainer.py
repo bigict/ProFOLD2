@@ -26,7 +26,8 @@ from profold2.data.utils import (
 from profold2.model import accelerator, FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 from profold2.utils import exists
-from profold2.command.worker import main, autocast_ctx, WorkerModel
+
+from profold2.command import worker
 
 
 def wandb_setup(args):  # pylint: disable=redefined-outer-name
@@ -78,8 +79,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   np.random.seed(args.random_seed)
 
   # get data
-  worker = WorkerModel(rank, args)
-  device = worker.device()
+  wm = worker.WorkerModel(rank, args)
+  device = wm.device()
   with open(args.model_features, 'r', encoding='utf-8') as f:
     feats = json.loads(f.read())
 
@@ -195,7 +196,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     headers = json.loads(f.read())
 
   # wandb
-  wandb_run = wandb_setup(args) if args.wandb_enabled and worker.is_master() else None
+  wandb_run = wandb_setup(args) if args.wandb_enabled and wm.is_master() else None
   if exists(wandb_run):
     wandb_run.config.update({'feats': feats, 'headers': headers})
 
@@ -203,7 +204,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   logging.info('AlphaFold2.headers: %s', headers)
 
   features = FeatureBuilder(feats).to(device)
-  model = worker.wrap(
+  model = wm.wrap(
       dim=args.model_dim,
       evoformer_depth=args.model_evoformer_depth,
       evoformer_head_num=args.model_evoformer_head_num,
@@ -267,7 +268,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   # tensorboard
   writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval')
-                        ) if worker.is_master() else None
+                        ) if wm.is_master() else None
 
   def writer_add_embeddings(writer, model, it):
     def add_embeddings(embedds, prefix=''):
@@ -351,7 +352,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with no_sync_ctx(
           it != global_step and jt + 1 != args.gradient_accumulate_every, model
       ):
-        with autocast_ctx(grad_scaler.is_enabled()):
+        with worker.autocast_ctx(grad_scaler.is_enabled()):
           r = ReturnValues(
               **model(
                   batch=batch,
@@ -405,7 +406,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
     if (
         args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
-        worker.is_master()
+        wm.is_master()
     ):
       # Save a checkpoint every N iters.
       checkpoint_manager.save(it)
@@ -414,7 +415,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       writer_add_embeddings(writer, model, it)
 
     if (
-        args.eval_data and worker.is_master() and args.eval_every > 0 and
+        args.eval_data and wm.is_master() and args.eval_every > 0 and
         (it + 1) % args.eval_every == 0
     ):
 
@@ -444,7 +445,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   # latest checkpoint
   if (
       global_step < args.num_batches and args.checkpoint_every > 0 and
-      (it + 1) % args.checkpoint_every != 0 and worker.is_master()
+      (it + 1) % args.checkpoint_every != 0 and wm.is_master()
   ):
     checkpoint_manager.save(it)
 
@@ -455,8 +456,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     writer.close()
 
   # save model
-  if worker.is_master():
-    worker.save(os.path.join(args.prefix, 'model.pth'), feats, model)
+  if wm.is_master():
+    wm.save(os.path.join(args.prefix, 'model.pth'), feats, model)
 
 
 setattr(train, 'preprocess', preprocess)
@@ -832,4 +833,4 @@ if __name__ == '__main__':
 
   args = parser.parse_args()
 
-  main(args, train)
+  worker.main(args, train)

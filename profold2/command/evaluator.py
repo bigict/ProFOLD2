@@ -19,13 +19,13 @@ from profold2.model import (
 )
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, autocast_ctx, WorkerModel
+from profold2.command import worker
 
 
 def evaluate(rank, args):  # pylint: disable=redefined-outer-name
-  worker = WorkerModel(rank, args)
-  feats, model = worker.load(args.model)
-  features = FeatureBuilder(feats).to(worker.device())
+  wm = worker.WorkerModel(rank, args)
+  feats, model = wm.load(args.model)
+  features = FeatureBuilder(feats).to(wm.device())
   logging.info('feats: %s', feats)
 
   kwargs = {}
@@ -70,7 +70,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
       with torch.no_grad():
-        with autocast_ctx(args.amp_enabled):
+        with worker.autocast_ctx(args.amp_enabled):
           r = ReturnValues(
               **model(
                   batch=batch,  # pylint: disable=not-callable
@@ -352,4 +352,4 @@ if __name__ == '__main__':
 
   args = parser.parse_args()
 
-  main(args, evaluate)
+  worker.main(args, evaluate)

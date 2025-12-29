@@ -23,7 +23,7 @@ from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_in
 from profold2.model import accelerator, profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
-from profold2.command.worker import main, autocast_ctx, WorkerModel
+from profold2.command import worker
 
 
 def _read_fasta(args):  # pylint: disable=redefined-outer-name
@@ -116,15 +116,15 @@ def _load_models(rank, args):  # pylint: disable=redefined-outer-name
     model_name, _ = os.path.splitext(model_name)
     return model_name, model_location
 
-  worker = WorkerModel(rank, args)
+  wm = worker.WorkerModel(rank, args)
   for i, model_location in enumerate(args.models):
     model_name, model_location = _location_split(model_location)
     logging.info(
         'Load model [%d/%d] %s from %s', i, len(args.models), model_name, model_location
     )
 
-    feats, model = worker.load(model_location)
-    features = FeatureBuilder(feats).to(worker.device())
+    feats, model = wm.load(model_location)
+    features = FeatureBuilder(feats).to(wm.device())
     yield model_name, (features, model)
 
 
@@ -222,7 +222,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
                   timing_callback, timings, f'predict_{model_name}'
               )
           ):
-            with autocast_ctx(args.amp_enabled):
+            with worker.autocast_ctx(args.amp_enabled):
               r = ReturnValues(
                   **model(
                       batch=feats,
@@ -391,4 +391,4 @@ if __name__ == '__main__':
 
   args = parser.parse_args()
 
-  main(args, predict)
+  worker.main(args, predict)
