@@ -19,7 +19,7 @@ from profold2.common import protein
 from profold2.data import dataset
 from profold2.data.dataset import ProteinSequenceDataset
 from profold2.data.parsers import parse_fasta
-from profold2.data.utils import parse_seq_index, pdb_from_prediction, str_seq_index
+from profold2.data.utils import pdb_from_prediction
 from profold2.model import accelerator, profiler, snapshot, FeatureBuilder, ReturnValues
 from profold2.utils import exists, timing
 
@@ -222,7 +222,7 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
                   timing_callback, timings, f'predict_{model_name}'
               )
           ):
-            with worker.autocast_ctx(args.amp_enabled):
+            with accelerator.amp(args.amp_enabled):  # Automatic Mixed Precision
               r = ReturnValues(
                   **model(
                       batch=feats,

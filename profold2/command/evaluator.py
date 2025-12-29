@@ -70,7 +70,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
       with torch.no_grad():
-        with worker.autocast_ctx(args.amp_enabled):
+        with accelerator.amp(args.amp_enabled):  # Automatic Mixed Precision
           r = ReturnValues(
               **model(
                   batch=batch,  # pylint: disable=not-callable
