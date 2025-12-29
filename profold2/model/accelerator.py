@@ -1,5 +1,6 @@
 """Wrap GPU, MLU etc
 """
+import contextlib
 from datetime import timedelta
 import functools
 import logging
@@ -7,22 +8,43 @@ from typing import Optional
 
 import torch
 
-from profold2.utils import default, env
+from profold2.utils import default, env, version_cmp
 
 
 def device_count():
   return torch.cuda.device_count()
+
 
 def device_type():
   if torch.cuda.is_available():
     return 'cuda'
   return 'cpu'
 
+
 def world_size(nnodes: Optional[int] = None):
   return env('WORLD_SIZE', defval=device_count() * default(nnodes, 1), dtype=int)
 
+
 autocast = functools.partial(torch.amp.autocast, device_type())
 GradScaler = functools.partial(torch.amp.GradScaler, device_type())
+
+
+@contextlib.contextmanager
+def amp(enabled: bool = True):
+  if enabled:
+    dtype = torch.float16
+    if hasattr(torch.cuda, 'is_bf16_supported'):
+      if torch.cuda.is_bf16_supported():
+        dtype = torch.bfloat16
+    ctx = functools.partial(autocast, dtype=dtype)
+    # FIXED ME: cache_enabled=True will crash :(
+    if version_cmp(torch.__version__, '1.10.0') >= 0:
+      ctx = functools.partial(ctx, cache_enabled=False)
+    with ctx():
+      yield
+  else:
+    yield
+
 
 class XPU(object):
   """Wrap distibuted XPU(GPU,MLU etc)
@@ -51,9 +73,7 @@ class XPU(object):
   @property
   def rank(self):
     return env(
-        'RANK',
-        defval=device_count() * self.node_rank + self.local_rank,
-        dtype=int
+        'RANK', defval=device_count() * self.node_rank + self.local_rank, dtype=int
     )
 
   def memory_summary(self):

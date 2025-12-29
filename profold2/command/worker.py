@@ -1,7 +1,6 @@
 """Wrap distibuted env
 """
 import os
-import contextlib
 import functools
 import logging
 from logging.handlers import QueueHandler, QueueListener
@@ -14,24 +13,7 @@ from torch import nn
 
 from profold2.model import accelerator, AlphaFold2
 from profold2.model.commons import torch_allow_tf32
-from profold2.utils import default, env, exists, version_cmp
-
-
-@contextlib.contextmanager
-def autocast_ctx(cond):
-  if cond:
-    dtype = torch.float16
-    if hasattr(torch.cuda, 'is_bf16_supported'):
-      if torch.cuda.is_bf16_supported():
-        dtype = torch.bfloat16
-    ctx = functools.partial(accelerator.autocast, dtype=dtype)
-    # FIXED ME: cache_enabled=True will crash :(
-    if version_cmp(torch.__version__, '1.10.0') >= 0:
-      ctx = functools.partial(ctx, cache_enabled=False)
-    with ctx():
-      yield
-  else:
-    yield
+from profold2.utils import exists, version_cmp
 
 
 class _WorkerLogRecordFactory(object):
