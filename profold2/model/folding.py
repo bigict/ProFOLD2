@@ -5,12 +5,11 @@ import logging
 
 import torch
 from torch import nn
-from torch.cuda.amp import autocast
 from torch.nn import functional as F
 from einops import rearrange
 
 from profold2.common import residue_constants
-from profold2.model import commons, functional
+from profold2.model import accelerator, commons, functional
 from profold2.utils import exists
 
 logger = logging.getLogger(__name__)
@@ -165,7 +164,7 @@ class StructureModule(nn.Module):
       for i in range(self.structure_module_depth):
         is_last = i == (self.structure_module_depth - 1)
 
-        with autocast(enabled=False):
+        with accelerator.autocast(enabled=False):
           single_repr = self.ipa_block(
               single_repr.float(),
               mask=batch['mask'].bool(),
