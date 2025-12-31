@@ -347,6 +347,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           '%d %d %d seq.shape: %s pid: %s, clips: %s', epoch, it, jt, seq.shape,
           ','.join(batch['pid']), batch.get('clip')
       )
+      length_scaler = 1.0
+      if args.train_apply_sqrt_length_scale:
+        length_scaler = torch.sqrt(
+            (torch.mean(torch.sum(batch['mask'], dim=-1) + 1e-6)) / args.max_crop_len
+        )
 
       # maybe sync or not
       with no_sync_ctx(
@@ -360,7 +365,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                   shard_size=args.model_shard_size
               )
           )
-        grad_scaler.scale(r.loss * loss_scaler).backward()
+        grad_scaler.scale(r.loss * loss_scaler * length_scaler).backward()
 
       # running loss
       running_loss += MetricDict({'all': r.loss})
@@ -541,6 +546,12 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   )
   parser.add_argument(
       '--max_crop_len', type=int, default=255, help='crop protein whose length>LEN.'
+  )
+  parser.add_argument(
+      '--train_apply_sqrt_length_scale',
+      action='store_true',
+      help='multiply the final loss of each training example by the srqt of the number '
+           'of residues after cropping.'
   )
   parser.add_argument(
       '--crop_algorithm',
