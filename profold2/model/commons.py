@@ -13,7 +13,7 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from profold2.model import functional, kernel, profiler
+from profold2.model import accelerator, functional, kernel, profiler
 from profold2.utils import default, env, exists, version_cmp
 
 logger = logging.getLogger(__name__)
@@ -137,9 +137,6 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   del dropout_p, scale
   assert kernel.is_available()
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
-  if not exists(dtype) and hasattr(torch.cuda, 'is_bf16_supported'):
-    if torch.cuda.is_bf16_supported():
-      dtype_to = torch.bfloat16
   q, k, v = map(
       lambda t: rearrange(t.to(dtype=dtype_to), '... h i d -> ... i h d'), (q, k, v)
   )
@@ -158,9 +155,6 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
 def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   assert hasattr(F, 'scaled_dot_product_attention')
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
-  if not exists(dtype) and hasattr(torch.cuda, 'is_bf16_supported'):
-    if torch.cuda.is_bf16_supported():
-      dtype_to = torch.bfloat16
   q, k, v = map(lambda t: t.to(dtype=dtype_to), (q, k, v))
   _, attn_mask, attn_bias = attn_mask
   # HACK: experience value
@@ -503,11 +497,9 @@ class AxialAttention(nn.Module):
     if not kernel.is_available() and accept_kernel_fn:
       logger.warning('kernel is not available! disabled it.')
       accept_kernel_fn = 0
-    accept_kernel_dtype = env('AxialAttention_accept_kernel_dtype')
-    if accept_kernel_dtype in ('float16', 'f16'):
-      accept_kernel_dtype = torch.float16
-    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
-      accept_kernel_dtype = torch.bfloat16
+    accept_kernel_dtype = accelerator.autocast_dtype(
+        'AxialAttention_accept_kernel_dtype'
+    )
     self.attn_fn = functools.partial(
         evoformer_attn, dtype=accept_kernel_dtype
     ) if accept_kernel_fn else None
@@ -1341,13 +1333,9 @@ class AttentionWithBias(nn.Module):
     if not hasattr(F, 'scaled_dot_product_attention') and exists(accept_kernel_fn):
       logger.warning('F.scaled_dot_product_attention is not available! disabled it.')
       accept_kernel_fn = 0
-    accept_kernel_dtype = env('AttentionPairBias_accept_kernel_dtype')
-    if accept_kernel_dtype in ('float16', 'f16'):
-      accept_kernel_dtype = torch.float16
-    elif accept_kernel_dtype in ('bfloat16', 'bf16'):
-      accept_kernel_dtype = torch.bfloat16
-    elif accept_kernel_dtype in ('float32', 'f32'):
-      accept_kernel_dtype = torch.float32
+    accept_kernel_dtype = accelerator.autocast_dtype(
+        'AttentionPairBias_accept_kernel_dtype'
+    )
     self.attn_fn = functools.partial(
         pytorch_attn, dtype=accept_kernel_dtype
     ) if accept_kernel_fn else None
