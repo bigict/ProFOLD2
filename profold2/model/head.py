@@ -857,14 +857,10 @@ class PAEHead(nn.Module):
 
     # Compute the squared error for each alignment.
     def to_local(affine):
-      rotations, translations = affine
-      points = translations
-
-      # inverse frames
-      rotations = rearrange(rotations, '... h w -> ... w h')
-      translations = -torch.einsum('... w,... h w -> ... h', translations, rotations)
-      return torch.einsum('... j w,... i h w -> ... i j h', points,
-                          rotations) + rearrange(translations, '... i h -> ... i () h')
+      R, t = affine
+      return torch.einsum(
+          '... j w,... w h -> ... j h', t[..., None, :, :] - t[..., :, None, :], R
+      )
 
     # Shape (num_res, num_res)
     # First num_res are alignment frames, second num_res are the residues.

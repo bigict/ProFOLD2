@@ -400,9 +400,9 @@ def plddt(logits):
 
 def bin_centers_from_breaks(breaks):
   # Add half-step to get the center
-  step = (breaks[..., 1:] - breaks[..., :-1])
+  step = breaks[..., 1:] - breaks[..., :-1]
   step = torch.cat((step, torch.mean(step, dim=-1, keepdim=True)), dim=-1)
-  bin_centers = breaks + step
+  bin_centers = breaks + step / 2
   bin_centers = torch.cat((bin_centers, bin_centers[..., -1:] + step[..., -1:]), dim=-1)
   return bin_centers
 
@@ -522,6 +522,15 @@ def rigids_from_4x4(m):
   # Shape (..., 4, 4)
   assert m.shape[-2:] == (4, 4)
   return m[..., :3, :3], m[..., :3, 3]
+
+
+def rigids_to_4x4(frames):
+  rotations, translations = frames
+  assert rotations.shape[:-2] == translations.shape[:-1]
+  assert rotations.shape[-2:] == (3, 3) and translations.shape[-1] == 3
+  m = torch.cat((rotations, translations[..., None]), dim=-1)
+  m = torch.cat((m, torch.zeros(*m.shape[:-2], 1, 4, device=m.device)), dim=-2)
+  return m
 
 
 def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined=False):
