@@ -4,24 +4,24 @@ import contextlib
 from datetime import timedelta
 import functools
 import logging
-from typing import Optional
+from typing import Generator, Optional
 
 import torch
 
-from profold2.utils import default, env, version_cmp
+from profold2.utils import default, env, exists, version_cmp
 
 
-def device_count():
+def device_count() -> int:
   return torch.cuda.device_count()
 
 
-def device_type():
+def device_type() -> str:
   if torch.cuda.is_available():
     return 'cuda'
   return 'cpu'
 
 
-def world_size(nnodes: Optional[int] = None):
+def world_size(nnodes: Optional[int] = None) -> int:
   return env('WORLD_SIZE', defval=device_count() * default(nnodes, 1), dtype=int)
 
 
@@ -29,14 +29,26 @@ autocast = functools.partial(torch.amp.autocast, device_type())
 GradScaler = functools.partial(torch.amp.GradScaler, device_type())
 
 
+def autocast_dtype(env_key: Optional[str] = None) -> torch.dtype:
+  if exists(env_key):
+    dtype = env(env_key)
+    if dtype in ('float16', 'f16'):
+      return torch.float16
+    elif dtype in ('bfloat16', 'bf16'):
+      return torch.bfloat16
+    elif dtype in ('float32', 'f32'):
+      return torch.float32
+
+  if hasattr(torch.cuda, 'is_bf16_supported'):
+    if torch.cuda.is_bf16_supported():
+      return torch.bfloat16
+  return torch.float16
+
+
 @contextlib.contextmanager
-def amp(enabled: bool = True):
+def amp(enabled: bool = True) -> Generator:
   if enabled:
-    dtype = torch.float16
-    if hasattr(torch.cuda, 'is_bf16_supported'):
-      if torch.cuda.is_bf16_supported():
-        dtype = torch.bfloat16
-    ctx = functools.partial(autocast, dtype=dtype)
+    ctx = functools.partial(autocast, dtype=autocast_dtype('profold2_amp_dtype'))
     # FIXED ME: cache_enabled=True will crash :(
     if version_cmp(torch.__version__, '1.10.0') >= 0:
       ctx = functools.partial(ctx, cache_enabled=False)
