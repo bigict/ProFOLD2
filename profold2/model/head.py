@@ -154,7 +154,9 @@ class ContactHead(nn.Module):
       targets = (dist2 <= self.cutoff).float()
 
       with accelerator.autocast(enabled=False):
-        errors = F.binary_cross_entropy(logits, targets, reduction='none')
+        errors = F.binary_cross_entropy(
+            logits.float(), targets.float(), reduction='none'
+        )
 
       square_mask, square_weight = mask[..., :, None] * mask[..., None, :], 1.0
       square_mask = torch.triu(square_mask, diagonal=self.diagonal
@@ -1411,7 +1413,10 @@ class FitnessHead(nn.Module):
 
         with accelerator.autocast(enabled=False):
           errors = softmax_cross_entropy(
-              labels=labels, logits=motifs, mask=self.mask, gammar=self.focal_loss
+              labels=labels,
+              logits=motifs.float(),
+              mask=self.mask,
+              gammar=self.focal_loss
           )
         motif_mask = ((variant_label > self.label_threshold) &
                       variant_label_mask) | (~variant_label_mask)
