@@ -1171,9 +1171,9 @@ class FrameUpdater(nn.Module):
     # No rotation gradients between iterations to stabilize training.
     rotations = functional.quaternion_to_matrix(quaternions).detach()
     quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
-    translations = torch.einsum(
-        '... i c,... i r c -> ... i r', translation_update, rotations
-    ) + translations
+    translations = functional.rigids_apply(
+        (rotations, translations), translation_update
+    )
     return quaternions, translations
 
 
