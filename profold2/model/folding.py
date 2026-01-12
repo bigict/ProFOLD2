@@ -181,9 +181,9 @@ class StructureModule(nn.Module):
         quaternion_update = functional.l2_norm(quaternion_update)
 
         quaternions = functional.quaternion_multiply(quaternions, quaternion_update)
-        translations = torch.einsum(
-            '... i c, ... i r c -> ... i r', translation_update, rotations
-        ) + translations
+        translations = functional.rigids_apply(
+            (rotations, translations), translation_update
+        )
         rotations = functional.quaternion_to_matrix(quaternions)
         # No rotation gradients between iterations to stabilize training.
         if not is_last:
