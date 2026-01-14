@@ -1407,8 +1407,6 @@ def kabsch_rotation(
   if exists(mask):
     y = y * mask[..., None]
 
-  x, y = x.float(), y.float()
-
   # optimal rotation matrix via SVD of the convariance matrix {x.T * y}
   # v, _, w = torch.linalg.svd(x.T @ y)
   v, _, w = torch.linalg.svd(torch.einsum('... i c,... i d -> ... c d', x, y))
