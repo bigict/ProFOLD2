@@ -1407,18 +1407,17 @@ def kabsch_rotation(
   if exists(mask):
     y = y * mask[..., None]
 
-  with accelerator.autocast(enabled=False):
-    x, y = x.float(), y.float()
+  x, y = x.float(), y.float()
 
-    # optimal rotation matrix via SVD of the convariance matrix {x.T * y}
-    # v, _, w = torch.linalg.svd(x.T @ y)
-    v, _, w = torch.linalg.svd(torch.einsum('... i c,... i d -> ... c d', x, y))
+  # optimal rotation matrix via SVD of the convariance matrix {x.T * y}
+  # v, _, w = torch.linalg.svd(x.T @ y)
+  v, _, w = torch.linalg.svd(torch.einsum('... i c,... i d -> ... c d', x, y))
 
-    # determinant sign for direction correction
-    d = torch.sign(torch.det(v) * torch.det(w))
-    v[..., -1, -1] = v[..., -1, -1] * d
-    # Create Rotation matrix U
-    r = v @ w
+  # determinant sign for direction correction
+  d = torch.sign(torch.det(v) * torch.det(w))
+  v[..., -1, -1] = v[..., -1, -1] * d
+  # Create Rotation matrix U
+  r = v @ w
   return r
 
 
@@ -1506,9 +1505,8 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     with torch.no_grad():
       pred_ca = true_ca
 
-  return kabsch_transform(pred_ca, true_ca)
-
-  return R, t
+  with accelerator.autocast(enabled=False):
+    return kabsch_transform(pred_ca.float(), true_ca.float())
 
 
 def seq_crop_mask(fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_anchor):

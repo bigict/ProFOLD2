@@ -152,10 +152,11 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         )
 
         # rotate / align
-        coords_aligned, labels_aligned = functional.kabsch_align(
-            rearrange(coords, 'b l c d -> b (l c) d')[flat_cloud_mask],
-            rearrange(labels, 'b l c d -> b (l c) d')[flat_cloud_mask]
-        )
+        with accelerator.autocast(enabled=False):
+          coords_aligned, labels_aligned = functional.kabsch_align(
+              rearrange(coords.float(), 'b l c d -> b (l c) d')[flat_cloud_mask],
+              rearrange(labels.float(), 'b l c d -> b (l c) d')[flat_cloud_mask]
+          )
 
         tms = functional.tmscore(
             coords_aligned, labels_aligned, n=torch.sum(batch['mask'], dim=-1)
