@@ -752,14 +752,16 @@ def rigids_multiply(a, b):
 
 
 def rigids_apply(frames, points):
-  rotations, translations = frames
-  return torch.einsum('... h w,... w -> ... h', rotations, points) + translations
+  R, t = frames
+  with accelerator.autocast(enabled=False):
+    return torch.einsum('... h w,... w -> ... h', R.float(), points.float()) + t.float()
 
 
 def rigids_rotate(frames, mat3x3):
-  rotations, translations = frames
-  rotations = torch.einsum('... h d, ... d w -> ... h w', rotations, mat3x3)
-  return rotations, translations
+  R, t = frames
+  with accelerator.autocast(enabled=False):
+    R = torch.einsum('... h d, ... d w -> ... h w', R.float(), mat3x3.float())
+    return R, t
 
 
 def rigids_scale(frames, position_scale):

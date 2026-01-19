@@ -146,17 +146,19 @@ class StructureModule(nn.Module):
     original_dtype = single_repr.dtype
     single_repr, pairwise_repr = map(lambda t: t.float(), (single_repr, pairwise_repr))
 
+    # initial frames
+    if 'frames' in representations and exists(representations['frames']):
+      quaternions, translations = representations['frames']
+    else:
+      quaternions = torch.tensor([1., 0., 0., 0.], device=device)
+      quaternions = torch.tile(quaternions, b + (n, 1))
+      translations = torch.zeros(b + (n, 3), device=device)
+
     outputs = []
 
     # iterative refinement with equivariant transformer in high precision
-    with commons.torch_default_dtype(torch.float32):
-      # initial frames
-      if 'frames' in representations and exists(representations['frames']):
-        quaternions, translations = representations['frames']
-      else:
-        quaternions = torch.tensor([1., 0., 0., 0.], device=device)
-        quaternions = torch.tile(quaternions, b + (n, 1))
-        translations = torch.zeros(b + (n, 3), device=device)
+    with accelerator.autocast(enabled=False):
+      quaternions, translations = quaternions.float(), translations.float()
       rotations = functional.quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
@@ -164,14 +166,13 @@ class StructureModule(nn.Module):
       for i in range(self.structure_module_depth):
         is_last = i == (self.structure_module_depth - 1)
 
-        with accelerator.autocast(enabled=False):
-          single_repr = self.ipa_block(
-              single_repr.float(),
-              mask=batch['mask'].bool(),
-              pairwise_repr=pairwise_repr.float(),
-              rotations=rotations.float(),
-              translations=translations.float()
-          )
+        single_repr = self.ipa_block(
+            single_repr.float(),
+            mask=batch['mask'].bool(),
+            pairwise_repr=pairwise_repr.float(),
+            rotations=rotations,
+            translations=translations
+        )
 
         # update quaternion and translation
         quaternion_update, translation_update = self.to_affine_update(single_repr
