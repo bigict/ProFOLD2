@@ -8,7 +8,6 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import accelerator
 from profold2.utils import default, exists
 
 
@@ -1503,8 +1502,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     with torch.no_grad():
       pred_ca = true_ca
 
-  with accelerator.autocast(enabled=False):
-    return kabsch_transform(pred_ca.float(), true_ca.float())
+  return kabsch_transform(pred_ca.float(), true_ca.float())
 
 
 def seq_crop_mask(fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_anchor):
