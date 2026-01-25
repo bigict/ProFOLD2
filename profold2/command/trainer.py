@@ -23,7 +23,7 @@ from profold2.data import dataset
 from profold2.data.utils import (
     embedding_get_labels, tensor_to_numpy, weights_from_file
 )
-from profold2.model import accelerator, FeatureBuilder, MetricDict, ReturnValues
+from profold2.model import accelerator, optim, FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
 from profold2.utils import exists
 
