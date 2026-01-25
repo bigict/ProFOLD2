@@ -25,7 +25,7 @@ from profold2.data.utils import (
 )
 from profold2.model import accelerator, optim, FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
-from profold2.utils import exists
+from profold2.utils import default, exists
 
 from profold2.command import worker
 
@@ -260,11 +260,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
             break
       return params
 
-    optim = Adam(
+    optimizer = Adam(
         model_params_groups(args.model_params_optim_option), lr=args.learning_rate
     )
   else:
-    optim = Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = Adam(model.parameters(), lr=args.learning_rate)
 
   # tensorboard
   writer = SummaryWriter(os.path.join(args.prefix, 'runs', 'eval')
@@ -310,11 +310,20 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         os.path.join(args.prefix, 'checkpoints'),
         max_to_keep=args.checkpoint_max_to_keep,
         model=model,
-        optimizer=optim
+        optimizer=optimizer
     )
     global_step = checkpoint_manager.restore_or_initialize() + 1
     logging.info('checkpoint_manager.global_step: %d', global_step)
     model.train()
+
+  scheduler = optim.get_scheduler(
+      args.lr_scheduler,
+      optimizer,
+      num_warmup_steps=args.lr_scheduler_warmup_steps,
+      num_training_steps=default(args.lr_scheduler_training_steps, args.num_batches),
+      eta_min=args.lr_scheduler_eta_min,
+      last_global_step=global_step
+  )
 
   # .. note:: When a model is trained on ``M`` nodes with ``batch=N``, the
   #     gradient will be ``M`` times smaller when compared to the same model
@@ -331,9 +340,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                  1) / (args.gradient_accumulate_every or 1.0)
 
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
-    optim.zero_grad(set_to_none=True)
+    optimizer.zero_grad(set_to_none=True)
 
-    logging.debug('_step it: %d, loss_scaler: %f', it, loss_scaler)
+    logging.debug(
+        '_step it: %d, loss_scaler: %f, lr: %s', it, loss_scaler, scheduler.get_lr()
+    )
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
@@ -378,9 +389,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       # writer.add_scalar(f'Loss/train@{k}', v, it)
 
-    # optim.step()
-    grad_scaler.step(optim)
+    # optimizer.step()
+    grad_scaler.step(optimizer)
     grad_scaler.update()
+    scheduler.step()
 
   def batch_seq_only(batch):
     batch = copy.copy(batch)
@@ -686,6 +698,31 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   )
   parser.add_argument(
       '-l', '--learning_rate', type=float, default='1e-3', help='learning rate.'
+  )
+  parser.add_argument(
+      '--lr_scheduler',
+      type=str,
+      default=optim.SchedulerType.CONSTANT.value,
+      choices=[m.value for m in optim.SchedulerType],
+      help='lr scheduler.'
+  )
+  parser.add_argument(
+      '--lr_scheduler_warmup_steps',
+      type=float,
+      default=None,
+      help='num of warmup steps for lr scheduler.'
+  )
+  parser.add_argument(
+      '--lr_scheduler_training_steps',
+      type=float,
+      default=None,
+      help='num of training steps for applying lr scheduler.'
+  )
+  parser.add_argument(
+      '--lr_scheduler_eta_min',
+      type=float,
+      default=0.0,
+      help='eta_min for applying lr scheduler.'
   )
 
   parser.add_argument(
