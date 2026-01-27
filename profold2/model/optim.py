@@ -29,18 +29,14 @@ def get_scheduler(
 
   if name == SchedulerType.CONSTANT:
 
-    def lr_lambda(
-        current_step: int, num_warmup_steps: Optional[int] = None
-    ) -> float:
+    def lr_lambda(current_step: int, num_warmup_steps: Optional[int] = None) -> float:
       current_step = current_step + last_global_step
       if exists(num_warmup_steps) and current_step < num_warmup_steps:
         return current_step / max(1.0, num_warmup_steps)
       return 1.0
   elif name == SchedulerType.COSINE:
 
-    def lr_lambda(
-        current_step: int, num_warmup_steps: Optional[int] = None
-    ) -> float:
+    def lr_lambda(current_step: int, num_warmup_steps: Optional[int] = None) -> float:
       current_step = current_step + last_global_step
       if exists(num_warmup_steps) and current_step < num_warmup_steps:
         return current_step / max(1.0, num_warmup_steps)
@@ -50,12 +46,10 @@ def get_scheduler(
       progress = (
           (current_step - num_warmup_steps) / (num_training_steps - num_warmup_steps)
       )
-      return 0.5  * (1.0 - eta_min) * (1.0 + math.cos(math.pi * progress)) + eta_min
+      return 0.5 * (1.0 - eta_min) * (1.0 + math.cos(math.pi * progress)) + eta_min
   elif name == SchedulerType.LINEAR:
 
-    def lr_lambda(
-        current_step: int, num_warmup_steps: Optional[int] = None
-    ) -> float:
+    def lr_lambda(current_step: int, num_warmup_steps: Optional[int] = None) -> float:
       current_step = current_step + last_global_step
       if exists(num_warmup_steps) and current_step < num_warmup_steps:
         return current_step / max(1.0, num_warmup_steps)
