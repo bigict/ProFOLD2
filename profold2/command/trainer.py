@@ -377,7 +377,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
                   shard_size=args.model_shard_size
               )
           )
-        grad_scaler.scale(r.loss * loss_scaler * length_scaler).backward()
+        # NOTE: do GradScaler.scale first!
+        (grad_scaler.scale(r.loss) * loss_scaler * length_scaler).backward()
 
       # running loss
       running_loss += MetricDict({'all': r.loss})
