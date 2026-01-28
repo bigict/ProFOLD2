@@ -343,7 +343,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     optimizer.zero_grad(set_to_none=True)
 
     logging.debug(
-        '_step it: %d, loss_scaler: %f, lr: %s', it, loss_scaler, scheduler.get_lr()
+        '_step it: %d, loss_scaler: %f, lr: %s', it, loss_scaler,
+        scheduler.get_last_lr()
     )
 
     running_loss = MetricDict()
