@@ -46,6 +46,41 @@ def torch_allow_tf32(allow=True):
     torch.backends.cuda.matmul.allow_tf32 = matmul_allow_tf32
 
 
+@contextlib.contextmanager
+def torch_allow_fp16_reduced_precision_reduction(allow=True):
+  if hasattr(torch.backends, 'cuda') and hasattr(
+      torch.backends.cuda.matmul, 'allow_fp16_reduced_precision_reduction'
+  ):
+    matmul_allow_fp16 = getattr(
+        torch.backends.cuda.matmul, 'allow_fp16_reduced_precision_reduction'
+    )
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = allow
+  if hasattr(torch.backends, 'cuda') and hasattr(
+      torch.backends.cuda.matmul, 'allow_bf16_reduced_precision_reduction'
+  ):
+    matmul_allow_bf16 = getattr(
+        torch.backends.cuda.matmul, 'allow_bf16_reduced_precision_reduction'
+    )
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = allow
+  yield
+  if hasattr(torch.backends, 'cuda') and hasattr(
+      torch.backends.cuda.matmul, 'allow_bf16_reduced_precision_reduction'
+  ):
+    setattr(
+        torch.backends.cuda.matmul,
+        'allow_bf16_reduced_precision_reduction',
+        matmul_allow_bf16
+    )
+  if hasattr(torch.backends, 'cuda') and hasattr(
+      torch.backends.cuda.matmul, 'allow_fp16_reduced_precision_reduction'
+  ):
+    setattr(
+        torch.backends.cuda.matmul,
+        'allow_fp16_reduced_precision_reduction',
+        matmul_allow_fp16
+    )
+
+
 # helpers
 def init_linear_(layer, w=0., b=0.):
   if env('profold2_init_linear_disabled', defval=0, dtype=int):
@@ -1360,7 +1395,7 @@ class AttentionWithBias(nn.Module):
 
     if exists(pair_mask):
       pair_bias = pair_bias.masked_fill(
-          ~pair_mask[...,None, :, :], max_neg_value(pair_bias)
+          ~pair_mask[..., None, :, :], max_neg_value(pair_bias)
       )
     x = self.attn(
         x,
