@@ -11,9 +11,8 @@ import torch
 import torch.multiprocessing as mp
 from torch import nn
 
-from profold2.model import accelerator, AlphaFold2
-from profold2.model.commons import torch_allow_tf32
-from profold2.utils import exists, version_cmp
+from profold2.model import accelerator, commons, AlphaFold2
+from profold2.utils import env, exists, version_cmp
 
 
 class _WorkerLogRecordFactory(object):
@@ -210,8 +209,15 @@ class WorkerFunction(object):
     # available on new NVIDIA GPUs since Ampere, internally to compute
     # matmul (matrix multiplies and batched matrix multiplies) and
     # convolutions.
-    with torch_allow_tf32(allow=True):
-      self.work_fn(xpu, args)
+    with commons.torch_allow_tf32(allow=True):
+      with commons.torch_allow_fp16_reduced_precision_reduction(
+          env(
+              'profold2_allow_fp16_reduced_precision_reduction',
+              dtype=bool,
+              defval=False
+          )
+      ):
+        self.work_fn(xpu, args)
 
     #--------------
     # cleanup
