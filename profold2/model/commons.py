@@ -1281,9 +1281,11 @@ class RelativePositionEmbedding(nn.Module):
         feats = [dij_token_index, bij_seq_entity[..., None], dij_seq_sym]
 
       if exists(self.s_max):
-        dij_seq_index = torch.cat(
-            [F.one_hot(dij_seq_index.long(), 2 * (self.r_max + 1))] + feats, dim=-1
-        ).float()
+        with accelerator.autocast(enabled=False):
+          dij_seq_index = torch.cat(
+              [F.one_hot(dij_seq_index.long(), 2 * (self.r_max + 1))] + feats, dim=-1
+          ).float()
+          return self.embedding(dij_seq_index)
       return self.embedding(dij_seq_index)
 
     args = [seq_index]
