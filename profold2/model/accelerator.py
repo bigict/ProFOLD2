@@ -25,18 +25,14 @@ def world_size(nnodes: Optional[int] = None) -> int:
   return env('WORLD_SIZE', defval=device_count() * default(nnodes, 1), dtype=int)
 
 
-autocast = functools.partial(torch.amp.autocast, device_type())
-GradScaler = functools.partial(torch.amp.GradScaler, device_type())
-
-
-def autocast_dtype(env_key: Optional[str] = None) -> torch.dtype:
+def autocast_dtype(env_key: Optional[str] = 'profold2_amp_dtype') -> torch.dtype:
   if exists(env_key):
     dtype = env(env_key)
-    if dtype in ('float16', 'f16'):
+    if dtype in ('float16', 'fp16'):
       return torch.float16
     elif dtype in ('bfloat16', 'bf16'):
       return torch.bfloat16
-    elif dtype in ('float32', 'f32'):
+    elif dtype in ('float32', 'fp32'):
       return torch.float32
 
   if hasattr(torch.cuda, 'is_bf16_supported'):
@@ -45,10 +41,20 @@ def autocast_dtype(env_key: Optional[str] = None) -> torch.dtype:
   return torch.float16
 
 
+autocast = functools.partial(torch.amp.autocast, device_type())
+
+
+class GradScaler(torch.amp.GradScaler):
+  def __init__(self, enabled: bool = True, **kwargs) -> None:
+    super().__init__(
+        device_type(), **kwargs, enabled=(enabled and autocast_dtype() == torch.float16)
+    )
+
+
 @contextlib.contextmanager
 def amp(enabled: bool = True) -> Generator:
   if enabled:
-    ctx = functools.partial(autocast, dtype=autocast_dtype('profold2_amp_dtype'))
+    ctx = functools.partial(autocast, dtype=autocast_dtype())
     # FIXED ME: cache_enabled=True will crash :(
     if version_cmp(torch.__version__, '1.10.0') >= 0:
       ctx = functools.partial(ctx, cache_enabled=False)
