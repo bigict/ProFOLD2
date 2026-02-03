@@ -710,13 +710,13 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   )
   parser.add_argument(
       '--lr_scheduler_warmup_steps',
-      type=float,
+      type=int,
       default=None,
       help='num of warmup steps for lr scheduler.'
   )
   parser.add_argument(
       '--lr_scheduler_training_steps',
-      type=float,
+      type=int,
       default=None,
       help='num of training steps for applying lr scheduler.'
   )
