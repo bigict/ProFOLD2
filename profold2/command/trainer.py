@@ -369,7 +369,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with no_sync_ctx(
           it != global_step and jt + 1 != args.gradient_accumulate_every, model
       ):
-        with accelerator.amp(grad_scaler.is_enabled()):  # Automatic Mixed Precision
+        with accelerator.amp(args.amp_enabled):  # Automatic Mixed Precision
           r = ReturnValues(
               **model(
                   batch=batch,
