@@ -22,6 +22,7 @@ def get_scheduler(
     optimizer: Optimizer,
     num_warmup_steps: Optional[int] = None,
     num_training_steps: Optional[int] = None,
+    factor: float = 1.0,
     eta_min: float = 0.0,
     last_global_step: int = 0,
 ) -> LambdaLR:
@@ -62,6 +63,11 @@ def get_scheduler(
       )
       return (1.0 - eta_min) * progress + eta_min
 
+  def lr_with_factor(
+      current_step: int, num_warmup_steps: Optional[int] = None
+  ) -> float:
+    return factor * lr_lambda(current_step, num_warmup_steps)
+
   return LambdaLR(
-      optimizer, functools.partial(lr_lambda, num_warmup_steps=num_warmup_steps)
+      optimizer, functools.partial(lr_with_factor, num_warmup_steps=num_warmup_steps)
   )
