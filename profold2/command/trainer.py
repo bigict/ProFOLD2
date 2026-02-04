@@ -316,15 +316,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     logging.info('checkpoint_manager.global_step: %d', global_step)
     model.train()
 
-  scheduler = optim.get_scheduler(
-      args.lr_scheduler,
-      optimizer,
-      num_warmup_steps=args.lr_scheduler_warmup_steps,
-      num_training_steps=default(args.lr_scheduler_training_steps, args.num_batches),
-      eta_min=args.lr_scheduler_eta_min,
-      last_global_step=global_step
-  )
-
   # .. note:: When a model is trained on ``M`` nodes with ``batch=N``, the
   #     gradient will be ``M`` times smaller when compared to the same model
   #     trained on a single node with ``batch=M*N`` if the loss is summed (NOT
@@ -335,9 +326,22 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   #     cases, you can just treat a DistributedDataParallel wrapped model, a
   #     DataParallel wrapped model and an ordinary model on a single GPU as the
   #     same (E.g. using the same learning rate for equivalent batch size).
+  # .. on small technicality:: If you are using an optimizer like Adam, the scaling
+  #     isn't always perfectly linear because Adam normalizes gradients by their
+  #     moving average of squared values (the variance). For Adam, sometimes scaling
+  #     by ``sqrt{M}`` is more effective than scaling by ``M``.
+  scheduler = optim.get_scheduler(
+      args.lr_scheduler,
+      optimizer,
+      num_warmup_steps=args.lr_scheduler_warmup_steps,
+      num_training_steps=default(args.lr_scheduler_training_steps, args.num_batches),
+      factor=(accelerator.world_size(args.nnodes) or 1)**.5,
+      eta_min=args.lr_scheduler_eta_min,
+      last_global_step=global_step
+  )
+
   grad_scaler = accelerator.GradScaler(enabled=args.amp_enabled)
-  loss_scaler = (accelerator.world_size(args.nnodes) or
-                 1) / (args.gradient_accumulate_every or 1.0)
+  loss_scaler = 1 / (args.gradient_accumulate_every or 1.0)
 
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optimizer.zero_grad(set_to_none=True)
