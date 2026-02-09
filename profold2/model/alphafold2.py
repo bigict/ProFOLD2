@@ -13,7 +13,7 @@ from torch import nn
 from einops import rearrange
 
 from profold2.common import residue_constants
-from profold2.model import commons, folding, functional
+from profold2.model import accelerator, commons, folding, functional
 from profold2.model.evoformer import Evoformer
 from profold2.model.head import HeaderBuilder
 from profold2.utils import env, exists, status
@@ -282,27 +282,29 @@ class AlphaFold2(nn.Module):
     representations.update(msa=m, pair=x, single=s, frames=t, single_init=s)
 
     ret.headers = {}
-    for name, module, options in self.headers:
-      value = module(ret.headers, representations, batch)
-      if not exists(value):
-        continue
-      ret.headers[name] = value
-      if 'representations' in value:
-        representations.update(value['representations'])
-    if 'folding' in ret.headers:
-      batch = folding.multi_chain_permutation_alignment(ret.headers['folding'], batch)
-    if self.training and compute_loss:
+    with accelerator.autocast(enabled=False):
+      representations = functional.to(representations, dtype=torch.float)
       for name, module, options in self.headers:
-        if not hasattr(module, 'loss') or name not in ret.headers:
+        value = module(ret.headers, representations, batch)
+        if not exists(value):
           continue
-        loss = module.loss(ret.headers[name], batch)
-        if exists(loss):
-          ret.headers[name].update(loss)
-          lossw = loss['loss'] * options.get('weight', 1.0)
-          if exists(ret.loss):
-            ret.loss = commons.tensor_add(ret.loss, lossw)
-          else:
-            ret.loss = lossw
+        ret.headers[name] = value
+        if 'representations' in value:
+          representations.update(value['representations'])
+      if 'folding' in ret.headers:
+        batch = folding.multi_chain_permutation_alignment(ret.headers['folding'], batch)
+      if self.training and compute_loss:
+        for name, module, options in self.headers:
+          if not hasattr(module, 'loss') or name not in ret.headers:
+            continue
+          loss = module.loss(ret.headers[name], batch)
+          if exists(loss):
+            ret.headers[name].update(loss)
+            lossw = loss['loss'] * options.get('weight', 1.0)
+            if exists(ret.loss):
+              ret.loss = commons.tensor_add(ret.loss, lossw)
+            else:
+              ret.loss = lossw
 
     if return_recyclables:
       msa_first_row_repr, pairwise_repr = m[..., 0, :, :], representations['pair']

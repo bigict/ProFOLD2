@@ -142,21 +142,25 @@ class StructureModule(nn.Module):
     single_repr_init = single_repr
     single_repr = self.single_repr_dim(single_repr)
 
-    # prepare float32 precision for equivariance
-    original_dtype = single_repr.dtype
-    single_repr, pairwise_repr = map(lambda t: t.float(), (single_repr, pairwise_repr))
+    # initial frames
+    if 'frames' in representations and exists(representations['frames']):
+      quaternions, translations = representations['frames']
+    else:
+      quaternions = torch.tensor([1., 0., 0., 0.], device=device)
+      quaternions = torch.tile(quaternions, b + (n, 1))
+      translations = torch.zeros(b + (n, 3), device=device)
 
     outputs = []
 
     # iterative refinement with equivariant transformer in high precision
-    with commons.torch_default_dtype(torch.float32):
-      # initial frames
-      if 'frames' in representations and exists(representations['frames']):
-        quaternions, translations = representations['frames']
-      else:
-        quaternions = torch.tensor([1., 0., 0., 0.], device=device)
-        quaternions = torch.tile(quaternions, b + (n, 1))
-        translations = torch.zeros(b + (n, 3), device=device)
+    with accelerator.autocast(enabled=False):
+      # prepare float32 precision for equivariance
+      single_repr, pairwise_repr = functional.to(
+          (single_repr, pairwise_repr), dtype=torch.float
+      )
+      quaternions, translations = functional.to(
+          (quaternions, translations), dtype=torch.float
+      )
       rotations = functional.quaternion_to_matrix(quaternions).detach()
 
       # go through the layers and apply invariant point attention and
@@ -164,14 +168,13 @@ class StructureModule(nn.Module):
       for i in range(self.structure_module_depth):
         is_last = i == (self.structure_module_depth - 1)
 
-        with accelerator.autocast(enabled=False):
-          single_repr = self.ipa_block(
-              single_repr.float(),
-              mask=batch['mask'].bool(),
-              pairwise_repr=pairwise_repr.float(),
-              rotations=rotations.float(),
-              translations=translations.float()
-          )
+        single_repr = self.ipa_block(
+            single_repr,
+            mask=batch['mask'].bool(),
+            pairwise_repr=pairwise_repr,
+            rotations=rotations,
+            translations=translations
+        )
 
         # update quaternion and translation
         quaternion_update, translation_update = self.to_affine_update(single_repr
@@ -197,7 +200,6 @@ class StructureModule(nn.Module):
               functional.l2_norm(angles)
           )
           coords = functional.rigids_to_positions(frames, batch['seq'])
-          coords.type(original_dtype)
           outputs.append(
               dict(
                   frames=functional.rigids_scale(
@@ -212,4 +214,5 @@ class StructureModule(nn.Module):
 
 
 def multi_chain_permutation_alignment(value, batch):
-  return functional.multi_chain_permutation_alignment(value, batch)
+  with accelerator.autocast(enabled=False):
+    return functional.multi_chain_permutation_alignment(value, batch)

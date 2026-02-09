@@ -282,7 +282,7 @@ class CoevolutionHead(nn.Module):
           '... m j d,b i j q,q c d,d -> ... m i c', msa, eij, states, self.mask
       )
       ret.update(wab=states)
-      # eij = torch.einsum('b i j q,q c d -> b i j c d', eij, states)
+      # eij = torch.einsum('... i j q,q c d -> ... i j c d', eij, states)
     else:  # native potts model
       eij = rearrange(eij, '... i j (c d) -> ... i j c d', c=num_class, d=num_class)
       hi = torch.einsum('... m j d,b i j c d,d -> ... m i c', msa, eij, self.mask)
@@ -687,7 +687,7 @@ class FoldingHead(nn.Module):
 
     assert 'traj' in value
     # loss
-    loss = (fape_loss(value['traj'], batch) + torsion_angle_loss(value['traj'], batch))
+    loss = fape_loss(value['traj'], batch) + torsion_angle_loss(value['traj'], batch)
 
     return dict(loss=loss)
 
@@ -1591,9 +1591,10 @@ class TMscoreHead(nn.Module):
       )
       with torch.no_grad():
         # rotate / align
-        pred_points, true_points = functional.kabsch_align(
-            pred_points, true_points, mask=coord_mask
-        )
+        with accelerator.autocast(enabled=False):
+          pred_points, true_points = functional.kabsch_align(
+              pred_points.float(), true_points.float(), mask=coord_mask
+          )
         n = torch.sum(batch['mask'], dim=-1, keepdim=True)
         tms = functional.tmscore(pred_points, true_points, n=n)
       tms = torch.where(torch.any(coord_mask, dim=-1), tms, 0)
