@@ -8,7 +8,6 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import accelerator
 from profold2.utils import default, exists
 
 
@@ -21,6 +20,23 @@ def apc(x, dim=None, epsilon=1e-8):
 
   avg = a1 * a2 / (a12 + epsilon)
   return x - avg
+
+
+def to(x, *args, **kwargs):
+  """Performs Tensor dtype and/or device conversion. A torch.dtype and torch.device
+     are inferred from the arguments of to(*args, **kwargs).
+     See ```torch.Tensor.to```"""
+  if isinstance(x, dict):
+    for k, v in x.items():
+      x[k] = to(v, *args, **kwargs)
+  elif isinstance(x, list):
+    for i, v in enumerate(x):
+      x[i] = to(v, *args, **kwargs)
+  elif isinstance(x, tuple):
+    x = tuple(to(v, *args, **kwargs) for v in x)
+  elif isinstance(x, torch.Tensor):
+    x = x.to(*args, **kwargs)
+  return x
 
 
 def l2_norm(v, dim=-1, epsilon=1e-12):
@@ -1503,8 +1519,7 @@ def optimal_transform_create(pred_points, true_points, points_mask):
     with torch.no_grad():
       pred_ca = true_ca
 
-  with accelerator.autocast(enabled=False):
-    return kabsch_transform(pred_ca.float(), true_ca.float())
+  return kabsch_transform(pred_ca.float(), true_ca.float())
 
 
 def seq_crop_mask(fgt_seq_index, fgt_seq_color, seq_index, seq_color, seq_anchor):
