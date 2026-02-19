@@ -345,19 +345,26 @@ def find_structural_violations(
     return loss_dict
 
   # Compute between residue backbone violations of bonds and angles.
-  connection_violations = to_numpy(
-      functional.between_residue_bond_loss(
-          pred_points, points_mask, residue_index, aatypes
+  violations = {}
+  violations.update(
+      to_numpy(
+          functional.between_residue_bond_loss(
+              pred_points, points_mask, residue_index, aatypes
+          )
       )
   )
-  between_residue_violations = to_numpy(
-      functional.between_residue_clash_loss(
-          pred_points, points_mask, residue_index, aatypes
+  violations.update(
+      to_numpy(
+          functional.between_residue_clash_loss(
+              pred_points, points_mask, residue_index, aatypes
+          )
       )
   )
-  within_residue_violations = to_numpy(
-      functional.within_residue_clash_loss(
-          pred_points, points_mask, residue_index, aatypes
+  violations.update(
+      to_numpy(
+          functional.within_residue_clash_loss(
+              pred_points, points_mask, residue_index, aatypes
+          )
       )
   )
 
@@ -365,9 +372,9 @@ def find_structural_violations(
   per_residue_violation_mask = np.max(
       np.stack(
           [
-              connection_violations['per_residue_violation_mask'],
-              np.max(between_residue_violations['per_atom_clash_mask'], axis=-1),
-              np.max(within_residue_violations['per_atom_clash_mask'], axis=-1)
+              violations['per_residue_violation_mask'],
+              np.max(violations['between_residue_per_atom_clash_mask'], axis=-1),
+              np.max(violations['within_residue_per_atom_clash_mask'], axis=-1)
           ]
       ),
       axis=0
