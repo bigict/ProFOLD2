@@ -56,12 +56,12 @@ if [ x"${platform}" = x"slurm" ]; then
   node_opts=""
 else
   master_addr=${master_addr:-"127.0.0.1"}
-  node_opts="--nnodes=${nnodes:-1} --node_rank=${node_rank:-0}"
+  node_opts="+nnodes=${nnodes:-1} +node_rank=${node_rank:-0}"
 fi
 master_port=${master_port:-23456}
 echo "MasterAddr=${master_addr}:${master_port}"
 echo "==================================="
-node_opts="${node_opts} --init_method=tcp://${master_addr}:${master_port}"
+node_opts="${node_opts} +init_method=tcp://${master_addr}:${master_port}"
 
 ## init virtual environment if needed
 conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
@@ -81,13 +81,13 @@ runner="python"
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun ${runner}"
 fi
-${runner} ${PWD}/main.py ${node_opts} predict \
-    --prefix=${CWD}/${exp}.pred${model_suffix} \
+${runner} ${PWD}/main.py predict \
+    ${node_opts} \
+    +prefix=${CWD}/${exp}.pred${model_suffix} \
     \
-    --models ${CWD}/${exp}.folding/model.pth${model_suffix} \
-    --map_location=cpu \
-    --model_recycles=2 \
-    --model_shard_size=256 \
+    +models=[${CWD}/${exp}.folding/model.pth${model_suffix}] \
+    +model_recycles=2 \
+    +model_shard_size=256 \
     \
-    --fasta_fmt=single \
+    +fasta_fmt=single \
     $*
