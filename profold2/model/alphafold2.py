@@ -247,42 +247,9 @@ class AlphaFold2(nn.Module):
     if 'recyclables' not in batch:
       b, n, device = seq.shape[:-1], seq.shape[-1], seq.device
       _, dim_msa, dim_pairwise = self.dim  # embedd_dim_get(self.dim)
-      if exists(self.conditional_pos_linear):
-        # assert all(key in batch for key in ('cond_mask', 'coord', 'coord_mask'))
-        if 'cond_mask' in batch:
-          cond_mask = batch['cond_mask']
-        else:
-          cond_mask = torch.zeros(b + (n, ), device=device)
-        cond_mask = cond_mask[..., :, None] * cond_mask[..., None, :]
-
-        if 'coord' in batch:
-          coord = batch['coord']
-        else:
-          coord = torch.zeros(
-              b + (n, residue_constants.atom14_type_num, 3), device=device
-          )
-        if 'coord_mask' in batch:
-          coord_mask = batch['coord_mask']
-        else:
-          coord_mask = torch.zeros(
-              b + (n, residue_constants.atom14_type_num), device=device
-          )
-        pseudo_beta, pseudo_beta_mask = functional.pseudo_beta_fn(
-            seq, coord, coord_mask
-        )
-        dgram_mask = pseudo_beta_mask[..., :, None] * pseudo_beta_mask[..., None, :]
-        dgram = functional.distogram_from_positions(
-            self.conditional_pos_breaks, pseudo_beta
-        )
-        pairwise_repr = self.conditional_pos_linear(dgram) * dgram_mask[..., None]
-
-        pairwise_repr = pairwise_repr * cond_mask[..., None]
-      else:
-        pairwise_repr = torch.zeros(b + (n, n, dim_pairwise), device=device)
-
       batch['recyclables'] = Recyclables(
           msa_first_row_repr=torch.zeros(b + (n, dim_msa), device=device),
-          pairwise_repr=pairwise_repr,
+          pairwise_repr=torch.zeros(b + (n, n, dim_pairwise), device=device),
           coords=torch.zeros(b + (n, residue_constants.atom_type_num, 3), device=device)
       )
     recyclables = batch['recyclables']
@@ -304,6 +271,34 @@ class AlphaFold2(nn.Module):
 
     # add recyclables, if present
     if exists(recyclables):
+      if exists(self.conditional_pos_linear):
+        # assert all(key in batch for key in ('cond_mask', 'coord', 'coord_mask'))
+        if 'cond_mask' in batch:
+          cond_mask = batch['cond_mask']
+        else:
+          cond_mask = torch.zeros(b + (n, ), device=device)
+        cond_mask = cond_mask[..., :, None] * cond_mask[..., None, :]
+        if 'coord' in batch:
+          coord = batch['coord']
+        else:
+          coord = torch.zeros(
+              b + (n, residue_constants.atom14_type_num, 3), device=device
+          )
+        if 'coord_mask' in batch:
+          coord_mask = batch['coord_mask']
+        else:
+          coord_mask = torch.zeros(
+              b + (n, residue_constants.atom14_type_num), device=device
+          )
+        pseudo_beta, pseudo_beta_mask = functional.pseudo_beta_fn(
+            seq, coord, coord_mask
+        )
+        dgram_mask = pseudo_beta_mask[..., :, None] * pseudo_beta_mask[..., None, :]
+        dgram = functional.distogram_from_positions(
+            self.conditional_pos_breaks, pseudo_beta
+        )
+        pairwise_repr = self.conditional_pos_linear(dgram) * dgram_mask[..., None]
+        x = commons.tensor_add(x, pairwise_repr * cond_mask[..., None])
       if exists(recyclables.coords) and exists(self.recycling_pos_linear):
         pseudo_beta = functional.pseudo_beta_fn(seq, recyclables.coords)
         dgram = functional.distogram_from_positions(
