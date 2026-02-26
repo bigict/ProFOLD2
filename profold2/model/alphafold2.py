@@ -270,10 +270,11 @@ class AlphaFold2(nn.Module):
         pseudo_beta, pseudo_beta_mask = functional.pseudo_beta_fn(
             seq, coord, coord_mask
         )
+        dgram_mask = pseudo_beta_mask[..., :, None] * pseudo_beta_mask[..., None, :]
         dgram = functional.distogram_from_positions(
             self.conditional_pos_breaks, pseudo_beta
         )
-        pairwise_repr = self.conditional_pos_linear(dgram) * pseudo_beta_mask[..., None]
+        pairwise_repr = self.conditional_pos_linear(dgram) * dgram_mask[..., None]
 
         pairwise_repr = pairwise_repr * cond_mask[..., None]
       else:
