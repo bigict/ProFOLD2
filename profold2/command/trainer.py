@@ -214,6 +214,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       accept_msa_attn=args.model_evoformer_accept_msa_attn,
       accept_frame_attn=args.model_evoformer_accept_frame_attn,
       accept_frame_update=args.model_evoformer_accept_frame_update,
+      conditional_pos=args.model_conditional_pos,
+      recycling_frames=args.model_recycling_frames,
+      recycling_pos=args.model_recycling_pos,
       headers=headers
   )
   ####
@@ -742,6 +745,11 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       type=str,
       default='model_headers_main.json',
       help='json format headers of model.'
+  )
+  parser.add_argument(
+      '--model_conditional_pos',
+      action='store_true',
+      help='enable backbone atom position conditional.'
   )
   parser.add_argument(
       '--model_recycles', type=int, default=2, help='number of recycles in model.'
