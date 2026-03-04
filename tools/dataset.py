@@ -83,7 +83,7 @@ def _to_chain_group(data, args, idx):  # pylint: disable=redefined-outer-name
             new_len += cg_len
             new_group += chain_group_list[i]
             new_added = True
-      new_group_str = ','.join(sorted(new_group))
+      new_group_str = ','.join(sorted(set(new_group)))
       if new_group_str not in chain_seen:
         yield new_group
         chain_seen.add(new_group_str)
