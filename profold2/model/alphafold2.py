@@ -243,9 +243,9 @@ class AlphaFold2(nn.Module):
     else:
       msa, msa_mask, msa_embed = None, None, None  # msa as features disabled
     del seq_embed, msa_embed
+    b, n, device = seq.shape[:-1], seq.shape[-1], seq.device
     # FIXME: fake recyclables
     if 'recyclables' not in batch:
-      b, n, device = seq.shape[:-1], seq.shape[-1], seq.device
       _, dim_msa, dim_pairwise = self.dim  # embedd_dim_get(self.dim)
       batch['recyclables'] = Recyclables(
           msa_first_row_repr=torch.zeros(b + (n, dim_msa), device=device),
