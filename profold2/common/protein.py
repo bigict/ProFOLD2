@@ -215,7 +215,7 @@ def to_pdb(prot: Protein, model: str = '1', parent: str = 'N/A') -> str:
     for atom_name, pos, mask, b_factor in zip(
         atom_types, atom_positions[i], atom_mask[i], b_factors[i]
     ):
-      if mask < 0.5:
+      if len(atom_name) == 0 or mask < 0.5:  # FIX: DX or X
         continue
 
       record_type = 'ATOM'
