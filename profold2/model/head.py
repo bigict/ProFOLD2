@@ -479,7 +479,7 @@ class FoldingHead(nn.Module):
           if 'seq_color' in batch:
             clamp_ratio = torch.where(
                 batch['seq_color'][..., :, None] == batch['seq_color'][..., None, :],
-                clamp_ratio, 0.
+                clamp_ratio, self.params.get('fape_interchain_clamp_ratio', clamp_ratio)
             )
 
         _, pred_points = pred_frames
