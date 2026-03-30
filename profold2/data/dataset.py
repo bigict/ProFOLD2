@@ -2021,6 +2021,7 @@ def load(
   if 'weights' in kwargs:
     weights = kwargs.pop('weights')
     if weights:
+      assert len(dataset) == len(weights)
       kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=len(weights))
       if 'shuffle' in kwargs:
         kwargs.pop('shuffle')
