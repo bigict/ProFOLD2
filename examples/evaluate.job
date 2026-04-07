@@ -102,7 +102,6 @@ ${runner} ${PWD}/main.py ${node_opts} evaluate \
     \
     --num_workers=1 \
     --batch_size=1 \
-    --prefetch_factor=4 \
     \
     ${eval_opts} \
     $*

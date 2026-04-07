@@ -258,8 +258,8 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
   parser.add_argument(
       '--crop_algorithm',
       type=str,
-      default='random',
-      choices=['random', 'domain', 'knn'],
+      default='auto',
+      choices=['auto', 'random', 'knn'],
       help='type of crop algorithm.'
   )
   parser.add_argument(
