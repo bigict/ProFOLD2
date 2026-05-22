@@ -25,7 +25,7 @@ from profold2.data.utils import (
 )
 from profold2.model import accelerator, optim, FeatureBuilder, MetricDict, ReturnValues
 from profold2.model.utils import CheckpointManager
-from profold2.utils import default, exists
+from profold2.utils import default, exists, status
 
 from profold2.command import worker
 
@@ -181,7 +181,10 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         data_idx=args.eval_idx,
         chain_idx=args.eval_chain,
         attr_idx=args.eval_attr,
+        pseudo_linker_prob=args.eval_pseudo_linker_prob,
         max_msa_depth=args.max_msa_size,
+        max_var_depth=args.max_var_size,
+        var_task_num=args.num_var_task,
         min_crop_len=args.min_crop_len,
         max_crop_len=args.max_crop_len,
         crop_algorithm=args.crop_algorithm,
@@ -449,14 +452,21 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       with torch.no_grad():
         # eval loss
         n, eval_loss = 0, MetricDict()
-        for jt, data in enumerate(iter(eval_loader)):
-          seq = data['seq']
+        for jt, batch in enumerate(iter(eval_loader)):
+          seq = batch['seq']
           logging.debug(
               '%d %d %d seq.shape: %s, pid: %s, clips: %s', 0, it, jt, seq.shape,
-              ','.join(data['pid']), data.get('clip')
+              ','.join(batch['pid']), batch.get('clip')
           )
-          data = features(data, is_training=False)
-          r = ReturnValues(**model(batch=data, num_recycle=args.model_recycles))
+          batch = features(batch, is_training=True)
+          with status(batch, compute_loss=True):
+            r = ReturnValues(
+                **model(
+                    batch=batch,
+                    num_recycle=args.model_recycles,
+                    shard_size=args.model_shard_size
+                )
+            )
           for h, v in r.headers.items():
             if 'loss' in v:
               eval_loss += MetricDict({h: v['loss']})
@@ -670,6 +680,12 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       type=float,
       default=None,
       help='take msa_{i} as sequence with ident <= DATA_MSA_AS_SEQ_MIN_IDENT.'
+  )
+  parser.add_argument(
+      '--eval_pseudo_linker_prob',
+      type=float,
+      default=0.0,
+      help='enable loading complex data.'
   )
   parser.add_argument('--random_seed', type=int, default=None, help='random seed.')
 
