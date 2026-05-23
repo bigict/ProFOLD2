@@ -593,6 +593,7 @@ def main(work_fn, args):  # pylint: disable=redefined-outer-name
       pseudo_linker_shuffle=False,
       data_rm_mask_prob=args.data_rm_mask_prob,
       msa_as_seq_prob=args.msa_as_seq_prob,
+      var_task_num=args.var_task_num,
       feat_flags=feat_flags
   )
   with timing(f'{args.command}', logger.info):
@@ -633,6 +634,9 @@ if __name__ == '__main__':
     )
     cmd_parser.add_argument(
         '--pseudo_linker_prob', type=float, default=0.0, help='pseudo_linker_prob'
+    )
+    cmd_parser.add_argument(
+        '--var_task_num', type=int, default=1, help='number of tasks in VARs.'
     )
     cmd_parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
