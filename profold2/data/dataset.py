@@ -1016,6 +1016,7 @@ class ProteinSequenceDataset(torch.utils.data.Dataset):
       if exists(self.msa) and exists(self.msa[idx][seq_idx]):
         feat.update(_make_msa_features(self.msa[idx][seq_idx], feat['seq_type']))
         ret = concat_msa_feats(ret, feat)
+    ret['resolu'] = -1
 
     return ret
 

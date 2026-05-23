@@ -297,11 +297,16 @@ class CoevolutionHead(nn.Module):
     num_class = self.mask.shape[0]
 
     logits = value['logits']
-    labels = F.one_hot(batch['msa'].long(), num_class)
+    if 'msa' in batch:
+      msa = batch['msa']
+    else:
+      assert 'seq' in batch and not self.training
+      msa = rearrange(batch['seq'], '... i -> ... () i')
+    labels = F.one_hot(msa.long(), num_class)
     logger.debug('CoevolutionHead.loss.logits: %s, %s', logits.shape, self.focal_loss)
 
     assert len(logits.shape) == 4
-    assert 'msa' in batch
+    assert 'msa' in batch or not self.training
     errors = softmax_cross_entropy(
         labels=labels, logits=logits, mask=self.mask, gammar=self.focal_loss
     )
@@ -740,7 +745,7 @@ class PLDDTHead(nn.Module):
     batch_size = None
 
     ret = dict(logits=self.net(x, batch, batch_size=batch_size), batch_size=batch_size)
-    if self.training:
+    if batch.get('compute_loss', self.training):
       assert 'folding' in headers and 'coords' in headers['folding']
       ret.update(coords=headers['folding']['coords'])
     return ret
