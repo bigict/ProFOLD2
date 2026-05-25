@@ -187,6 +187,19 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   return rearrange(o.to(dtype=dtype_from), '... i h d -> ... h i d')
 
 
+def cuequivariance_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
+  import cuequivariance_torch as cuet
+
+  del dropout_p
+  dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
+  q, k, v = map(lambda t: t.to(dtype=dtype_to), (q, k, v))
+  mask, _, attn_bias = attn_mask
+  if exists(mask):
+    mask = rearrange(mask.to(dtype=dtype_to), '... m i -> ... m () () i')
+  o = cuet.triangle_attention(q, k, v, attn_bias, mask=mask, scale=scale)
+  return o.to(dtype=dtype_from)
+
+
 def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   assert hasattr(F, 'scaled_dot_product_attention')
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
@@ -532,11 +545,14 @@ class AxialAttention(nn.Module):
     if not kernel.is_available() and accept_kernel_fn:
       logger.warning('kernel is not available! disabled it.')
       accept_kernel_fn = 0
+    kernel_fn = env('AxialAttention_kernel_fn', default='evoformer')
+    assert kernel_fn in ('evoformer', 'cuequivariance')
     accept_kernel_dtype = accelerator.autocast_dtype(
         'AxialAttention_accept_kernel_dtype'
     )
     self.attn_fn = functools.partial(
-        evoformer_attn, dtype=accept_kernel_dtype
+        evoformer_attn if kernel_fn == 'evoformer' else cuequivariance_attn,
+        dtype=accept_kernel_dtype
     ) if accept_kernel_fn else None
 
   def forward(self, x, edges=None, mask=None, edge_mask=None, shard_size=None):
