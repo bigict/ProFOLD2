@@ -101,8 +101,8 @@ class WorkerModel(object):
     return self.xpu.device
 
   def hook(self, model):
-    def _load_state_dict_pre_hook(state_dict, *args, **kwargs):
-      del args, kwargs
+    def _load_state_dict_pre_hook(module, state_dict, *args, **kwargs):  # FIX: pytorch 2.5+
+      del module, args, kwargs
       key_modifier_list = [
           ('(.*)impl.token_emb.(.*)', '\\1impl.embedder.to_single_emb.\\2'),
           ('(.*)impl.to_pairwise_repr.(.*)', '\\1impl.embedder.to_pairwise_emb.\\2')
@@ -128,6 +128,7 @@ class WorkerModel(object):
       register_hook = model.register_load_state_dict_pre_hook
     else:
       register_hook = model._register_load_state_dict_pre_hook  # pylint: disable=protected-access
+      _load_state_dict_pre_hook = functools.partial(_load_state_dict_pre_hook, model)
     return register_hook(_load_state_dict_pre_hook)
 
   def wrap(self, **kwargs):
