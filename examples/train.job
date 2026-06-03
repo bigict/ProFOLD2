@@ -64,7 +64,8 @@ node_opts="${node_opts} --init_method=tcp://${master_addr}:${master_port}"
 
 ## init virtual environment if needed
 conda_home=${conda_home:-"${HOME}/.local/anaconda3"}
-. ${conda_home}/bin/activate profold2
+conda_env=${conda_env:-"profold2"}
+. ${conda_home}/bin/activate ${conda_env}
 
 data_home="${HOME}/shared_hosts"
 
