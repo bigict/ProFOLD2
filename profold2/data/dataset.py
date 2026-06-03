@@ -18,6 +18,7 @@ import zipfile
 import weakref
 
 from Bio import PDB
+import lmdb
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -891,6 +892,13 @@ class FileSystem(contextlib.AbstractContextManager):
       raise ValueError('Not implementation!')
     return self.data_dir / filename
 
+  def isdir(self, filename):
+    if os.path.isabs(filename):
+      return os.path.isdir(filename)
+    elif not isinstance(self.data_dir, zipfile.ZipFile):
+      return os.path.isdir(self.data_dir / filename)
+    return False
+
   @contextlib.contextmanager
   def open(self, filename):
     if os.path.isabs(filename):
@@ -964,6 +972,60 @@ class FoldcompDB(object):
     _, pdb_string = self.db_hdr[idx]
     pdb_type = 'pdb'
     return pdb_type, pdb_string
+
+
+class AttrDB(object):
+  def __init__(self, fs, attr_idx):
+    super().__init__()
+
+    self.attr_list = {}
+    if fs.exists(attr_idx):
+      logger.info('load attr data from: %s', attr_idx)
+      if fs.isdir(attr_idx):
+        self.db_uri = fs.abspath(attr_idx)
+        self.attr_list = None
+      else:
+        with fs.open(attr_idx) as f:
+          for line in filter(
+              lambda x: len(x) > 0, map(lambda x: fs.textise(x).strip(), f)
+          ):
+            k, v = line.split(maxsplit=1)
+            self.attr_list[k] = json.loads(v)
+
+  def open(self):
+    if not isinstance(self.attr_list, dict):
+      assert hasattr(self, 'db_uri')
+      if exists(self.attr_list):
+        self.close()
+      assert not exists(self.attr_list)
+      with timing(f'AttrDB.open {self.db_uri}', logger.debug):
+        self.attr_list = lmdb.open(self.db_uri, readonly=True, lock=False)
+    return self.attr_list
+
+  def close(self):
+    if not isinstance(self.attr_list, dict):
+      if exists(self.attr_list):
+        logger.debug('AttrDB.close %s', self.db_uri)
+        self.attr_list.close()
+        self.attr_list = None
+
+  def __getitem__(self, key):
+    if not exists(self.attr_list):
+      self.open()
+
+    if isinstance(self.attr_list, dict):
+      return self.attr_list[key]
+    with self.attr_list.begin() as attr_list:
+      return pickle.loads(attr_list.get(pickle.dumps(key)))
+
+  def __contains__(self, key):
+    if not exists(self.attr_list):
+      self.open()
+
+    if isinstance(self.attr_list, dict):
+      return key in self.attr_list
+    with self.attr_list.begin() as attr_list:
+      return exists(attr_list.get(pickle.dumps(key)))
 
 
 Msa = list[str]
@@ -1132,6 +1194,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             pid, *chains = line.split()
             self.chain_list[pid].append(chains)
 
+      """
       self.attr_list = {}
       attr_idx = default(attr_idx, 'attr.idx')
       if fs.exists(attr_idx):
@@ -1142,6 +1205,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ):
             k, v = line.split(maxsplit=1)
             self.attr_list[k] = json.loads(v)
+      """
+      self.attr_list = AttrDB(fs, default(attr_idx, 'attr.idx'))
+      weakref.finalize(self.attr_list, self.attr_list.close)
 
       if fs.exists('pdb.uri'):
         with fs.open('pdb.uri') as f:
@@ -1167,6 +1233,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     # if isinstance(self.data_dir, zipfile.ZipFile):
     #   d['data_dir'] = self.data_dir.filename
     logger.debug('%s is pickled ...', d['data_dir'])
+    if 'attr_list' in d:
+      d['attr_list'].close()
     if 'pdb_db' in d:
       d['pdb_db'].close()
     return d
@@ -1177,6 +1245,8 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
     #   d['data_dir'] = zipfile.ZipFile(d['data_dir'])  # pylint: disable=consider-using-with
     if 'pdb_db' in d:
       d['pdb_db'].open()
+    if 'attr_list' in d:
+      d['attr_list'].open()
     self.__dict__ = d
 
   def __getitem__(self, idx):
