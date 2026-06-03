@@ -226,9 +226,7 @@ class AlphaFold2(nn.Module):
         pairwise=self.embedder.to_pairwise_emb.embeddings()
     )
 
-  def forward(
-      self, batch, *, return_recyclables=False, compute_loss=True, shard_size=None
-  ):
+  def forward(self, batch, *, return_recyclables=False, shard_size=None):
     seq, mask, seq_embed, seq_index, seq_color, seq_sym, seq_entity = map(
         batch.get,
         ('seq', 'mask', 'emb_seq', 'seq_index', 'seq_color', 'seq_sym', 'seq_entity')
@@ -346,7 +344,7 @@ class AlphaFold2(nn.Module):
           representations.update(value['representations'])
       if 'folding' in ret.headers:
         batch = folding.multi_chain_permutation_alignment(ret.headers['folding'], batch)
-      if self.training and compute_loss:
+      if batch.get('compute_loss', self.training):
         for name, module, options in self.headers:
           if not hasattr(module, 'loss') or name not in ret.headers:
             continue
@@ -424,13 +422,11 @@ class AlphaFold2WithRecycling(nn.Module):
 
     if self.training:
       num_recycle = random.randint(0, num_recycle)
-    cycling_function = functools.partial(
-        self.impl, return_recyclables=True, compute_loss=False, **kwargs
-    )
+    cycling_function = functools.partial(self.impl, return_recyclables=True, **kwargs)
 
     pid = ','.join(batch['pid'])
     with torch.no_grad():
-      with status(batch, recycling=True):
+      with status(batch, recycling=True, compute_loss=False):
         for i in tqdm(
             range(num_recycle), disable=self.training, desc=f'Trunk Recycling [{pid}]'
         ):
@@ -442,9 +438,7 @@ class AlphaFold2WithRecycling(nn.Module):
             )
           batch['recyclables'] = ret.recyclables
 
-    ret = ReturnValues(
-        **self.impl(batch, return_recyclables=False, compute_loss=True, **kwargs)
-    )
+    ret = ReturnValues(**self.impl(batch, return_recyclables=False, **kwargs))
     metrics = {}
     if 'plddt_mean' in batch:
       metrics['plddt_mean'] = batch['plddt_mean']
