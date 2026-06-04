@@ -18,7 +18,6 @@ import zipfile
 import weakref
 
 from Bio import PDB
-import lmdb
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -994,6 +993,7 @@ class AttrDB(object):
 
   def open(self):
     if not isinstance(self.attr_list, dict):
+      import lmdb  # pylint: disable=import-outside-toplevel
       assert hasattr(self, 'db_uri')
       if exists(self.attr_list):
         self.close()
