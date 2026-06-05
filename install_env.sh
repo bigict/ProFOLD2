@@ -28,10 +28,10 @@ cleanup() {
   fi
 }
 
-cuda_version=${cuda_version:-"12.1.1"}
+cuda_version=${cuda_version:-"12.4.1"}
 gcc_version=${gcc_version:-"12.4.0"}
 openmm_version=${openmm_version:-"8.0.0"}
-pytorch_version=${pytorch_version:-"2.3.1"}
+pytorch_version=${pytorch_version:-"2.9.1"}
 pytorch_cuda=$(echo ${cuda_version}|cut -d. -f1-2)
 
 # conda create -n pf2 python=3.11
@@ -50,6 +50,10 @@ conda install -y -c conda-forge \
 
 pip install torch==${pytorch_version} \
     -f https://download.pytorch.org/whl/cu${pytorch_cuda//./} \
+    && cleanup
+
+pip install cuequivariance-torch cuequivariance \
+    cuequivariance-ops-torch-cu$(echo ${cuda_version}|cut -d. -f1) \
     && cleanup
 
 conda install -y -c nvidia \
