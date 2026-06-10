@@ -556,8 +556,9 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
   #omega_points = torch.stack((prev_coords[...,]))
   # (N, 7, 4, 14)
   torsion_atom14_idx = F.one_hot(  # pylint: disable=not-callable
-      batched_gather(residue_constants.chi_angles_atom14_indices,
-                     aatypes).long(), residue_constants.atom14_type_num)
+      batched_gather(residue_constants.chi_angles_atom14_indices, aatypes).long(),
+      residue_constants.atom14_type_num
+  )
   torsion_atom14_exists = batched_gather(
       residue_constants.chi_angles_atom14_exists, aatypes
   )
