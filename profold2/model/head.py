@@ -33,7 +33,7 @@ def sigmoid_cross_entropy_with_logits(
       logits, labels, reduction='none', pos_weight=alpha
   )
   if gammar > 0:  # focal loss enabled.
-    probs = torch.clamp(torch.sigmoid(logits), min=epsilon, max=1. - epsilon)
+    probs = torch.clamp(F.sigmoid(logits), min=epsilon, max=1. - epsilon)
     errors = errors * binary_focal_loss_weight(probs, labels, gammar)
   return errors
 
@@ -190,18 +190,20 @@ class CoevolutionHead(nn.Module):
       dim,
       gating=True,
       mask='-',
-      alpha=0.0,
-      beta=0.0,
-      gammar=0.0,
       num_states=None,
       apc=False,
       num_pivot=1024,
       focal_loss=0,
+      dij_guidance=0,
+      dij_cutoff=8,
+      dij_diagonal=1,
+      dij_breaks_first=2.3125,
+      dij_breaks_last=21.6875,
+      dij_breaks_num=64,
       loss_min=None,
       loss_max=None
   ):
     super().__init__()
-    del alpha, beta, gammar  # Deprecated
     dim_single, dim_pairwise = commons.embedd_dim_get(dim)
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -231,6 +233,17 @@ class CoevolutionHead(nn.Module):
 
     self.apc = apc
     self.num_pivot = num_pivot
+
+    # recover sequence guided by contact
+    self.dij_guidance = dij_guidance
+    self.dij_cutoff = dij_cutoff
+    self.dij_diagonal = dij_diagonal
+    self.register_buffer(
+        'dij_breaks',
+        torch.linspace(dij_breaks_first, dij_breaks_last, steps=dij_breaks_num - 1),
+        persistent=False,
+    )
+
     self.focal_loss = focal_loss
     self.loss_min = loss_min
     self.loss_max = loss_max
@@ -320,6 +333,35 @@ class CoevolutionHead(nn.Module):
     avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
     logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error)
 
+    if self.dij_guidance > 0 and 'pseudo_beta' in batch:
+      positions = batch['pseudo_beta']
+      mask = batch['pseudo_beta_mask']
+      assert positions.shape[-1] == 3
+
+      if self.dij_cutoff > 0:
+        dij = F.sigmoid(self.dij_cutoff - torch.cdist(positions, positions))
+      else:
+        sq_breaks = torch.square(self.dij_breaks)
+        dist2 = functional.squared_cdist(positions, positions, keepdim=True)
+        dij = 1. - torch.mean((dist2 > sq_breaks).float(), dim=-1)
+
+      # wij = 1. - torch.exp(
+      #     torch.sum(
+      #         torch.log(torch.clamp(1 - value['wij'], min=1e-8, max=1.)), dim=-1
+      #     )
+      # )
+      wij = torch.mean(value['wij'], dim=-1)
+
+      errors = sigmoid_cross_entropy(wij, dij, gammar=self.focal_loss)
+
+      mask = mask[..., :, None] * mask[..., None, :]
+      mask = torch.triu(mask, diagonal=self.dij_diagonal
+                       ) + torch.tril(mask, diagonal=-self.dij_diagonal)
+
+      avg_error_dij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+      logger.info('CoevolutionHead.dij.loss: %s', avg_error_dij)
+      avg_error = avg_error + self.dij_guidance * avg_error_dij
+
     if exists(self.loss_min) or exists(self.loss_max):
       avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
     return dict(loss=avg_error)
@@ -371,7 +413,7 @@ class DistogramHead(nn.Module):
       sq_breaks = torch.square(breaks)
       dist2 = functional.squared_cdist(positions, positions, keepdim=True)
 
-      true_bins = torch.sum(dist2 > sq_breaks, axis=-1)
+      true_bins = torch.sum(dist2 > sq_breaks, dim=-1)
       errors = softmax_cross_entropy(
           labels=F.one_hot(true_bins, self.num_buckets),
           logits=logits,
