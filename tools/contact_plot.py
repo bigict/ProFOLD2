@@ -14,7 +14,7 @@ from einops import rearrange
 
 from profold2.common import protein, residue_constants
 from profold2.data.dataset import ProteinStructureDataset
-from profold2.model.features import pseudo_beta_fn
+from profold2.model.features import pseudo_beta_alphafold as pseudo_beta_fn
 from profold2.utils import exists
 
 b_colors = [
@@ -112,6 +112,7 @@ def main(args):  # pylint: disable=redefined-outer-name
       if exists(args.cmap):
         kwargs['cmap'] = cmap[args.cmap]
       plt.matshow(-true_bins, **kwargs)
+      plt.colorbar()
       plt.savefig(f, format='svg', dpi=100)
       plt.close()
 
