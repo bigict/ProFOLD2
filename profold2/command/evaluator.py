@@ -140,6 +140,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       if 'coevolution' in metrics:
         if 'perplexity' in metrics['coevolution']:
           metric_dict['perplexity'] = metrics['coevolution']['perplexity']
+        if 'identity' in metrics['coevolution']:
+          metric_dict['SRR'] = metrics['coevolution']['identity']
     if 'folding' in r.headers:
       assert 'coords' in r.headers['folding']
       if 'coord' in batch:
