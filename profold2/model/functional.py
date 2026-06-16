@@ -556,8 +556,9 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
   #omega_points = torch.stack((prev_coords[...,]))
   # (N, 7, 4, 14)
   torsion_atom14_idx = F.one_hot(  # pylint: disable=not-callable
-      batched_gather(residue_constants.chi_angles_atom14_indices,
-                     aatypes).long(), residue_constants.atom14_type_num)
+      batched_gather(residue_constants.chi_angles_atom14_indices, aatypes).long(),
+      residue_constants.atom14_type_num
+  )
   torsion_atom14_exists = batched_gather(
       residue_constants.chi_angles_atom14_exists, aatypes
   )
@@ -571,18 +572,86 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
       '... n,... g m n -> ... g m', coord_mask.float(), torsion_atom14_idx.float()
   )
 
-  # fix omega, phi angles
+  is_na = torch.logical_or(
+      (aatypes >= residue_constants.dna_from_idx) & (aatypes <= residue_constants.dna_to_idx),
+      (aatypes >= residue_constants.rna_from_idx) & (aatypes <= residue_constants.rna_to_idx),
+  )
+
+  # fix omega/phi (prot) and epsilon/zeta (na) cross-residue angles
   for i in range(torsion_points.shape[-4] - 1, 0, -1):
+    # Slot 0: all types — copy first 2 atoms from previous residue (omega / pre-omega)
     torsion_points[..., i, 0, :2, :] = torsion_points[..., i - 1, 0, :2, :]  # omega
     torsion_point_mask[..., i, 0, :2] = torsion_point_mask[..., i - 1, 0, :2]
 
-    torsion_points[..., i, 1, :1, :] = torsion_points[..., i - 1, 1, :1, :]  # phi
-    torsion_point_mask[..., i, 1, :1] = torsion_point_mask[..., i - 1, 1, :1]
+    # Slot 1: protein copies 1 atom (phi: N from prev); NA copies 3 atoms (epsilon: C4',C3',O3' from prev)
+    # torsion_points[..., i, 1, :1, :] = torsion_points[..., i - 1, 1, :1, :]  # phi
+    # torsion_point_mask[..., i, 1, :1] = torsion_point_mask[..., i - 1, 1, :1]
+    torsion_points[..., i, 1, :3, :] = torch.where(
+        ~is_na[..., i, None, None],
+        torch.cat(
+            [torsion_points[..., i - 1, 1, :1, :], torsion_points[..., i, 1, 1:3, :]], dim=-2
+        ),
+        torsion_points[..., i - 1, 1, :3, :],
+    )
+    torsion_point_mask[..., i, 1, :3] = torch.where(
+        ~is_na[..., i, None],
+        torch.cat(
+            [torsion_point_mask[..., i - 1, 1, :1], torsion_point_mask[..., i, 1, 1:3]], dim=-1
+        ),
+        torsion_point_mask[..., i - 1, 1, :3],
+    )
 
+    # Slot 2: NA only — copy 2 atoms (zeta: C3', O3' from prev); protein keeps own atoms (psi)
+    torsion_points[..., i, 2, :2, :] = torch.where(
+        ~is_na[..., i, None, None],
+        torsion_points[..., i,     2, :2, :],
+        torsion_points[..., i - 1, 2, :2, :],
+    )
+    torsion_point_mask[..., i, 2, :2] = torch.where(
+        ~is_na[..., i, None],
+        torsion_point_mask[..., i,     2, :2],
+        torsion_point_mask[..., i - 1, 2, :2],
+    )
+
+  # Zero out cross-residue atoms for the first residue (no predecessor)
   torsion_points[..., 0, 0, :2, :] = 0  # omega
   torsion_point_mask[..., 0, 0, :2] = 0
-  torsion_points[..., 0, 1, :1, :] = 0  # phi
-  torsion_point_mask[..., 0, 1, :1] = 0
+
+  # torsion_points[..., 0, 1, :1, :] = 0  # phi
+  # torsion_point_mask[..., 0, 1, :1] = 0
+  # Protein: zero phi atom 0 (N from prev doesn't exist)
+  torsion_points[..., 0, 1, :1, :] = torch.where(
+      ~is_na[..., 0, None, None],
+      torch.zeros_like(torsion_points[..., 0, 1, :1, :]),
+      torsion_points[..., 0, 1, :1, :],
+  )
+  torsion_point_mask[..., 0, 1, :1] = torch.where(
+      ~is_na[..., 0, None],
+      torch.zeros_like(torsion_point_mask[..., 0, 1, :1]),
+      torsion_point_mask[..., 0, 1, :1],
+  )
+  # NA: zero epsilon atoms 0-2 (C4', C3', O3' from prev don't exist)
+  torsion_points[..., 0, 1, :3, :] = torch.where(
+      ~is_na[..., 0, None, None],
+      torsion_points[..., 0, 1, :3, :],
+      torch.zeros_like(torsion_points[..., 0, 1, :3, :]),
+  )
+  torsion_point_mask[..., 0, 1, :3] = torch.where(
+      ~is_na[..., 0, None],
+      torsion_point_mask[..., 0, 1, :3],
+      torch.zeros_like(torsion_point_mask[..., 0, 1, :3]),
+  )
+  # NA: zero zeta atoms 0-1 (C3', O3' from prev don't exist)
+  torsion_points[..., 0, 2, :2, :] = torch.where(
+      ~is_na[..., 0, None, None],
+      torsion_points[..., 0, 2, :2, :],
+      torch.zeros_like(torsion_points[..., 0, 2, :2, :]),
+  )
+  torsion_point_mask[..., 0, 2, :2] = torch.where(
+      ~is_na[..., 0, None],
+      torsion_point_mask[..., 0, 2, :2],
+      torch.zeros_like(torsion_point_mask[..., 0, 2, :2]),
+  )
 
   # Create a frame from the first three atoms:
   # First atom: point on x-y-plane
