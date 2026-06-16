@@ -17,7 +17,7 @@ from profold2.data.utils import tensor_to_numpy
 from profold2.model import (
     accelerator, functional, profiler, snapshot, FeatureBuilder, ReturnValues
 )
-from profold2.utils import exists, timing
+from profold2.utils import env, exists, status, timing
 
 from profold2.command import worker
 
@@ -65,7 +65,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
     with timing(
         f'Building features for model on {fasta_name} {fasta_len}', logging.debug
     ):
-      batch = features(batch, is_training=False)
+      batch = features(batch, is_training=batch.get('compute_loss', False))
 
     # predict - out is (batch, L * 3, 3)
     with timing(f'Running model on {fasta_name} {fasta_len}', logging.debug):
@@ -191,7 +191,10 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
       # eval loop
       for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
         try:
-          tmscore += data_eval(idx, batch)
+          with status(
+              batch, compute_loss=env('profold2_compute_loss', defval=True, dtype=bool)
+          ):
+            tmscore += data_eval(idx, batch)
           n += 1
         except RuntimeError as e:
           logging.error('%d %s', idx, str(e))
