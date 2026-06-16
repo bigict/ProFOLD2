@@ -27,6 +27,13 @@ def env(*keys, defval=None, dtype=None):
   for key in keys:
     value = os.getenv(key)
     if exists(value):
+      if dtype == bool:
+        # json-style lower-case only.
+        if value == 'true':
+          return True
+        elif value == 'false':
+          return False
+        return int(value) != 0
       return dtype(value) if exists(dtype) else value
   return defval
 
