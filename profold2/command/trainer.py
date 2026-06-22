@@ -401,6 +401,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       # writer.add_scalar(f'Loss/train@{k}', v, it)
 
+    # Compute norm without clipping (inf means no actual clipping happens)
+    writer_add_scalars(
+        writer,
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf')),
+        it,
+        prefix=f'Loss/{stage}@grad_norm'
+    )
+
     # optimizer.step()
     grad_scaler.step(optimizer)
     grad_scaler.update()
