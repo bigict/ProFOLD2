@@ -92,13 +92,15 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
           'no: %d pid: %s, fitness: pred=%s', idx, fasta_name, fitness.tolist()
       )
       dump_pkl = {'variant_pred': fitness}
+      if 'logits' in r.headers['fitness']:
+        dump_pkl['logits'] = tensor_to_numpy(r.headers['fitness']['logits'])
       if 'motifs' in r.headers['fitness']:
         dump_pkl['motifs'] = tensor_to_numpy(r.headers['fitness']['motifs'])
         # logging.info('no: %d pid: %s, motifs: motif=%s', idx, fasta_name,
         #              r.headers['fitness']['motifs'].tolist())
       if 'gating' in r.headers['fitness'] and exists(r.headers['fitness']['gating']):
         dump_pkl['gating'] = tensor_to_numpy(r.headers['fitness']['gating'])
-      for key in ('seq', 'mask', 'seq_color'):
+      for key in ('seq', 'mask', 'seq_color', 'pseudo_beta', 'pseudo_beta_mask'):
         if key in batch:
           dump_pkl[key] = tensor_to_numpy(batch[key])
         # logging.info('no: %d pid: %s, fitness: color=%s', idx, fasta_name,
@@ -120,6 +122,8 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         logging.info(
             'no: %d pid: %s, fitness: desc=%s', idx, fasta_name, batch['variant_pid']
         )
+      if 'variant_task_mask' in batch:
+        dump_pkl['task_mask'] = tensor_to_numpy(batch['variant_task_mask'])
       assert 'coevolution' in r.headers
       if 'wij' in r.headers['coevolution']:
         wij = tensor_to_numpy(r.headers['coevolution']['wij'])

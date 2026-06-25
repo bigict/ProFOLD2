@@ -14,16 +14,17 @@ from profold2.utils import default, env, exists
 logger = logging.getLogger(__name__)
 
 
-def binary_focal_loss_weight(probs, labels, gammar):
+def binary_focal_loss_weight(probs, labels, gammar, epsilon=1e-7):
   assert gammar > 0
+  probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
   p = probs * labels + (1. - probs) * (1. - labels)
   return (1. - p)**gammar
 
 
-def sigmoid_cross_entropy(probs, labels, gammar=0):
+def sigmoid_cross_entropy(probs, labels, gammar=0, epsilon=1e-7):
   errors = F.binary_cross_entropy(probs, labels, reduction='none')
   if gammar > 0:  # focal loss enabled.
-    errors = errors * binary_focal_loss_weight(probs, labels, gammar)
+    errors = errors * binary_focal_loss_weight(probs, labels, gammar, epsilon=epsilon)
   return errors
 
 
@@ -34,8 +35,9 @@ def sigmoid_cross_entropy_with_logits(
       logits, labels, reduction='none', pos_weight=alpha
   )
   if gammar > 0:  # focal loss enabled.
-    probs = torch.clamp(F.sigmoid(logits), min=epsilon, max=1. - epsilon)
-    errors = errors * binary_focal_loss_weight(probs, labels, gammar)
+    errors = errors * binary_focal_loss_weight(
+        F.sigmoid(logits), labels, gammar, epsilon=epsilon
+    )
   return errors
 
 
@@ -1297,6 +1299,9 @@ class FitnessHead(nn.Module):
       label_threshold=0.,
       label_epsilon=0.,
       pos_weight=None,
+      gij_guidance=0,
+      gij_cutoff=6,
+      gij_noise=0.15,
       focal_loss=0.,
       shard_size=2048
   ):
@@ -1348,6 +1353,12 @@ class FitnessHead(nn.Module):
     else:
       self.pos_weight = None
     self.alpha = alpha
+
+    # gating guided by inter-chain contact
+    self.gij_guidance = gij_guidance
+    self.gij_cutoff = gij_cutoff
+    self.gij_noise = gij_noise
+
     self.focal_loss = focal_loss
     self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, dtype=int)
     self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
@@ -1452,6 +1463,44 @@ class FitnessHead(nn.Module):
     num_class = self.mask.shape[0]
     avg_error_motif = 0
 
+    avg_error_gij = 0
+    if self.gij_guidance > 0 and 'pseudo_beta' in batch:
+      positions = batch['pseudo_beta']
+      mask = batch['pseudo_beta_mask']
+      seq_color = batch["seq_color"]
+      assert positions.shape[-1] == 3
+
+      targets = F.sigmoid(self.gij_cutoff - torch.cdist(positions, positions))
+      targets = targets * mask[..., :, None] * mask[..., None, :] * (
+          seq_color[..., :, None] != seq_color[..., None, :]
+      ) * (targets >= self.gij_noise)
+      targets = repeat(targets, "...->... t", t=self.task_num)
+      if 'variant_task_mask' in batch:
+        variant_task_mask = batch['variant_task_mask'][..., 0, :, :]
+        targets = targets * (
+            variant_task_mask[..., :, None, :] * variant_task_mask[..., None, :, :]
+        )
+      targets = torch.clamp(
+          1. - torch.exp(
+              torch.sum(torch.log(torch.clamp(1 - targets, min=1e-10, max=1.)), dim=-2)
+          ), min=0
+      )
+
+      mask = mask[..., None] * torch.any(
+          seq_color[..., :, None] != seq_color[..., None, :], dim=-1, keepdim=True
+      )
+      if 'variant_task_mask' in batch:
+        mask = mask * batch['variant_task_mask'][..., 0, :, :]
+
+      logger.info('FitnessHead.gij.loss.targets: %s', torch.sum(targets >= 0.5, dim=-2))
+      logger.info('FitnessHead.gij.loss.masked: %s', torch.sum(mask, dim=-2))
+
+      errors = sigmoid_cross_entropy(gating, targets, gammar=self.focal_loss)
+
+      avg_error_gij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+      logger.info('FitnessHead.gij.loss: %s', avg_error_gij)
+      avg_error_gij = self.gij_guidance * avg_error_gij
+
     if 'variant' in batch:
       variant_mask = batch['variant_mask']
       variant_label = batch['variant_label']
@@ -1471,7 +1520,7 @@ class FitnessHead(nn.Module):
           )
         if 'variant_task_mask' in batch:
           motif_mask = batch['variant_task_mask'] * rearrange(
-              (variant_label > self.label_threshold) & variant_label_mask, '... m t -> ... m () t'
+              variant_label > self.label_threshold, '... m t -> ... m () t'
           )
         else:
           motif_mask = ((variant_label > self.label_threshold) &
@@ -1581,7 +1630,7 @@ class FitnessHead(nn.Module):
         value=errors, mask=variant_label_mask * self.task_weight
     )
     logger.debug('FitnessHead.loss: %s', avg_error_fitness)
-    return dict(loss=avg_error_motif + avg_error_fitness)
+    return dict(loss=avg_error_gij + avg_error_motif + avg_error_fitness)
 
 
 class SequenceProfileHead(nn.Module):
