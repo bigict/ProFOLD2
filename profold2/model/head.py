@@ -1,5 +1,6 @@
 import sys
 import logging
+import math
 
 import torch
 from torch import nn
@@ -1501,13 +1502,18 @@ class FitnessHead(nn.Module):
 
       if self.num_var_as_ref > 0:
         if num_var_as_ref > 0:
-          *_, n, t = logits.shape
+          *b, m, n, t = logits.shape
           # sample reference based on variant_label
-          ref_idx = torch.multinomial(
-              variant_weight + 1e-3, num_var_as_ref, replacement=False
+          ref_idx = torch.reshape(
+              torch.multinomial(
+                  torch.reshape(variant_weight + 1e-3, (math.prod(b + [m]) // m, m)),
+                  num_var_as_ref,
+                  replacement=False
+              ),
+              b + [num_var_as_ref]
           )
           ref_idx = torch.cat(
-              (torch.zeros((b, 1), dtype=ref_idx.dtype, device=logits.device), ref_idx),
+              (torch.zeros(*b, 1, dtype=ref_idx.dtype, device=logits.device), ref_idx),
               dim=-1
           )
           logger.debug('FitnessHead.ref_idx: %s', ref_idx)
@@ -1516,7 +1522,7 @@ class FitnessHead(nn.Module):
               logits, -3, repeat(ref_idx, '... m -> ... m i t', i=n, t=t)
           )
           mask_ref = torch.gather(
-              variant_mask, 1,
+              variant_mask, -3,
               repeat(
                   ref_idx,
                   '... m -> ... m i t',
@@ -1525,16 +1531,16 @@ class FitnessHead(nn.Module):
               )
           )
           label_ref = torch.gather(
-              variant_label, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
           label_mask_ref = torch.gather(
-              variant_label_mask, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label_mask, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
     else:
       variant_mask = rearrange(torch.zeros_like(batch['mask']), '... i -> ... () i ()')
       b = variant_mask.shape[:-2]
-      variant_label = torch.ones(*b, 1, self.task_num, device=variant_mask.device)
-      variant_label_mask = torch.zeros(*b, 1, self.task_num, device=variant_mask.device)
+      variant_label = torch.ones(*b, self.task_num, device=variant_mask.device)
+      variant_label_mask = torch.zeros(*b, self.task_num, device=variant_mask.device)
 
     if not exists(logits_ref):
       logits_ref = logits[..., :1, :, :]
