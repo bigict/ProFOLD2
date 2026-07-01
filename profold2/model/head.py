@@ -1435,7 +1435,9 @@ class FitnessHead(nn.Module):
         variant_mask = variant_mask[..., None]
       variant_mask = variant_mask * variant_mask[:, :1, ...]
       variant_logit = logits - logits[:, :1, ...]
-      variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
+      variant_logit = self.predict(
+          variant_logit, variant_mask, gating=gating[..., None, :, :]
+      )
       r.update(variant_logit=variant_logit)
 
     if exists(motifs):
@@ -1544,7 +1546,9 @@ class FitnessHead(nn.Module):
         variant_label_mask[..., :, None, :] * label_mask_ref[..., None, :, :]
     )
     # variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
-    variant_logit = self.predict(variant_logit, variant_mask, gating=gating)
+    variant_logit = self.predict(
+        variant_logit, variant_mask, gating=gating[..., None, None, :, :]
+    )
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
     with accelerator.autocast(enabled=False):
