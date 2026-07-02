@@ -1518,11 +1518,13 @@ class FitnessHead(nn.Module):
           )
           logger.debug('FitnessHead.ref_idx: %s', ref_idx)
 
+          gather_dim = -3 % len(ref_idx.shape)
           logits_ref = torch.gather(
-              logits, -3, repeat(ref_idx, '... m -> ... m i t', i=n, t=t)
+              logits, gather_dim, repeat(ref_idx, '... m -> ... m i t', i=n, t=t)
           )
           mask_ref = torch.gather(
-              variant_mask, -3,
+              variant_mask,
+              gather_dim,
               repeat(
                   ref_idx,
                   '... m -> ... m i t',
@@ -1531,10 +1533,14 @@ class FitnessHead(nn.Module):
               )
           )
           label_ref = torch.gather(
-              variant_label, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label,
+              gather_dim,
+              repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
           label_mask_ref = torch.gather(
-              variant_label_mask, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label_mask,
+              gather_dim,
+              repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
     else:
       variant_mask = rearrange(torch.zeros_like(batch['mask']), '... i -> ... () i ()')
