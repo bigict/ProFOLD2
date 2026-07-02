@@ -1,5 +1,6 @@
 import sys
 import logging
+import math
 
 import torch
 from torch import nn
@@ -1352,7 +1353,6 @@ class FitnessHead(nn.Module):
     self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
 
   def predict(self, variant_logit, variant_mask, gating=None):
-    variant_logit = variant_logit[..., None]
     if exists(gating):
       variant_logit = variant_logit * gating
     if self.pooling == 'sum':
@@ -1380,31 +1380,33 @@ class FitnessHead(nn.Module):
     else:
       wab = None
 
-    def _hamiton_run(variant):
-      variant = F.one_hot(variant.long(), num_class)
+    def _hamiton_run(variant, variant_mask):
+      variant = (
+          F.one_hot(variant.long(), num_class) * variant_mask[..., None]
+      ).float()
       if exists(wab):
         hi = torch.einsum(
-            '... m j d,... i j q,q c d,d -> ... m i c', variant.float(), eij, wab, self.mask
+            '... m j t d,... i j q,q c d,d -> ... m i t c', variant, eij, wab, self.mask
         )
       else:
         hi = torch.einsum(
-            '... m j d,... i j c d,d -> ... m i c', variant.float(), eij, self.mask
+            '... m j t d,... i j c d,d -> ... m i t c', variant, eij, self.mask
         )
-      motifs = rearrange(ei, '... i c -> ... () i c') + hi
+      motifs = rearrange(ei, '... i c -> ... () i () c') + hi
       if self.log_softmax:
         logits = torch.einsum(
-            '... m i c,... m i c -> ... m i', F.log_softmax(motifs, dim=-1), variant.float()
+            '... i t c,... i t c -> ... i t', F.log_softmax(motifs, dim=-1), variant
         )
       else:
-        logits = torch.einsum('... m i c,... m i c -> ... m i', motifs, variant.float())
+        logits = torch.einsum('... i t c,... i t c -> ... i t', motifs, variant)
       if self.return_motifs:
         return motifs, logits
       return None, logits
 
     def _hamiton_cat(logits):
       motifs, logits = zip(*logits)
-      motifs = torch.cat(motifs, dim=1) if self.return_motifs else None
-      logits = torch.cat(logits, dim=1)
+      motifs = torch.cat(motifs, dim=-4) if self.return_motifs else None
+      logits = torch.cat(logits, dim=-3)
       return motifs, logits
 
     if 'variant' in batch:
@@ -1415,8 +1417,12 @@ class FitnessHead(nn.Module):
       variant = batch['seq'][..., None, :]
       variant_mask = batch['mask'][..., None, :]
 
+    variant, variant_mask = variant[..., None], variant_mask[..., None]
+    if 'variant_task_mask' in batch:
+      variant_mask = batch['variant_task_mask']
+
     motifs, logits = functional.sharded_apply(
-        _hamiton_run, [variant],
+        _hamiton_run, [variant, variant_mask],
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
         cat_dim=_hamiton_cat
@@ -1429,12 +1435,8 @@ class FitnessHead(nn.Module):
       gating = None
     r.update(gating=gating)
     if not self.training:
-      if 'variant_task_mask' in batch:
-        variant_mask = batch['variant_task_mask']
-      else:
-        variant_mask = variant_mask[..., None]
-      variant_mask = variant_mask * variant_mask[:, :1, ...]
-      variant_logit = logits - logits[:, :1, ...]
+      variant_mask = variant_mask * variant_mask[..., :1, :, :]
+      variant_logit = logits - logits[..., :1, :, :]
       variant_logit = self.predict(
           variant_logit, variant_mask, gating=gating[..., None, :, :]
       )
@@ -1462,14 +1464,20 @@ class FitnessHead(nn.Module):
 
         with accelerator.autocast(enabled=False):
           errors = softmax_cross_entropy(
-              labels=labels,
+              labels=labels[..., None, :],
               logits=motifs.float(),
               mask=self.mask,
               gammar=self.focal_loss
           )
-        motif_mask = ((variant_label > self.label_threshold) &
-                      variant_label_mask) | (~variant_label_mask)
-        motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
+        if 'variant_task_mask' in batch:
+          motif_mask = batch['variant_task_mask'] * rearrange(
+              (variant_label > self.label_threshold) & variant_label_mask, '... m t -> ... m () t'
+          )
+        else:
+          motif_mask = ((variant_label > self.label_threshold) &
+                        variant_label_mask) | (~variant_label_mask)
+          motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
+          motif_mask = motif_mask[..., None]
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
         avg_error_motif = self.alpha * avg_error_motif
@@ -1494,22 +1502,27 @@ class FitnessHead(nn.Module):
 
       if self.num_var_as_ref > 0:
         if num_var_as_ref > 0:
-          b, _, n = logits.shape
+          *b, m, n, t = logits.shape
           # sample reference based on variant_label
-          ref_idx = torch.multinomial(
-              variant_weight + 1e-3, num_var_as_ref, replacement=False
+          ref_idx = torch.reshape(
+              torch.multinomial(
+                  torch.reshape(variant_weight + 1e-3, (math.prod(b + [m]) // m, m)),
+                  num_var_as_ref,
+                  replacement=False
+              ),
+              b + [num_var_as_ref]
           )
           ref_idx = torch.cat(
-              (torch.zeros((b, 1), dtype=ref_idx.dtype, device=logits.device), ref_idx),
+              (torch.zeros(*b, 1, dtype=ref_idx.dtype, device=logits.device), ref_idx),
               dim=-1
           )
           logger.debug('FitnessHead.ref_idx: %s', ref_idx)
 
           logits_ref = torch.gather(
-              logits, 1, repeat(ref_idx, '... m -> ... m i', i=logits.shape[-1])
+              logits, -3, repeat(ref_idx, '... m -> ... m i t', i=n, t=t)
           )
           mask_ref = torch.gather(
-              variant_mask, 1,
+              variant_mask, -3,
               repeat(
                   ref_idx,
                   '... m -> ... m i t',
@@ -1518,25 +1531,25 @@ class FitnessHead(nn.Module):
               )
           )
           label_ref = torch.gather(
-              variant_label, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
           label_mask_ref = torch.gather(
-              variant_label_mask, 1, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
+              variant_label_mask, -3, repeat(ref_idx, '... m -> ... m t', t=self.task_num)
           )
     else:
-      variant_mask = rearrange(torch.zeros_like(batch['mask']), 'b i -> b () i ()')
-      b = variant_mask.shape[0]
-      variant_label = torch.ones((b, 1, self.task_num), device=variant_mask.device)
-      variant_label_mask = torch.zeros(b, 1, self.task_num, device=variant_mask.device)
+      variant_mask = rearrange(torch.zeros_like(batch['mask']), '... i -> ... () i ()')
+      b = variant_mask.shape[:-2]
+      variant_label = torch.ones(*b, self.task_num, device=variant_mask.device)
+      variant_label_mask = torch.zeros(*b, self.task_num, device=variant_mask.device)
 
     if not exists(logits_ref):
-      logits_ref = logits[:, :1, ...]
-      mask_ref = variant_mask[:, :1, ...]
-      label_ref = variant_label[:, :1, ...]
-      label_mask_ref = variant_label_mask[:, :1, ...]
+      logits_ref = logits[..., :1, :, :]
+      mask_ref = variant_mask[..., :1, :, :]
+      label_ref = variant_label[..., :1, :]
+      label_mask_ref = variant_label_mask[..., :1, :]
 
     # pairwise logistic loss
-    variant_logit = logits[..., :, None, :] - logits_ref[..., None, :, :]
+    variant_logit = logits[..., :, None, :, :] - logits_ref[..., None, :, :, :]
     variant_mask = variant_mask[..., :, None, :, :] * mask_ref[..., None, :, :, :]
     variant_label = variant_label[..., :, None, :] - label_ref[..., None, :, :]
     variant_label = torch.sign(variant_label
