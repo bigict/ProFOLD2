@@ -6,13 +6,14 @@
 """
 import argparse
 
-from profold2.command import (evaluator, predictor, trainer, worker)
+from profold2.command import (evaluator, generator, predictor, trainer, worker)
 from profold2.utils import env
 
 _COMMANDS = [
     ('train', trainer.train, trainer.add_arguments),
     ('evaluate', evaluator.evaluate, evaluator.add_arguments),
     ('predict', predictor.predict, predictor.add_arguments),
+    ('generate', generator.generate, generator.add_arguments),
 ]
 
 
