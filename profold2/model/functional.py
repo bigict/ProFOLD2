@@ -1758,3 +1758,136 @@ def multi_chain_permutation_alignment(value, batch):
             angles_from_positions(batch['seq'], batch['coord'], batch['coord_mask'])
         )
   return batch
+
+
+def differentiable_smith_waterman(profile, Q, mask=None, **params):
+  """
+  S: [B, Lq, Lr] substitution scores.
+  """
+  *B, Lq, Lr = *Q.shape[:-1], profile.shape[-2]
+  go = params['gap_open']
+  ge = params['gap_extend']
+
+  q_unmatched = params.get('q_unmatched', 0)
+  ref_unmatched = params.get('ref_unmatched', 0)
+
+  tau = params.get('temperature', 2.0)
+  sinkhorn_iters = params.get('sinkhorn_iters', 5)
+  neg = params.get('neg', torch.finfo(profile.dtype).min / 4)
+  eps = params.get('eps', 1e-8)
+
+  def _wavefront(Lq, Lr, z, device):
+    if params.get('use_wavefront', True):
+      for k in range(2, Lq + Lr + 1):
+        u = torch.arange(max(1, k - Lr), min(Lq + 1, k), device=device)
+        yield u, k - u, repeat(z, '... -> ... n', n=u.numel())
+    else:
+      for u in range(1, Lq + 1):
+        for j in range(1, Lr + 1):
+          yield u, j, z
+
+  def _smax(*xs):
+    """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
+    stacked = torch.stack(xs, dim=0)                 # [K, B]
+    maxv = stacked.amax(dim=0, keepdim=True)         # [B]
+    return maxv + torch.logsumexp((stacked - maxv) * tau, dim=0) / tau
+
+  # DP matrices:
+  #   M = best score ending with a match/mismatch (diagonal step)
+  #   I = best score ending with a gap on the query side (ref advances)
+  #   D = best score ending with a gap on the ref side (query advances)
+  # Initialize to a large negative value (soft version of -inf).
+  M = profile.new_full((*B, Lq + 1, Lr + 1), neg)
+  I = profile.new_full((*B, Lq + 1, Lr + 1), neg)
+  D = profile.new_full((*B, Lq + 1, Lr + 1), neg)
+  Z = profile.new_zeros(B)
+
+  # --- validity masks for right-padded variable-length batches ---
+  if exists(mask):
+    if isinstance(mask, tuple):
+      mask_r, mask_q = mask
+    else:
+      mask_r, mask_q = None, mask
+  else:
+    mask_r, masq_q = None, None
+  if not exists(mask_r):
+    mask_r = profile.new_ones((*B, Lr), dtype=torch.bool)
+  if not exists(mask_q):
+    mask_q = profile.new_ones((*B, Lq), dtype=torch.bool)
+
+  # Local alignment: free start from any position -> 0.
+  M[..., 0, :] = M[..., :, 0] = 0.0
+  I[..., 0, :] = I[..., :, 0] = 0.0
+  D[..., 0, :] = D[..., :, 0] = 0.0
+
+  # --- sequential DP (correct intra-row dependency for I / D) ---
+  for u, j, z in _wavefront(Lq, Lr, Z, profile.device):
+    s = torch.sum(Q[..., u - 1, :] * profile[..., j - 1, :], dim=-1)
+
+    # padded pairs never match
+    m = mask_r[..., j - 1] * mask_q[..., u - 1]
+    s = s.masked_fill(~m, neg)
+
+    M[..., u, j] = _smax(
+        M[..., u - 1, j - 1].clone(), I[..., u - 1, j - 1].clone(), D[..., u - 1, j - 1].clone(), z
+    ) + s
+    I[..., u, j] = _smax(M[..., u, j - 1].clone() - go, I[..., u, j - 1].clone() - ge, z)
+    D[..., u, j] = _smax(M[..., u - 1, j].clone() - go, D[..., u - 1, j].clone() - ge, z)
+
+  del D, I
+
+  # Soft alignment score = soft-max over all M cells (local alignment picks
+  # the best region in a differentiable way).
+  M = M[..., 1:, 1:]  # [B, Lq, Lr]
+  # Padded cells are already ~NEG (match score added AFTER the aggregate),
+  # so no post-hoc M mask and no downstream masks are needed.
+
+  maxv = M.amax(dim=(-1, -2))
+  score = maxv + torch.logsumexp((M - maxv[..., None, None]) * tau, dim=(-1, -2)) / tau  # [B]
+
+  # --- Soft correspondence P with dummy (unmatched) states ---
+  # Use the normalized M table as a soft-correspondence proxy:
+  # high temperature -> uniform; low temperature -> sharp.
+  # A = profile.new_empty((*B, Lq + 1, Lr + 1))
+  A = profile.new_empty((*B, Lq + 1, Lr + 1))
+  A[..., :Lq, :Lr] = M * tau
+  A[..., Lq, :Lr] = ref_unmatched             # ref column left unmatched
+  A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
+  A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
+  A[..., Lq, Lr] = 0.0
+  P = torch.exp(A)
+
+  del A, M
+
+  # A few Sinkhorn rounds push P toward a soft doubly-stochastic matching.
+  O = profile.new_ones((*B, 1, 1))
+  for _ in range(sinkhorn_iters):
+    # ROW step: each REAL row (real cols + dummy col) sums to 1
+    # P[..., :Lq, :] = P[..., :Lq, :] / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps)
+    P = P * torch.cat(
+        (1.0 / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps), O), dim=-2
+    )
+    # COLUMN step: each REAL column (real rows + dummy row) sums to 1
+    # P[..., :, :Lr] = P[..., :, :Lr] / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps)
+    P = P * torch.cat(
+        (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
+    )
+  # P[..., :Lq, :Lr] = P[..., :Lq, :Lr] * mask_r[..., None, :] * mask_q[..., :, None]
+  R = torch.cat((mask_r, profile.new_ones((*profile.shape[:-2], 1))), dim=-1)
+  Q = torch.cat((mask_q, profile.new_ones((*      Q.shape[:-2], 1))), dim=-1)
+  P = P * R[..., None, :] * Q[..., :, None]
+
+  return score, P
+
+
+def soft_align_query(A, P):
+  """
+  Smear the raw Query amino-acid distribution onto the Reference coordinate
+  system through the soft alignment matrix P.
+
+  A     : [B, Lq, 20]  raw Query sequence (one-hot or soft distribution)
+  P     : [B, Lq, Lr]  soft alignment matrix (query -> ref)
+  returns [B, Lr, 20]  soft amino-acid distribution in Reference coordinates (A_tilde)
+  """
+  # A_tilde[j, d] = sum_u P[u, j] * A[u, d]
+  return torch.einsum('... i j,... i d -> ... j d', P, A)
