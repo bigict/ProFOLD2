@@ -1958,7 +1958,9 @@ def _collate_fn(batch, feat_flags=None):
     ret['msa'] = padding.pad_rectangle(
         _to_list('msa'),
         max_batch_len,
-        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
+        padval=residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
+            residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
+        ]
     )
     for field in ('msa_mask', 'del_msa'):
       ret[field] = padding.pad_rectangle(_to_list(field), max_batch_len)
@@ -1970,7 +1972,9 @@ def _collate_fn(batch, feat_flags=None):
     ret['variant'] = padding.pad_rectangle(
         _to_list('variant'),
         max_batch_len,
-        padval=residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
+        padval=residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
+            residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
+        ]
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = padding.pad_rectangle(_to_list(field), max_batch_len)
