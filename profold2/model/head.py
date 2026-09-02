@@ -52,6 +52,16 @@ def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
   return loss
 
 
+def probability_kl_diversity(probs, labels, mode=None, epsilon=1e-7):
+  mode = default(mode, "forward")
+  if mode == "forward":
+    probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
+    return F.kl_div(torch.log(probs), labels, reduction='none')
+  else:
+    labels = torch.clamp(labels, min=epsilon, max=1. - epsilon)
+    return F.kl_div(torch.log(labels), probs, reduction='none')
+
+
 def softmax_kl_diversity(logits, labels, mask=None):
   if not exists(mask):
     mask = 1.0
@@ -448,6 +458,110 @@ class DistogramHead(nn.Module):
     )
     logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
+
+
+class DSWHead(nn.Module):
+  """Head to predict an Alignment.
+    """
+  def __init__(
+      self, dim, gap_open=0.5, gap_extend=0.1, temperature=2.0, sinkhorn_iters=5
+  ):
+    super().__init__()
+    dim_single, _ = commons.embedd_dim_get(dim)
+
+    # Gap penalties stored as learnable parameters (kept positive via softplus).
+    self.log_gap_open = nn.Parameter(torch.tensor(float(gap_open)))
+    self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_extend)))
+    # Learned biases for leaving a query row / ref column unmatched.
+    self.q_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.ref_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.temperature = temperature
+    self.sinkhorn_iters = sinkhorn_iters
+
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    self.profile = nn.Sequential(
+        nn.Linear(dim_single, dim_single),
+        nn.GELU(),
+        nn.LayerNorm(dim_single),
+        nn.Linear(dim_single, num_class)
+    )
+
+    self.eps = 1e-8
+
+  @property
+  def gap_open(self):
+    return F.softplus(self.log_gap_open)
+
+  @property
+  def gap_extend(self):
+    return F.softplus(self.log_gap_ext)
+
+  def forward(self, headers, representations, batch):
+    """Builds DSWHead module."""
+    profile = self.profile(representations['single'])
+    num_class = profile.shape[-1]
+
+    def _dsw_run(msa, mask):
+      msa = (
+          F.one_hot(msa.long(), num_class).float() * mask[..., None]
+      )
+      _, P = functional.differentiable_smith_waterman(
+          profile[..., None, :, :], msa,
+          mask=(batch['mask'][..., None, :], mask),
+          gap_open=self.gap_open,
+          gap_extend=self.gap_extend,
+          q_unmatched=self.q_unmatched,
+          ref_unmatched=self.ref_unmatched,
+          temperature=self.temperature,
+          sinkhorn_iters=self.sinkhorn_iters,
+          eps=self.eps,
+      )
+      msa = functional.soft_align_query(msa, P[..., :-1, :-1])
+      return msa, P
+
+    def _dsw_cat(msa_tilde):
+      msa, P = zip(*msa)
+      msa = torch.cat(msa, dim=-3)
+      P = torch.cat(P, dim=-3)
+      return msa, P
+
+    # pseudo msa if not exists
+    if 'raw_msa' in batch and 'raw_msa_mask' in batch:
+      msa, mask = batch['raw_msa'], batch['raw_msa_mask']
+    else:
+      assert 'seq' in batch
+      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+
+    msa, P = functional.sharded_apply(
+        _dsw_run, [msa, mask],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=-2,
+        cat_dim=_dsw_cat,
+    )
+    return dict(msa=msa, P=P)
+
+  def loss(self, value, batch):
+    """Log loss of a distogram."""
+    msa_tilde, P = value['msa'], value['P']
+
+    # pseudo msa if not exists
+    if 'msa' in batch and 'msa_mask' in batch:
+      msa, mask = batch['msa'], batch['msa_mask']
+    else:
+      assert 'seq' in batch
+      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+    msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
+
+    if 'raw_msa_p' in batch:
+      msa_p = F.one_hot((batch['raw_msa_p'] % P.shape[-1]).long(), P.shape[-1]).float()
+      # errors = probability_kl_diversity(P, msa_p, mode='reverse', epsilon=self.eps)
+      # avg_p_error = functional.masked_mean(value=errors, mask=mask[..., :, None] * batch['mask'][..., None, :])
+
+    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse', epsilon=self.eps)
+    avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
+    logger.debug("DSWHead.msa.error: %s", avg_msa_error)
+
+    return avg_msa_error
 
 
 class FoldingHead(nn.Module):
@@ -1785,6 +1899,7 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      dsw=DSWHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=PLDDTHead,
