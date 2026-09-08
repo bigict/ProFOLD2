@@ -16,6 +16,11 @@ from profold2.utils import default, env, exists
 logger = logging.getLogger(__name__)
 
 
+def label_smoothing(probs, num_class, alpha=1e-5):
+  assert alpha <= 1 and num_class > 0
+  return (1 - alpha) * probs + alpha / num_class
+
+
 def binary_focal_loss_weight(probs, labels, gammar, epsilon=1e-7):
   assert gammar > 0
   probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
@@ -55,13 +60,13 @@ def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
 
 
 def probability_kl_diversity(probs, labels, mode=None, epsilon=1e-7):
-  mode = default(mode, "forward")
+  probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
+  labels = torch.clamp(labels, min=epsilon, max=1. - epsilon)
+
+  mode = default(mode, "forward")  # mode-covering
   if mode == "forward":
-    probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
     return F.kl_div(torch.log(probs), labels, reduction='none')
-  else:
-    labels = torch.clamp(labels, min=epsilon, max=1. - epsilon)
-    return F.kl_div(torch.log(labels), probs, reduction='none')
+  return F.kl_div(torch.log(labels), probs, reduction='none')
 
 
 def softmax_kl_diversity(logits, labels, mask=None):
@@ -488,6 +493,7 @@ class DSWHead(nn.Module):
         nn.Linear(dim_single, num_class)
     )
 
+    self.neg = -1e4
     self.eps = 1e-8
 
   @property
@@ -528,9 +534,10 @@ class DSWHead(nn.Module):
               ref_unmatched=self.ref_unmatched,
               temperature=self.temperature,
               sinkhorn_iters=self.sinkhorn_iters,
+              neg=self.neg,
               eps=self.eps,
           ),
-          profile[..., None, :, :], msa,
+          torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
           use_reentrant=True,
       )
       msa = functional.soft_align_query(msa, P[..., :-1, :-1])
