@@ -1760,24 +1760,24 @@ def multi_chain_permutation_alignment(value, batch):
   return batch
 
 
-def differentiable_smith_waterman(profile, Q, mask=None, **params):
+def differentiable_smith_waterman(S, mask=None, **kwargs):
   """
   S: [B, Lq, Lr] substitution scores.
   """
-  *B, Lq, Lr = *Q.shape[:-1], profile.shape[-2]
-  go = params['gap_open']
-  ge = params['gap_extend']
+  *B, Lq, Lr = S.shape
+  go = kwargs['gap_open']
+  ge = kwargs['gap_extend']
 
-  q_unmatched = params.get('q_unmatched', 0)
-  ref_unmatched = params.get('ref_unmatched', 0)
+  q_unmatched = kwargs.get('q_unmatched', 0)
+  ref_unmatched = kwargs.get('ref_unmatched', 0)
 
-  tau = params.get('temperature', 2.0)
-  sinkhorn_iters = params.get('sinkhorn_iters', 5)
-  neg = params.get('neg', torch.finfo(profile.dtype).min / 4)
-  eps = params.get('eps', 1e-8)
+  tau = kwargs.get('temperature', 2.0)
+  sinkhorn_iters = kwargs.get('sinkhorn_iters', 5)
+  neg = kwargs.get('neg', torch.finfo(S.dtype).min / 4)
+  eps = kwargs.get('eps', 1e-8)
 
   def _wavefront(Lq, Lr, z, device):
-    if params.get('use_wavefront', True):
+    if kwargs.get('use_wavefront', True):
       for k in range(2, Lq + Lr + 1):
         u = torch.arange(max(1, k - Lr), min(Lq + 1, k), device=device)
         yield u, k - u, repeat(z, '... -> ... n', n=u.numel())
@@ -1789,18 +1789,18 @@ def differentiable_smith_waterman(profile, Q, mask=None, **params):
   def _smax(*xs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
-    maxv = stacked.amax(dim=0, keepdim=True)         # [B]
-    return maxv + torch.logsumexp((stacked - maxv) * tau, dim=0) / tau
+    maxv = stacked.amax(dim=0)                       # [B]
+    return maxv + torch.logsumexp((stacked - maxv[None, ...]) * tau, dim=0) / tau
 
   # DP matrices:
   #   M = best score ending with a match/mismatch (diagonal step)
   #   I = best score ending with a gap on the query side (ref advances)
   #   D = best score ending with a gap on the ref side (query advances)
   # Initialize to a large negative value (soft version of -inf).
-  M = profile.new_full((*B, Lq + 1, Lr + 1), neg)
-  I = profile.new_full((*B, Lq + 1, Lr + 1), neg)
-  D = profile.new_full((*B, Lq + 1, Lr + 1), neg)
-  Z = profile.new_zeros(B)
+  M = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  I = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  D = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  Z = S.new_zeros(B)
 
   # --- validity masks for right-padded variable-length batches ---
   if exists(mask):
@@ -1811,28 +1811,24 @@ def differentiable_smith_waterman(profile, Q, mask=None, **params):
   else:
     mask_r, masq_q = None, None
   if not exists(mask_r):
-    mask_r = profile.new_ones((*B, Lr), dtype=torch.bool)
+    mask_r = S.new_ones((*B, Lr), dtype=torch.bool)
   if not exists(mask_q):
-    mask_q = profile.new_ones((*B, Lq), dtype=torch.bool)
+    mask_q = S.new_ones((*B, Lq), dtype=torch.bool)
 
   # Local alignment: free start from any position -> 0.
   M[..., 0, :] = M[..., :, 0] = 0.0
   I[..., 0, :] = I[..., :, 0] = 0.0
   D[..., 0, :] = D[..., :, 0] = 0.0
+  S = S.masked_fill(~(mask_q[..., :, None] * mask_r[..., None, :]), neg)
 
   # --- sequential DP (correct intra-row dependency for I / D) ---
-  for u, j, z in _wavefront(Lq, Lr, Z, profile.device):
-    s = torch.sum(Q[..., u - 1, :] * profile[..., j - 1, :], dim=-1)
-
-    # padded pairs never match
-    m = mask_r[..., j - 1] * mask_q[..., u - 1]
-    s = s.masked_fill(~m, neg)
-
+  for u, j, z in _wavefront(Lq, Lr, Z, S.device):
+    s = S[..., u - 1, j - 1]
     M[..., u, j] = _smax(
-        M[..., u - 1, j - 1].clone(), I[..., u - 1, j - 1].clone(), D[..., u - 1, j - 1].clone(), z
+        M[..., u - 1, j - 1], I[..., u - 1, j - 1], D[..., u - 1, j - 1], z
     ) + s
-    I[..., u, j] = _smax(M[..., u, j - 1].clone() - go, I[..., u, j - 1].clone() - ge, z)
-    D[..., u, j] = _smax(M[..., u - 1, j].clone() - go, D[..., u - 1, j].clone() - ge, z)
+    I[..., u, j] = _smax(M[..., u, j - 1] - go, I[..., u, j - 1] - ge, z)
+    D[..., u, j] = _smax(M[..., u - 1, j] - go, D[..., u - 1, j] - ge, z)
 
   del D, I
 
@@ -1848,8 +1844,8 @@ def differentiable_smith_waterman(profile, Q, mask=None, **params):
   # --- Soft correspondence P with dummy (unmatched) states ---
   # Use the normalized M table as a soft-correspondence proxy:
   # high temperature -> uniform; low temperature -> sharp.
-  # A = profile.new_empty((*B, Lq + 1, Lr + 1))
-  A = profile.new_empty((*B, Lq + 1, Lr + 1))
+  # A = S.new_empty((*B, Lq + 1, Lr + 1))
+  A = S.new_empty((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau
   A[..., Lq, :Lr] = ref_unmatched             # ref column left unmatched
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
@@ -1860,7 +1856,7 @@ def differentiable_smith_waterman(profile, Q, mask=None, **params):
   del A, M
 
   # A few Sinkhorn rounds push P toward a soft doubly-stochastic matching.
-  O = profile.new_ones((*B, 1, 1))
+  O = S.new_ones((*B, 1, 1))
   for _ in range(sinkhorn_iters):
     # ROW step: each REAL row (real cols + dummy col) sums to 1
     # P[..., :Lq, :] = P[..., :Lq, :] / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps)
@@ -1873,8 +1869,8 @@ def differentiable_smith_waterman(profile, Q, mask=None, **params):
         (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
     )
   # P[..., :Lq, :Lr] = P[..., :Lq, :Lr] * mask_r[..., None, :] * mask_q[..., :, None]
-  R = torch.cat((mask_r, profile.new_ones((*profile.shape[:-2], 1))), dim=-1)
-  Q = torch.cat((mask_q, profile.new_ones((*      Q.shape[:-2], 1))), dim=-1)
+  R = torch.cat((mask_r, S.new_ones((*mask_r.shape[:-1], 1))), dim=-1)
+  Q = torch.cat((mask_q, S.new_ones((*mask_q.shape[:-1], 1))), dim=-1)
   P = P * R[..., None, :] * Q[..., :, None]
 
   return score, P
