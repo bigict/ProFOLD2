@@ -857,7 +857,7 @@ def concat_msa_feats(ret, feat):
         dim=0
     )
     feat['del_msa'] = torch.cat((feat['del_msa'], torch.zeros(m - n, seq_len)), dim=0)
-    ret['str_del_msa'] += [[''] * seq_len for _ in range(m - n)]
+    feat['str_del_msa'] += [[''] * seq_len for _ in range(m - n)]
   # Rand permute msa relate feat
   if 'str_msa' not in ret:
     ret['str_msa'] = feat['str_msa']
