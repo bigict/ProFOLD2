@@ -471,18 +471,18 @@ class DSWHead(nn.Module):
   """Head to predict an Alignment.
     """
   def __init__(
-      self, dim, gap_open=0.5, gap_extend=0.1, temperature=2.0, sinkhorn_iters=5
+      self, dim, gap_open=0.5, gap_ext=0.1, tau=2.0, sinkhorn_iters=5, dtype=None
   ):
     super().__init__()
     dim_single, _ = commons.embedd_dim_get(dim)
 
     # Gap penalties stored as learnable parameters (kept positive via softplus).
     self.log_gap_open = nn.Parameter(torch.tensor(float(gap_open)))
-    self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_extend)))
+    self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_ext)))
     # Learned biases for leaving a query row / ref column unmatched.
     self.q_unmatched = nn.Parameter(torch.tensor(0.0))
     self.ref_unmatched = nn.Parameter(torch.tensor(0.0))
-    self.temperature = temperature
+    self.temperature = tau
     self.sinkhorn_iters = sinkhorn_iters
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -493,8 +493,9 @@ class DSWHead(nn.Module):
         nn.Linear(dim_single, num_class)
     )
 
+    self.dtype = accelerator.to_dtype(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
-    self.eps = 1e-8
+    self.eps = 1e-6
 
   @property
   def gap_open(self):
@@ -509,39 +510,33 @@ class DSWHead(nn.Module):
     profile = self.profile(representations['single'])
     num_class = profile.shape[-1]
 
-    def _dsw_run(msa, mask):
+    def _dsw_ckpt(profile, msa, mask):
       msa = (
           F.one_hot(msa.long(), num_class).float() * mask[..., None]
       )
-      # _, P = functional.differentiable_smith_waterman(
-      #     profile[..., None, :, :], msa,
-      #     mask=(batch['mask'][..., None, :], mask),
-      #     gap_open=self.gap_open,
-      #     gap_extend=self.gap_extend,
-      #     q_unmatched=self.q_unmatched,
-      #     ref_unmatched=self.ref_unmatched,
-      #     temperature=self.temperature,
-      #     sinkhorn_iters=self.sinkhorn_iters,
-      #     eps=self.eps,
-      # )
-      _, P = checkpoint(
-          functools.partial(
-              functional.differentiable_smith_waterman,
-              mask=(batch['mask'][..., None, :], mask),
-              gap_open=self.gap_open,
-              gap_extend=self.gap_extend,
-              q_unmatched=self.q_unmatched,
-              ref_unmatched=self.ref_unmatched,
-              temperature=self.temperature,
-              sinkhorn_iters=self.sinkhorn_iters,
-              neg=self.neg,
-              eps=self.eps,
-          ),
+      _, P = functional.differentiable_smith_waterman(
           torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
-          use_reentrant=True,
+          mask=(batch['mask'][..., None, :], mask),
+          gap_open=self.gap_open,
+          gap_extend=self.gap_extend,
+          q_unmatched=self.q_unmatched,
+          ref_unmatched=self.ref_unmatched,
+          temperature=self.temperature,
+          sinkhorn_iters=self.sinkhorn_iters,
+          sinkhorn_custom_bwd=env(
+              'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
+          ),
+          dtype=self.dtype,
+          neg=self.neg,
+          eps=self.eps,
       )
       msa = functional.soft_align_query(msa, P[..., :-1, :-1])
       return msa, P
+
+    def _dsw_run(msa, mask):
+      if torch.is_grad_enabled():
+        return checkpoint(_dsw_ckpt, profile, msa, mask, use_reentrant=True)
+      return _dsw_ckpt(profile, msa, mask)
 
     def _dsw_cat(msa_tilde):
       msa, P = zip(*msa)
