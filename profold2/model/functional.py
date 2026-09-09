@@ -1760,11 +1760,81 @@ def multi_chain_permutation_alignment(value, batch):
   return batch
 
 
+class SinkhornFunction(torch.autograd.Function):
+  """
+  Sinkhorn normalization of the augmented matrix with O(1)-memory backward.
+    * each REAL column (cols 0..Lr-1, over all rows incl. dummy row) sums to 1
+    * each REAL row    (rows 0..Lq-1, over all cols incl. dummy col) sums to 1
+    * dummy row / dummy col stay free (unmatched slack)
+  forward stores only P0; backward replays forward per reverse step.
+  """
+
+  @staticmethod
+  def forward(ctx, P0, iters, eps):
+    *B, Nr, Nc = P0.shape
+    Lq, Lr = Nr - 1, Nc - 1
+    P = P0
+    with torch.no_grad():
+      for _ in range(iters):
+        r = P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
+        P = torch.cat([P[..., :Lq, :] / r, P[..., Lq:, :]], dim=-2)   # row step
+        s = P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
+        P = torch.cat([P[..., :, :Lr] / s, P[..., :, Lr:]], dim=-1)   # col step
+    ctx.save_for_backward(P0)
+    ctx.dims = (Lq, Lr)
+    ctx.iters = iters
+    ctx.eps = eps
+    return P
+
+  @staticmethod
+  def backward(ctx, grad_output):
+    P0, = ctx.saved_tensors
+    Lq, Lr = ctx.dims
+    iters, eps = ctx.iters, ctx.eps
+
+    def fwd_step(X, k):
+      if k % 2 == 0:                                     # column step
+        r = X[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
+        return torch.cat([X[..., :Lq, :] / r, X[..., Lq:, :]], dim=-2)
+      else:                                              # row step
+        s = X[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
+        return torch.cat([X[..., :, :Lr] / s, X[..., :, Lr:]], dim=-1)
+
+    def col_adj(g, X):                                   # adjoint of column step
+      s = X[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
+      Y = X[..., :, :Lr] / s
+      c = (g[..., :, :Lr] * Y).sum(dim=-2, keepdim=True)
+      out = g.clone()
+      out[..., :, :Lr] = (g[..., :, :Lr] - c) / s
+      return out
+
+    def row_adj(g, X):                                   # adjoint of row step
+      r = X[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
+      Y = X[..., :Lq, :] / r
+      d = (g[..., :Lq, :] * Y).sum(dim=-1, keepdim=True)
+      out = g.clone()
+      out[..., :Lq, :] = (g[..., :Lq, :] - d) / r
+      return out
+
+    g = grad_output
+    T = 2 * iters
+    with torch.no_grad():
+      for t in range(T - 1, -1, -1):                     # reverse sweep
+        X_t = P0                                         # replay forward to step t
+        for k in range(t):
+          X_t = fwd_step(X_t, k)
+        g = col_adj(g, X_t) if t % 2 == 0 else row_adj(g, X_t)
+    return g, None, None
+
+
 def differentiable_smith_waterman(S, mask=None, **kwargs):
   """
   S: [B, Lq, Lr] substitution scores.
   """
   *B, Lq, Lr = S.shape
+  dtype = S.dtype
+  S = S.to(default(kwargs.get('dtype'), S.dtype))
+
   go = kwargs['gap_open']
   ge = kwargs['gap_extend']
 
@@ -1786,11 +1856,14 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
         for j in range(1, Lr + 1):
           yield u, j, z
 
+  def _lse(t, dim):
+    return (torch.logsumexp(t.to(dtype) * tau, dim=dim) / tau).to(t.dtype)
+
   def _smax(*xs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
     maxv = stacked.amax(dim=0)                       # [B]
-    return maxv + torch.logsumexp((stacked - maxv[None, ...]) * tau, dim=0) / tau
+    return maxv + _lse(stacked - maxv[None, ...], dim=0)
 
   # DP matrices:
   #   M = best score ending with a match/mismatch (diagonal step)
@@ -1834,43 +1907,45 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
 
   # Soft alignment score = soft-max over all M cells (local alignment picks
   # the best region in a differentiable way).
-  M = M[..., 1:, 1:]  # [B, Lq, Lr]
+  M = M[..., 1:, 1:].to(dtype)  # [B, Lq, Lr]
   # Padded cells are already ~NEG (match score added AFTER the aggregate),
   # so no post-hoc M mask and no downstream masks are needed.
 
   maxv = M.amax(dim=(-1, -2))
-  score = maxv + torch.logsumexp((M - maxv[..., None, None]) * tau, dim=(-1, -2)) / tau  # [B]
+  score = maxv + _lse(M - maxv[..., None, None], dim=(-1, -2))  # [B]
 
   # --- Soft correspondence P with dummy (unmatched) states ---
   # Use the normalized M table as a soft-correspondence proxy:
   # high temperature -> uniform; low temperature -> sharp.
   # A = S.new_empty((*B, Lq + 1, Lr + 1))
-  A = S.new_empty((*B, Lq + 1, Lr + 1))
+  A = M.new_empty((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau
   A[..., Lq, :Lr] = ref_unmatched             # ref column left unmatched
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A[..., Lq, Lr] = 0.0
-  P = torch.exp(A)
+  P = torch.exp(A)                            # safe exp
 
   del A, M
 
   # A few Sinkhorn rounds push P toward a soft doubly-stochastic matching.
-  O = S.new_ones((*B, 1, 1))
-  for _ in range(sinkhorn_iters):
-    # ROW step: each REAL row (real cols + dummy col) sums to 1
-    # P[..., :Lq, :] = P[..., :Lq, :] / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps)
-    P = P * torch.cat(
-        (1.0 / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps), O), dim=-2
-    )
-    # COLUMN step: each REAL column (real rows + dummy row) sums to 1
-    # P[..., :, :Lr] = P[..., :, :Lr] / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps)
-    P = P * torch.cat(
-        (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
-    )
-  # P[..., :Lq, :Lr] = P[..., :Lq, :Lr] * mask_r[..., None, :] * mask_q[..., :, None]
-  R = torch.cat((mask_r, S.new_ones((*mask_r.shape[:-1], 1))), dim=-1)
-  Q = torch.cat((mask_q, S.new_ones((*mask_q.shape[:-1], 1))), dim=-1)
+  if kwargs.get('sinkhorn_custom_bwd', True):
+    P = SinkhornFunction.apply(P, sinkhorn_iters, eps)
+  else:
+    O = P.new_ones((*B, 1, 1))
+    for _ in range(sinkhorn_iters):
+      # ROW step: each REAL row (real cols + dummy col) sums to 1
+      # P[..., :Lq, :] = P[..., :Lq, :] / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps)
+      P = P * torch.cat(
+          (1.0 / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps), O), dim=-2
+      )
+      # COLUMN step: each REAL column (real rows + dummy row) sums to 1
+      # P[..., :, :Lr] = P[..., :, :Lr] / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps)
+      P = P * torch.cat(
+          (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
+      )
+  R = torch.cat((mask_r, P.new_ones((*mask_r.shape[:-1], 1))), dim=-1)
+  Q = torch.cat((mask_q, P.new_ones((*mask_q.shape[:-1], 1))), dim=-1)
   P = P * R[..., None, :] * Q[..., :, None]
 
   return score, P
