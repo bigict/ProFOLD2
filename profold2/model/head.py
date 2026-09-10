@@ -494,7 +494,7 @@ class DSWHead(nn.Module):
         nn.Linear(dim_single, num_class)
     )
 
-    self.dtype = accelerator.to_dtype(env('profold2_dsw_dtype', defval=dtype))
+    self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
     self.eps = 1e-6
 
