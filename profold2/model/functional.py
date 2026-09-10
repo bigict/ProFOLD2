@@ -1793,10 +1793,10 @@ class SinkhornFunction(torch.autograd.Function):
     iters, eps = ctx.iters, ctx.eps
 
     def fwd_step(X, k):
-      if k % 2 == 0:                                     # column step
+      if k % 2 == 0:                                     # row step
         r = X[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
         return torch.cat([X[..., :Lq, :] / r, X[..., Lq:, :]], dim=-2)
-      else:                                              # row step
+      else:                                              # column step
         s = X[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
         return torch.cat([X[..., :, :Lr] / s, X[..., :, Lr:]], dim=-1)
 
@@ -1892,7 +1892,9 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   M[..., 0, :] = M[..., :, 0] = 0.0
   I[..., 0, :] = I[..., :, 0] = 0.0
   D[..., 0, :] = D[..., :, 0] = 0.0
-  S = S.masked_fill(~(mask_q[..., :, None] * mask_r[..., None, :]), neg)
+  # S = S.masked_fill(~(mask_q[..., :, None] * mask_r[..., None, :]), neg)
+  S = S.masked_fill(~mask_q[..., :, None], neg)
+  S = S.masked_fill(~mask_r[..., None, :], neg)
 
   # --- sequential DP (correct intra-row dependency for I / D) ---
   for u, j, z in _wavefront(Lq, Lr, Z, S.device):
