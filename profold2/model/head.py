@@ -3,6 +3,7 @@ import functools
 import logging
 import math
 
+from Bio.Align import substitution_matrices
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -1260,6 +1261,17 @@ class MetricDictHead(nn.Module):
     super().__init__()
     del dim
 
+    if residue_constants.prot_from_idx != -1:
+      blosum62 = substitution_matrices.load('BLOSUM62')
+      blosum62 = blosum62.select(
+          residue_constants.restypes[
+              residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+          ]
+      )
+      self.register_buffer(
+          'blosum', torch.as_tensor(blosum62, dtype=torch.float), persistent=False
+      )
+
     self.params = kwargs
 
   def forward(self, headers, representations, batch):
@@ -1349,6 +1361,40 @@ class MetricDictHead(nn.Module):
             )
             logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error)
             metrics['coevolution']['perplexity'] = avg_error
+
+      if 'dsw' in headers and residue_constants.prot_from_idx != -1:  # protein only
+        metrics['dsw'] = MetricDict()
+
+        assert 'msa' in headers['dsw']
+        msa = headers['dsw']['msa']
+        seq = F.one_hot(batch['seq'].long(), msa.shape[-1]).float()
+        eps = 1e-8
+
+        obs = torch.einsum('... m i a,... i c -> a c', msa, seq)
+        obs = obs[
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1,
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+        ]
+        obs = (obs + rearrange(obs, 'a c -> c a')) / 2  # symmetrize
+
+        q = obs / (obs.sum() + eps)
+        p = obs.sum(dim=1) / (obs.sum() + eps)
+        pblosum = torch.log((q + eps) / (p[:, None] * p[None, :] + eps))
+
+        row_idx, col_idx = torch.triu_indices(
+            row=pblosum.shape[0], col=pblosum.shape[1], offset=0
+        )
+        pearson = torch.corrcoef(
+            torch.stack((pblosum[row_idx, col_idx], self.blosum[row_idx, col_idx]))
+        )[0, 1]
+        logger.debug('MetricDictHead.dsw.blosum.pearson: %s', pearson)
+        cosine = F.cosine_similarity(
+            pblosum[row_idx, col_idx].reshape(-1),
+            self.blosum[row_idx, col_idx].reshape(-1),
+            dim=0,
+        )
+        logger.debug('MetricDictHead.dsw.blosum.cosine: %s', cosine)
+        metrics['dsw']['blosum'] = MetricDict({'pearson': pearson, 'cosine': cosine})
 
       if 'folding' in headers and 'coords' in headers['folding'] and (
           'coord_mask' in batch or 'coord_exists' in batch
