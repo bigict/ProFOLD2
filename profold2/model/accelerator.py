@@ -4,7 +4,7 @@ import contextlib
 from datetime import timedelta
 import functools
 import logging
-from typing import Generator, Optional
+from typing import Generator, Literal, Optional
 
 import torch
 
@@ -25,7 +25,9 @@ def world_size(nnodes: Optional[int] = None) -> int:
   return env('WORLD_SIZE', defval=device_count() * default(nnodes, 1), dtype=int)
 
 
-def to_dtype(dtype: str) -> torch.dtype:
+def dtype_from_string(
+    dtype: Literal['float16', 'fp16', 'bfloat16', 'bf16', 'float32', 'fp32']
+) -> torch.dtype:
   if dtype in ('float16', 'fp16'):
     return torch.float16
   elif dtype in ('bfloat16', 'bf16'):
@@ -37,8 +39,7 @@ def to_dtype(dtype: str) -> torch.dtype:
 
 def autocast_dtype(env_key: Optional[str] = 'profold2_amp_dtype') -> torch.dtype:
   if exists(env_key):
-    dtype = env(env_key)
-    if exists(dtype := to_dtype(dtype)):
+    if exists(dtype := dtype_from_string(env(env_key))):
       return dtype
 
   if hasattr(torch.cuda, 'is_bf16_supported'):
