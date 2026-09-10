@@ -38,7 +38,8 @@ def to_dtype(dtype: str) -> torch.dtype:
 def autocast_dtype(env_key: Optional[str] = 'profold2_amp_dtype') -> torch.dtype:
   if exists(env_key):
     dtype = env(env_key)
-    return to_dtype(dtype)
+    if exists(dtype := to_dtype(dtype)):
+      return dtype
 
   if hasattr(torch.cuda, 'is_bf16_supported'):
     if torch.cuda.is_bf16_supported():
