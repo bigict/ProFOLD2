@@ -1382,7 +1382,7 @@ class MetricDictHead(nn.Module):
         pblosum = torch.log((q + eps) / (p[:, None] * p[None, :] + eps))
 
         row_idx, col_idx = torch.triu_indices(
-            row=pblosum.shape[0], col=pblosum.shape[1], offset=0
+            row=pblosum.shape[0], col=pblosum.shape[1], offset=0, device=pblosum.device
         )
         pearson = torch.corrcoef(
             torch.stack((pblosum[row_idx, col_idx], self.blosum[row_idx, col_idx]))
