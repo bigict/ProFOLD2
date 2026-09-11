@@ -230,6 +230,10 @@ def _parse_a4m(sequences):
   assert all(
       s == t for s, t in zip(_join_a4m(aligned_sequences, str_deletion), sequences)
   )
+  if exists(max_del := env('profold2_data_maximum_deletion', defval=None, dtype=int)):
+    # WARNING: this my break the equality between `str_deletion` and `deletion_matrix`
+    for idx in range(len(str_deletion)):
+      str_deletion[idx] = [d[:max_del] for d in str_deletion[idx]]
   return aligned_sequences, deletion_matrix, str_deletion
 
 
@@ -1491,7 +1495,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
                 chains[idx],
                 feat['str_var'][var_idx],
                 feat['del_var'][var_idx],
-                feat['str_del_var'],
+                feat['str_del_var'][var_idx],
             )
 
     ret['pid'] = utils.compose_pid(pid, ','.join(chains))
@@ -1563,6 +1567,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
               str_var[idx], del_var[idx], str_del_var[idx] = (
                   hit_str, hit_del, hit_del_str
               )
+              assert len(str_var[idx]) == len(str_del_var[idx])
               break
           if not exists(variant[idx]):
             variant[idx] = torch.full(
@@ -1576,7 +1581,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
         ret['variant_mask'].append(torch.cat(variant_mask, dim=-1))
         ret['str_var'].append(''.join(str_var))
         ret['del_var'].append(torch.cat(del_var, dim=-1))
-        ret['str_del_var'].append([*str_del_var])
+        ret['str_del_var'].append(list(itertools.chain(*str_del_var)))
         ret['variant_pid'].append(var_pid)
         ret['variant_task_mask'].append(
             _make_task_mask(
