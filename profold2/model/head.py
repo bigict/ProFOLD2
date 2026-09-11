@@ -482,7 +482,7 @@ class DSWHead(nn.Module):
     self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_ext)))
     # Learned biases for leaving a query row / ref column unmatched.
     self.q_unmatched = nn.Parameter(torch.tensor(0.0))
-    self.ref_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.r_unmatched = nn.Parameter(torch.tensor(0.0))
     self.temperature = tau
     self.sinkhorn_iters = sinkhorn_iters
 
@@ -497,6 +497,7 @@ class DSWHead(nn.Module):
     self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
     self.eps = 1e-6
+    self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
 
   @property
   def gap_open(self):
@@ -509,37 +510,35 @@ class DSWHead(nn.Module):
   def forward(self, headers, representations, batch):
     """Builds DSWHead module."""
     profile = self.profile(representations['single'])
-    num_class = profile.shape[-1]
-
-    def _dsw_ckpt(profile, msa, mask):
-      msa = (
-          F.one_hot(msa.long(), num_class).float() * mask[..., None]
-      )
-      _, P = functional.differentiable_smith_waterman(
-          torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
-          mask=(batch['mask'][..., None, :], mask),
-          gap_open=self.gap_open,
-          gap_extend=self.gap_extend,
-          q_unmatched=self.q_unmatched,
-          ref_unmatched=self.ref_unmatched,
-          temperature=self.temperature,
-          sinkhorn_iters=self.sinkhorn_iters,
-          sinkhorn_custom_bwd=env(
-              'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
-          ),
-          dtype=self.dtype,
-          neg=self.neg,
-          eps=self.eps,
-      )
-      msa = functional.soft_align_query(msa, P[..., :-1, :-1])
-      return msa, P
 
     def _dsw_run(msa, mask):
+      def _dsw_ckpt(profile, msa, mask):
+        num_class = profile.shape[-1]
+        msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
+        _, P = functional.differentiable_smith_waterman(
+            torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
+            mask=(batch['mask'][..., None, :], mask),
+            gap_open=self.gap_open,
+            gap_extend=self.gap_extend,
+            q_unmatched=self.q_unmatched,
+            r_unmatched=self.r_unmatched,
+            temperature=self.temperature,
+            sinkhorn_iters=self.sinkhorn_iters,
+            sinkhorn_custom_bwd=env(
+                'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
+            ),
+            dtype=self.dtype,
+            neg=self.neg,
+            eps=self.eps,
+        )
+        msa = functional.soft_align_query(msa, P[..., :-1, :-1])
+        return msa, P
+
       if torch.is_grad_enabled():
         return checkpoint(_dsw_ckpt, profile, msa, mask, use_reentrant=True)
       return _dsw_ckpt(profile, msa, mask)
 
-    def _dsw_cat(msa_tilde):
+    def _dsw_cat(msa):
       msa, P = zip(*msa)
       msa = torch.cat(msa, dim=-3)
       P = torch.cat(P, dim=-3)
