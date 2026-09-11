@@ -230,6 +230,10 @@ def _parse_a4m(sequences):
   assert all(
       s == t for s, t in zip(_join_a4m(aligned_sequences, str_deletion), sequences)
   )
+  if exists(max_del := env('profold2_data_maximum_deletion', defval=None, dtype=int)):
+    # WARNING: this my break the equality between `str_deletion` and `deletion_matrix`
+    for idx in range(len(str_deletion)):
+      str_deletion[idx] = [d[:max_del] for d in str_deletion[idx]]
   return aligned_sequences, deletion_matrix, str_deletion
 
 

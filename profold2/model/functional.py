@@ -1839,7 +1839,7 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   ge = kwargs['gap_extend']
 
   q_unmatched = kwargs.get('q_unmatched', 0)
-  ref_unmatched = kwargs.get('ref_unmatched', 0)
+  r_unmatched = kwargs.get('r_unmatched', 0)
 
   tau = kwargs.get('temperature', 2.0)
   sinkhorn_iters = kwargs.get('sinkhorn_iters', 5)
@@ -1922,7 +1922,7 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   # A = S.new_empty((*B, Lq + 1, Lr + 1))
   A = M.new_empty((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau
-  A[..., Lq, :Lr] = ref_unmatched             # ref column left unmatched
+  A[..., Lq, :Lr] = r_unmatched               # ref column left unmatched
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A[..., Lq, Lr] = 0.0
