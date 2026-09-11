@@ -186,6 +186,11 @@ def apply(protein, new_order, seq_feats=None, msa_feats=None, var_feats=None):
       for j in range(len(protein[field])):
         protein[field][j] = ''.join(protein[field][j][k] for k in new_order)
 
+  for field in ('str_del_msa', 'str_del_var'):
+    if field in protein:
+      for j in range(len(protein[field])):
+        protein[field][j] = [protein[field][j][k] for k in new_order]
+
   # Update tensors
   new_order = torch.as_tensor(new_order)
 
