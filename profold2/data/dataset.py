@@ -1533,6 +1533,7 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ret['variant'], ret['variant_mask'] = [ret['seq']], [ret['mask']]
       ret['str_var'] = [ret['str_seq']]
       ret['del_var'] = [torch.zeros((sum(ret['length']), ), dtype=torch.int)]
+      ret['str_del_var'] = [[''] * len(ret['str_seq'])]
       ret['variant_pid'] = [ret['pid']]
       ret['variant_task_mask'] = [
           _make_task_mask(
@@ -1545,7 +1546,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
       ]
       for var_pid, chain_list in var_chain_list:
         variant, variant_mask = [None] * len(chains), [None] * len(chains)
-        str_var, del_var = [None] * len(chains), [None] * len(chains)
+        str_var, del_var, str_del_var = (
+            [None] * len(chains), [None] * len(chains), [None] * len(chains)
+        )
         for idx, chain in enumerate(chains):
           n = ret['length'][idx]
           for c, *_ in chain_list:
@@ -1557,7 +1560,9 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             ) = var_dict[cluster_id]
             if chains[idx] == target_chain:
               variant[idx], variant_mask[idx] = hit_seq, hit_mask
-              str_var[idx], del_var[idx] = hit_str, hit_del
+              str_var[idx], del_var[idx], str_del_var[idx] = (
+                  hit_str, hit_del, hit_del_str
+              )
               break
           if not exists(variant[idx]):
             variant[idx] = torch.full(
@@ -1566,10 +1571,12 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
             variant_mask[idx] = torch.zeros((n, ), dtype=torch.bool)
             str_var[idx] = '-' * n
             del_var[idx] = torch.zeros((n, ), dtype=torch.int)
+            str_del_var[idx] = [''] * n
         ret['variant'].append(torch.cat(variant, dim=-1))
         ret['variant_mask'].append(torch.cat(variant_mask, dim=-1))
         ret['str_var'].append(''.join(str_var))
         ret['del_var'].append(torch.cat(del_var, dim=-1))
+        ret['str_del_var'].append([*str_del_var])
         ret['variant_pid'].append(var_pid)
         ret['variant_task_mask'].append(
             _make_task_mask(
@@ -2014,28 +2021,34 @@ def _collate_fn(batch, feat_flags=None):
 
       return t, a, m
 
-    ret['raw_msa'], ret['raw_msa_p'], ret['raw_msa_mask'] = [], [], []
-    for seq, deletion_str, aligned_sequences in zip(
-        ret['seq'], ret['str_del_msa'], ret['str_msa']
-    ):
-      t, a, m = _str_msa_to_tensor(seq, deletion_str, aligned_sequences)
-      ret['raw_msa'].append(t)
-      ret['raw_msa_p'].append(a)
-      ret['raw_msa_mask'].append(m)
+    def _reconstruct_raw_msa(str_del_msa, str_msa):
+      raw_msa, raw_msa_p, raw_msa_mask = [], [], []
 
-    max_length = max(t.shape[1] for t in ret['raw_msa'])
-    ret['raw_msa'] = padding.pad_rectangle(
-        ret['raw_msa'],
-        max_length,
-        padval=residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
-            residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
-        ]
+      for seq, deletion_str, aligned_sequences in zip(ret['seq'], str_del_msa, str_msa):
+        t, a, m = _str_msa_to_tensor(seq, deletion_str, aligned_sequences)
+        raw_msa.append(t)
+        raw_msa_p.append(a)
+        raw_msa_mask.append(m)
+
+      max_length = max(t.shape[1] for t in raw_msa)
+      raw_msa = padding.pad_rectangle(
+          raw_msa,
+          max_length,
+          padval=residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
+              residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
+          ]
+      )
+      raw_msa_p = padding.pad_rectangle(raw_msa_p, max_length, padval=-1)
+      raw_msa_mask = padding.pad_rectangle(raw_msa_mask, max_length)
+      return raw_msa, raw_msa_p, raw_msa_mask
+
+    ret['raw_msa'], ret['raw_msa_p'], ret['raw_msa_mask'] = _reconstruct_raw_msa(
+        ret['str_del_msa'], ret['str_msa']
     )
-    ret['raw_msa_p'] = padding.pad_rectangle(ret['raw_msa_p'], max_length, padval=-1)
-    ret['raw_msa_mask'] = padding.pad_rectangle(ret['raw_msa_mask'], max_length)
 
   if feat_flags & FEAT_VAR and _any('variant'):
     ret['variant_pid'] = _to_list('variant_pid')
+    ret['str_var'] = _to_list('str_var')
     for field in ('var_idx', 'num_var'):
       ret[field] = _to_tensor(field, dtype=torch.int)
     ret['variant'] = padding.pad_rectangle(
@@ -2044,6 +2057,10 @@ def _collate_fn(batch, feat_flags=None):
         padval=residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
             residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
         ]
+    )
+    ret['str_del_var'] = _to_list('str_del_var')
+    ret['raw_var'], ret['raw_var_p'], ret['raw_var_mask'] = _reconstruct_raw_msa(
+        ret['str_del_var'], ret['str_var']
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = padding.pad_rectangle(_to_list(field), max_batch_len)
