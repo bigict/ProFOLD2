@@ -1,10 +1,13 @@
 import sys
+import functools
 import logging
 import math
 
+from Bio.Align import substitution_matrices
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
@@ -12,6 +15,11 @@ from profold2.model import accelerator, commons, functional, folding
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
+
+
+def label_smoothing(probs, num_class, alpha=1e-5):
+  assert alpha <= 1 and num_class > 0
+  return (1 - alpha) * probs + alpha / num_class
 
 
 def binary_focal_loss_weight(probs, labels, gammar, epsilon=1e-7):
@@ -50,6 +58,16 @@ def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
     labels = labels.float() * ((1 - prob)**gammar)
   loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
   return loss
+
+
+def probability_kl_diversity(probs, labels, mode=None, epsilon=1e-7):
+  probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
+  labels = torch.clamp(labels, min=epsilon, max=1. - epsilon)
+
+  mode = default(mode, "forward")  # mode-covering
+  if mode == "forward":
+    return F.kl_div(torch.log(probs), labels, reduction='none')
+  return F.kl_div(torch.log(labels), probs, reduction='none')
 
 
 def softmax_kl_diversity(logits, labels, mask=None):
@@ -448,6 +466,129 @@ class DistogramHead(nn.Module):
     )
     logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
+
+
+class DSWHead(nn.Module):
+  """Head to predict an Alignment.
+    """
+  def __init__(
+      self, dim, gap_open=0.5, gap_ext=0.1, tau=2.0, sinkhorn_iters=5, dtype=None
+  ):
+    super().__init__()
+    dim_single, _ = commons.embedd_dim_get(dim)
+
+    # Gap penalties stored as learnable parameters (kept positive via softplus).
+    self.log_gap_open = nn.Parameter(torch.tensor(float(gap_open)))
+    self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_ext)))
+    # Learned biases for leaving a query row / ref column unmatched.
+    self.q_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.r_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.temperature = tau
+    self.sinkhorn_iters = sinkhorn_iters
+
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    self.profile = nn.Sequential(
+        nn.Linear(dim_single, dim_single),
+        nn.GELU(),
+        nn.LayerNorm(dim_single),
+        nn.Linear(dim_single, num_class)
+    )
+
+    self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
+    self.neg = -1e4
+    self.eps = 1e-6
+    self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
+
+  @property
+  def gap_open(self):
+    return F.softplus(self.log_gap_open)
+
+  @property
+  def gap_extend(self):
+    return F.softplus(self.log_gap_ext)
+
+  def forward(self, headers, representations, batch):
+    """Builds DSWHead module."""
+    profile = self.profile(representations['single'])
+
+    def _dsw_run(msa, mask):
+      def _dsw_ckpt(profile, msa, mask):
+        num_class = profile.shape[-1]
+        msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
+        _, P = functional.differentiable_smith_waterman(
+            torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
+            mask=(batch['mask'][..., None, :], mask),
+            gap_open=self.gap_open,
+            gap_extend=self.gap_extend,
+            q_unmatched=self.q_unmatched,
+            r_unmatched=self.r_unmatched,
+            temperature=self.temperature,
+            sinkhorn_iters=self.sinkhorn_iters,
+            sinkhorn_custom_bwd=env(
+                'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
+            ),
+            dtype=self.dtype,
+            neg=self.neg,
+            eps=self.eps,
+        )
+        msa = functional.soft_align_query(msa, P[..., :-1, :-1])
+        return msa, P
+
+      if torch.is_grad_enabled():
+        return checkpoint(_dsw_ckpt, profile, msa, mask, use_reentrant=True)
+      return _dsw_ckpt(profile, msa, mask)
+
+    def _dsw_cat(msa):
+      msa, P = zip(*msa)
+      msa = torch.cat(msa, dim=-3)
+      P = torch.cat(P, dim=-3)
+      return msa, P
+
+    # pseudo msa if not exists
+    if 'raw_msa' in batch and 'raw_msa_mask' in batch:
+      msa, mask = batch['raw_msa'], batch['raw_msa_mask']
+    else:
+      assert 'seq' in batch
+      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+
+    msa, P = functional.sharded_apply(
+        _dsw_run, [msa, mask],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=-2,
+        cat_dim=_dsw_cat,
+    )
+    return dict(msa=msa, P=P)
+
+  def loss(self, value, batch):
+    """Log loss of a distogram."""
+    msa_tilde, P = value['msa'], value['P']
+
+    # pseudo msa if not exists
+    if 'msa' in batch and 'msa_mask' in batch:
+      msa, mask = batch['msa'], batch['msa_mask']
+    else:
+      assert 'seq' in batch
+      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+    msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
+
+    avg_align_error = 0
+    if 'raw_msa_p' in batch:
+      msa_p = F.one_hot((batch['raw_msa_p'] % P.shape[-1]).long(), P.shape[-1]).float()
+      mask_p = (batch['raw_msa_p'] != -1)
+      msa_p = torch.cat(
+          (msa_p, ~torch.any(msa_p * mask_p[..., None], dim=-2, keepdim=True)), dim=-2
+      )
+      msa_p[..., -1, -1] = 1  # query and reference are matched
+      mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
+      errors = probability_kl_diversity(P, msa_p, mode='reverse', epsilon=self.eps)
+      avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
+      logger.debug('DSWHead.align.error: %s', avg_align_error)
+
+    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse', epsilon=self.eps)
+    avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
+    logger.debug('DSWHead.msa.error: %s', avg_msa_error)
+
+    return dict(loss=avg_msa_error + avg_align_error)
 
 
 class FoldingHead(nn.Module):
@@ -1119,6 +1260,17 @@ class MetricDictHead(nn.Module):
     super().__init__()
     del dim
 
+    if residue_constants.prot_from_idx != -1:
+      blosum62 = substitution_matrices.load('BLOSUM62')
+      blosum62 = blosum62.select(
+          residue_constants.restypes[
+              residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+          ]
+      )
+      self.register_buffer(
+          'blosum', torch.as_tensor(blosum62, dtype=torch.float), persistent=False
+      )
+
     self.params = kwargs
 
   def forward(self, headers, representations, batch):
@@ -1208,6 +1360,40 @@ class MetricDictHead(nn.Module):
             )
             logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error)
             metrics['coevolution']['perplexity'] = avg_error
+
+      if 'dsw' in headers and residue_constants.prot_from_idx != -1:  # protein only
+        metrics['dsw'] = MetricDict()
+
+        assert 'msa' in headers['dsw']
+        msa = headers['dsw']['msa']
+        seq = F.one_hot(batch['seq'].long(), msa.shape[-1]).float()
+        eps = 1e-8
+
+        obs = torch.einsum('... m i a,... i c -> a c', msa, seq)
+        obs = obs[
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1,
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+        ]
+        obs = (obs + rearrange(obs, 'a c -> c a')) / 2  # symmetrize
+
+        q = obs / (obs.sum() + eps)
+        p = obs.sum(dim=1) / (obs.sum() + eps)
+        pblosum = torch.log((q + eps) / (p[:, None] * p[None, :] + eps))
+
+        row_idx, col_idx = torch.triu_indices(
+            row=pblosum.shape[0], col=pblosum.shape[1], offset=0, device=pblosum.device
+        )
+        pearson = torch.corrcoef(
+            torch.stack((pblosum[row_idx, col_idx], self.blosum[row_idx, col_idx]))
+        )[0, 1]
+        logger.debug('MetricDictHead.dsw.blosum.pearson: %s', pearson)
+        cosine = F.cosine_similarity(
+            pblosum[row_idx, col_idx].reshape(-1),
+            self.blosum[row_idx, col_idx].reshape(-1),
+            dim=0,
+        )
+        logger.debug('MetricDictHead.dsw.blosum.cosine: %s', cosine)
+        metrics['dsw']['blosum'] = MetricDict({'pearson': pearson, 'cosine': cosine})
 
       if 'folding' in headers and 'coords' in headers['folding'] and (
           'coord_mask' in batch or 'coord_exists' in batch
@@ -1785,6 +1971,7 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      dsw=DSWHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=PLDDTHead,
