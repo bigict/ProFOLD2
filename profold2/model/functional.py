@@ -1877,24 +1877,12 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
 
   # --- validity masks for right-padded variable-length batches ---
   if exists(mask):
-    if isinstance(mask, tuple):
-      mask_r, mask_q = mask
-    else:
-      mask_r, mask_q = None, mask
-  else:
-    mask_r, masq_q = None, None
-  if not exists(mask_r):
-    mask_r = S.new_ones((*B, Lr), dtype=torch.bool)
-  if not exists(mask_q):
-    mask_q = S.new_ones((*B, Lq), dtype=torch.bool)
+    S = S.masked_fill(~mask, neg)
 
   # Local alignment: free start from any position -> 0.
   M[..., 0, :] = M[..., :, 0] = 0.0
   I[..., 0, :] = I[..., :, 0] = 0.0
   D[..., 0, :] = D[..., :, 0] = 0.0
-  # S = S.masked_fill(~(mask_q[..., :, None] * mask_r[..., None, :]), neg)
-  S = S.masked_fill(~mask_q[..., :, None], neg)
-  S = S.masked_fill(~mask_r[..., None, :], neg)
 
   # --- sequential DP (correct intra-row dependency for I / D) ---
   for u, j, z in _wavefront(Lq, Lr, Z, S.device):
@@ -1946,9 +1934,10 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
       P = P * torch.cat(
           (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
       )
-  R = torch.cat((mask_r, P.new_ones((*mask_r.shape[:-1], 1))), dim=-1)
-  Q = torch.cat((mask_q, P.new_ones((*mask_q.shape[:-1], 1))), dim=-1)
-  P = P * R[..., None, :] * Q[..., :, None]
+  if exists(mask):
+    mask = torch.cat((mask, P.new_ones((*B, Lq,      1))), dim=-1)
+    mask = torch.cat((mask, P.new_ones((*B,  1, Lr + 1))), dim=-2)
+    P = P * mask
 
   return score, P
 

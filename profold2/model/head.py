@@ -511,13 +511,15 @@ class DSWHead(nn.Module):
     """Builds DSWHead module."""
     profile = self.profile(representations['single'])
 
-    def _dsw_run(msa, mask):
-      def _dsw_ckpt(profile, msa, mask):
+    def _dsw_run(msa, mask, color):
+      def _dsw_ckpt(profile, msa, mask, color):
         num_class = profile.shape[-1]
         msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
-        _, P = functional.differentiable_smith_waterman(
+        score, P = functional.differentiable_smith_waterman(
             torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
-            mask=(batch['mask'][..., None, :], mask),
+            mask = mask[..., :, None] * batch['mask'][..., None, :] * (
+                color[..., :, None] == batch['seq_color'][..., None, :]
+            ),
             gap_open=self.gap_open,
             gap_extend=self.gap_extend,
             q_unmatched=self.q_unmatched,
@@ -532,32 +534,37 @@ class DSWHead(nn.Module):
             eps=self.eps,
         )
         msa = functional.soft_align_query(msa, P[..., :-1, :-1])
-        return msa, P
+        return msa, score, P
 
       if torch.is_grad_enabled():
-        return checkpoint(_dsw_ckpt, profile, msa, mask, use_reentrant=True)
-      return _dsw_ckpt(profile, msa, mask)
+        return checkpoint(_dsw_ckpt, profile, msa, mask, color, use_reentrant=True)
+      return _dsw_ckpt(profile, msa, mask, color)
 
     def _dsw_cat(msa):
-      msa, P = zip(*msa)
+      msa, score, P = zip(*msa)
       msa = torch.cat(msa, dim=-3)
+      score = torch.cat(score, dim=-1)
       P = torch.cat(P, dim=-3)
-      return msa, P
+      return msa, score, P
 
     # pseudo msa if not exists
     if 'raw_msa' in batch and 'raw_msa_mask' in batch:
-      msa, mask = batch['raw_msa'], batch['raw_msa_mask']
+      msa, mask, color = batch['raw_msa'], batch['raw_msa_mask'], batch['raw_msa_c']
     else:
       assert 'seq' in batch
-      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+      msa, mask, color = (
+          batch['seq'][..., None, :, :],
+          batch['mask'][..., None, :],
+          batch['seq_color'][..., None, :],
+      )
 
-    msa, P = functional.sharded_apply(
-        _dsw_run, [msa, mask],
+    msa, score, P = functional.sharded_apply(
+        _dsw_run, [msa, mask, color],
         shard_size=None if self.training else self.shard_size,
         shard_dim=-2,
         cat_dim=_dsw_cat,
     )
-    return dict(msa=msa, P=P)
+    return dict(msa=msa, score=score, P=P)
 
   def loss(self, value, batch):
     """Log loss of a distogram."""
@@ -1394,6 +1401,11 @@ class MetricDictHead(nn.Module):
         )
         logger.debug('MetricDictHead.dsw.blosum.cosine: %s', cosine)
         metrics['dsw']['blosum'] = MetricDict({'pearson': pearson, 'cosine': cosine})
+
+        if 'score' in headers['dsw']:
+          score = torch.mean(headers['dsw']['score'])
+          logger.debug('MetricDictHead.dsw.score: %s', score)
+          metrics['dsw']['score'] = score
 
       if 'folding' in headers and 'coords' in headers['folding'] and (
           'coord_mask' in batch or 'coord_exists' in batch
