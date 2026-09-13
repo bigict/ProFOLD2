@@ -1990,49 +1990,60 @@ def _collate_fn(batch, feat_flags=None):
     ret['str_del_msa'] = _to_list('str_del_msa')
 
     # reconstruct the raw msa
-    def _str_msa_to_tensor(seq, deletion_str, aligned_sequences):
+    def _str_msa_to_tensor(seq, seq_color, deletion_str, aligned_sequences):
       assert len(deletion_str) == len(aligned_sequences)
       n = len(deletion_str)
+      c = [[] for _ in range(n)]
       t = [[] for _ in range(n)]
-      a = [[] for _ in range(n)]
+      p = [[] for _ in range(n)]
       for i in range(len(t)):
-        for j, (s, D, c) in enumerate(zip(seq, deletion_str[i], aligned_sequences[i])):
+        for j, (s, a, D, r) in enumerate(
+            zip(seq, seq_color, deletion_str[i], aligned_sequences[i])
+        ):
           seq_type = residue_constants.moltype(int(s))
           t[i] += [
               residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
                   residue_constants.HHBLITS_AA_TO_ID[(d.upper(), seq_type)]
               ] for d in D
           ]
-          a[i] += [max_batch_len] * len(D)  # point to the last column
-          if c != '-':
+          c[i] += [a] * len(D)
+          p[i] += [max_batch_len] * len(D)  # point to the last column
+          if r != '-':
             t[i] += [
                 residue_constants.MAP_HHBLITS_AATYPE_TO_OUR_AATYPE[
-                    residue_constants.HHBLITS_AA_TO_ID[(c.upper(), seq_type)]
+                    residue_constants.HHBLITS_AA_TO_ID[(r.upper(), seq_type)]
                 ]
             ]
-            a[i] += [j]
+            c[i] += [a]
+            p[i] += [j]
 
       max_length = max(len(t[i]) for i in range(len(t)))
 
       m = []
       for i in range(len(t)):
         t[i] = torch.as_tensor(t[i], dtype=torch.int)
-        a[i] = torch.as_tensor(a[i], dtype=torch.int)
+        c[i] = torch.as_tensor(c[i], dtype=torch.int)
+        p[i] = torch.as_tensor(p[i], dtype=torch.int)
         m.append(torch.ones_like(t[i], dtype=torch.bool))
 
       t = padding.pad_sequential(t, max_length)
-      a = padding.pad_sequential(a, max_length, padval=-1)
+      c = padding.pad_sequential(c, max_length)
+      p = padding.pad_sequential(p, max_length, padval=-1)
       m = padding.pad_sequential(m, max_length)
+      assert c.shape == p.shape
 
-      return t, a, m
+      return t, c, p, m
 
     def _reconstruct_raw_msa(str_del_msa, str_msa):
-      raw_msa, raw_msa_p, raw_msa_mask = [], [], []
+      raw_msa, raw_msa_c, raw_msa_p, raw_msa_mask = [], [], [], []
 
-      for seq, deletion_str, aligned_sequences in zip(ret['seq'], str_del_msa, str_msa):
-        t, a, m = _str_msa_to_tensor(seq, deletion_str, aligned_sequences)
+      for seq, seq_color, deletion_str, aligned_sequences in zip(
+          ret['seq'], ret['seq_color'], str_del_msa, str_msa
+      ):
+        t, c, p, m = _str_msa_to_tensor(seq, seq_color, deletion_str, aligned_sequences)
         raw_msa.append(t)
-        raw_msa_p.append(a)
+        raw_msa_c.append(c)
+        raw_msa_p.append(p)
         raw_msa_mask.append(m)
 
       max_length = max(t.shape[1] for t in raw_msa)
@@ -2043,12 +2054,13 @@ def _collate_fn(batch, feat_flags=None):
               residue_constants.HHBLITS_AA_TO_ID[('-', residue_constants.PROT)]
           ]
       )
+      raw_msa_c = padding.pad_rectangle(raw_msa_c, max_length)
       raw_msa_p = padding.pad_rectangle(raw_msa_p, max_length, padval=-1)
       raw_msa_mask = padding.pad_rectangle(raw_msa_mask, max_length)
-      return raw_msa, raw_msa_p, raw_msa_mask
+      return raw_msa, raw_msa_c, raw_msa_p, raw_msa_mask
 
-    ret['raw_msa'], ret['raw_msa_p'], ret['raw_msa_mask'] = _reconstruct_raw_msa(
-        ret['str_del_msa'], ret['str_msa']
+    ret['raw_msa'], ret['raw_msa_c'], ret['raw_msa_p'], ret['raw_msa_mask'] = (
+        _reconstruct_raw_msa(ret['str_del_msa'], ret['str_msa'])
     )
 
   if feat_flags & FEAT_VAR and _any('variant'):
@@ -2064,8 +2076,8 @@ def _collate_fn(batch, feat_flags=None):
         ]
     )
     ret['str_del_var'] = _to_list('str_del_var')
-    ret['raw_var'], ret['raw_var_p'], ret['raw_var_mask'] = _reconstruct_raw_msa(
-        ret['str_del_var'], ret['str_var']
+    ret['raw_var'], ret['raw_var_c'], ret['raw_var_p'], ret['raw_var_mask'] = (
+        _reconstruct_raw_msa(ret['str_del_var'], ret['str_var'])
     )
     for field in ('variant_mask', 'variant_task_mask'):
       ret[field] = padding.pad_rectangle(_to_list(field), max_batch_len)
