@@ -1823,7 +1823,7 @@ class SinkhornFunction(torch.autograd.Function):
         X_t = P0                                         # replay forward to step t
         for k in range(t):
           X_t = fwd_step(X_t, k)
-        g = col_adj(g, X_t) if t % 2 == 0 else row_adj(g, X_t)
+        g = row_adj(g, X_t) if t % 2 == 0 else col_adj(g, X_t)
     return g, None, None
 
 
