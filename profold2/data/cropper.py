@@ -197,7 +197,7 @@ def apply(protein, new_order, seq_feats=None, msa_feats=None, var_feats=None):
   for field in default(
       seq_feats, (
           'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
-          'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask'
+          'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask', 'pp_var',
       )
   ):
     if field in protein:
