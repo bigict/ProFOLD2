@@ -387,6 +387,13 @@ def _make_var_features(
       descriptions = descriptions[:n] + [descriptions[i + n] for i in new_order]
   msa, del_matirx, del_msa = _parse_a4m(sequences)
 
+  # parse posterior_probability
+  pp = utils.parse_posterior_probability(descriptions[0])
+  if exists(pp):
+    assert len(pp) == len(sequences[0])
+  else:
+    pp = [10] * len(sequences[0])  # perfect.
+
   int_msa = []
   for sequence in msa:
     int_msa.append(_make_int_msa(sequence, seq_type=seq_type))
@@ -399,6 +406,7 @@ def _make_var_features(
       variant_pid=variant_pid,
       variant_mask=variant_mask,
       variant_task_mask=variant_mask[..., None],
+      pp_var=torch.as_tensor(pp, dtype=torch.int),
       str_var=msa,
       str_del_var=del_msa,
       desc_var=descriptions,
@@ -418,7 +426,9 @@ def _make_task_mask(
       task_list = set(task_def.get(chain, []))
       for j in range(task_num):
         if j in task_list:
-          variant_task_mask[j].append(mask[task_idx[i]:task_idx[i + 1]])
+          variant_task_mask[j].append(
+              torch.ones_like(mask[task_idx[i]:task_idx[i + 1]])
+          )
         else:
           variant_task_mask[j].append(
               torch.zeros(chain_length_list[i], dtype=torch.bool, device=mask.device)
@@ -749,7 +759,7 @@ def _protein_crop_fn(protein, clip):
   protein['str_seq'] = protein['str_seq'][i:j]
   for field in (
       'seq', 'seq_index', 'seq_color', 'seq_entity', 'seq_sym', 'mask',
-      'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask'
+      'coord', 'coord_mask', 'coord_plddt', 'sta_type_mask', 'pp_var',
   ):
     if field in protein:
       protein[field] = protein[field][i:j, ...]
@@ -1485,6 +1495,11 @@ class ProteinStructureDataset(torch.utils.data.Dataset):
           ret['length'] = []
         ret['length'].append(len(feat['str_seq']))
 
+        if 'pp_var' not in ret:
+          ret['pp_var'] = feat['pp_var']
+        else:
+          ret['pp_var'] = torch.cat((ret['pp_var'], feat['pp_var']), dim=-1)
+
         if 'variant' in feat:
           for var_idx, desc in enumerate(feat['desc_var']):
             # remove domains pid/1-100
@@ -2068,6 +2083,7 @@ def _collate_fn(batch, feat_flags=None):
     ret['str_var'] = _to_list('str_var')
     for field in ('var_idx', 'num_var'):
       ret[field] = _to_tensor(field, dtype=torch.int)
+    ret['pp_var'] = padding.pad_sequential(_to_list('pp_var'), max_batch_len)
     ret['variant'] = padding.pad_rectangle(
         _to_list('variant'),
         max_batch_len,

@@ -497,6 +497,10 @@ class DSWHead(nn.Module):
     self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
     self.eps = 1e-6
+
+    self.min_posterior_probability = env(
+        'profold2_dsw_min_posterior_probability', defval=9, dtype=int
+    )
     self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
 
   @property
@@ -507,10 +511,7 @@ class DSWHead(nn.Module):
   def gap_extend(self):
     return F.softplus(self.log_gap_ext)
 
-  def forward(self, headers, representations, batch):
-    """Builds DSWHead module."""
-    profile = self.profile(representations['single'])
-
+  def align(self, profile, msa, mask, color, batch):
     def _dsw_run(msa, mask, color):
       def _dsw_ckpt(profile, msa, mask, color):
         num_class = profile.shape[-1]
@@ -547,6 +548,17 @@ class DSWHead(nn.Module):
       P = torch.cat(P, dim=-3)
       return msa, score, P
 
+    return functional.sharded_apply(
+        _dsw_run, [msa, mask, color],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=-2,
+        cat_dim=_dsw_cat,
+    )
+
+  def forward(self, headers, representations, batch):
+    """Builds DSWHead module."""
+    profile = self.profile(representations['single'])
+
     # pseudo msa if not exists
     if 'raw_msa' in batch and 'raw_msa_mask' in batch:
       msa, mask, color = batch['raw_msa'], batch['raw_msa_mask'], batch['raw_msa_c']
@@ -558,17 +570,37 @@ class DSWHead(nn.Module):
           batch['seq_color'][..., None, :],
       )
 
-    msa, score, P = functional.sharded_apply(
-        _dsw_run, [msa, mask, color],
-        shard_size=None if self.training else self.shard_size,
-        shard_dim=-2,
-        cat_dim=_dsw_cat,
-    )
-    return dict(msa=msa, score=score, P=P)
+    msa, score, P = self.align(profile, msa, mask, color, batch)
+    return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
+
+  def check(self, msa_tilde, P, msa, mask, msa_p=None, mask_p=None):
+    msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
+
+    avg_align_error = 0
+    if exists(msa_p):
+      mask_p = (msa_p != -1) * (mask_p if exists(mask_p) else 1)  # pad value
+
+      msa_p = F.one_hot((msa_p % P.shape[-1]).long(), P.shape[-1]).float()
+      msa_p = torch.cat(
+          (msa_p, ~torch.any(msa_p * mask_p[..., None], dim=-2, keepdim=True)), dim=-2
+      )
+      msa_p[..., -1, -1] = 1  # query and reference are matched
+
+      mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
+
+      errors = probability_kl_diversity(P, msa_p, mode='reverse', epsilon=self.eps)
+      avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
+
+    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse', epsilon=self.eps)
+    if exists(mask):
+      avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
+    else:
+      avg_msa_error = errors.mean()
+
+    return avg_align_error, avg_msa_error
 
   def loss(self, value, batch):
     """Log loss of a distogram."""
-    msa_tilde, P = value['msa'], value['P']
 
     # pseudo msa if not exists
     if 'msa' in batch and 'msa_mask' in batch:
@@ -576,24 +608,22 @@ class DSWHead(nn.Module):
     else:
       assert 'seq' in batch
       msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
-    msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
 
-    avg_align_error = 0
-    if 'raw_msa_p' in batch:
-      msa_p = F.one_hot((batch['raw_msa_p'] % P.shape[-1]).long(), P.shape[-1]).float()
-      mask_p = (batch['raw_msa_p'] != -1)
-      msa_p = torch.cat(
-          (msa_p, ~torch.any(msa_p * mask_p[..., None], dim=-2, keepdim=True)), dim=-2
-      )
-      msa_p[..., -1, -1] = 1  # query and reference are matched
-      mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
-      errors = probability_kl_diversity(P, msa_p, mode='reverse', epsilon=self.eps)
-      avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
-      logger.debug('DSWHead.align.error: %s', avg_align_error)
+    avg_align_error, avg_msa_error = self.check(
+        value['msa'], value['P'], msa, mask, msa_p=batch.get('raw_msa_p')
+    )
+    logger.debug('DSWHead.msa.error: %s/%s', avg_align_error, avg_msa_error)
 
-    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse', epsilon=self.eps)
-    avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
-    logger.debug('DSWHead.msa.error: %s', avg_msa_error)
+    # if 'variant' in batch and 'variant_mask' in batch:
+    #   msa, mask = batch['variant'], batch['variant_mask']
+    #   msa_p, mask_p = batch.get('raw_var_p'), None
+    #   if 'pp_var' in batch:
+    #     mask_p = (batch['pp_var'][..., None, :] >= self.min_posterior_probability)
+
+    #   avg_align_error, avg_msa_error = self.check(
+    #       value['var'], value['T'], msa, mask, msa_p=msa_p, mask_p=mask_p
+    #   )
+    #   logger.debug('DSWHead.var.error: %s/%s', avg_align_error, avg_msa_error)
 
     return dict(loss=avg_msa_error + avg_align_error)
 
@@ -1589,10 +1619,7 @@ class FitnessHead(nn.Module):
     else:
       wab = None
 
-    def _hamiton_run(variant, variant_mask):
-      variant = (
-          F.one_hot(variant.long(), num_class) * variant_mask[..., None]
-      ).float()
+    def _hamiton_run(variant):
       if exists(wab):
         hi = torch.einsum(
             '... m j t d,... i j q,q c d,d -> ... m i t c', variant, eij, wab, self.mask
@@ -1618,20 +1645,39 @@ class FitnessHead(nn.Module):
       logits = torch.cat(logits, dim=-3)
       return motifs, logits
 
-    if 'variant' in batch:
-      variant = batch['variant']
-      variant_mask = batch['variant_mask']
+    if 'dsw' in headers:
+      if 'raw_var' in batch:
+        assert 'raw_var_mask' in batch and 'raw_var_c' in batch
+        msa, mask, color = batch['raw_var'], batch['raw_var_mask'], batch['raw_var_c']
+        variant_mask = batch['variant_mask']
+      else:
+        assert 'seq' in batch
+        msa, mask, color = (
+            batch['seq'][..., None, :, :],
+            batch['mask'][..., None, :],
+            batch['seq_color'][..., None, :],
+        )
+        variant_mask = batch['mask'][..., None, :]
+      variant, *_ = headers['dsw']['aligner'].align(
+        headers['dsw']['profile'], msa, mask, color, batch
+      )
+      variant_mask = torch.ones_like(variant_mask)
     else:
-      assert 'seq' in batch
-      variant = batch['seq'][..., None, :]
-      variant_mask = batch['mask'][..., None, :]
+      if 'variant' in batch:
+        variant = batch['variant']
+        variant_mask = batch['variant_mask']
+      else:
+        assert 'seq' in batch
+        variant = batch['seq'][..., None, :]
+        variant_mask = batch['mask'][..., None, :]
+      variant = F.one_hot(variant.long(), num_class).float()
 
-    variant, variant_mask = variant[..., None], variant_mask[..., None]
+    variant, variant_mask = variant[..., None, :], variant_mask[..., None]
     if 'variant_task_mask' in batch:
-      variant_mask = batch['variant_task_mask']
+      variant_mask = variant_mask * batch['variant_task_mask']
 
     motifs, logits = functional.sharded_apply(
-        _hamiton_run, [variant, variant_mask],
+        _hamiton_run, [variant * variant_mask[..., None]],
         shard_size=None if self.training else self.shard_size,
         shard_dim=1,
         cat_dim=_hamiton_cat
@@ -1717,7 +1763,7 @@ class FitnessHead(nn.Module):
               gammar=self.focal_loss
           )
         if 'variant_task_mask' in batch:
-          motif_mask = batch['variant_task_mask'] * rearrange(
+          motif_mask = batch['variant_task_mask'] * variant_mask[..., None] * rearrange(
               variant_label > self.label_threshold, '... m t -> ... m () t'
           )
         else:
@@ -1742,10 +1788,9 @@ class FitnessHead(nn.Module):
               )
           ) * label_mask
 
+      variant_mask = variant_mask[..., None]
       if 'variant_task_mask' in batch:
-        variant_mask = batch['variant_task_mask']
-      else:
-        variant_mask = variant_mask[..., None]
+        variant_mask = batch['variant_task_mask'] * variant_task_mask
 
       if self.num_var_as_ref > 0:
         if num_var_as_ref > 0:
