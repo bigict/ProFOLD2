@@ -1662,6 +1662,7 @@ class FitnessHead(nn.Module):
         headers['dsw']['profile'], msa, mask, color, batch
       )
       variant_mask = torch.ones_like(variant_mask)
+      is_dsw = True
     else:
       if 'variant' in batch:
         variant = batch['variant']
@@ -1671,6 +1672,7 @@ class FitnessHead(nn.Module):
         variant = batch['seq'][..., None, :]
         variant_mask = batch['mask'][..., None, :]
       variant = F.one_hot(variant.long(), num_class).float()
+      is_dsw = False
 
     variant, variant_mask = variant[..., None, :], variant_mask[..., None]
     if 'variant_task_mask' in batch:
@@ -1683,7 +1685,7 @@ class FitnessHead(nn.Module):
         cat_dim=_hamiton_cat
     )
 
-    r = dict(logits=logits)
+    r = dict(logits=logits, is_dsw=is_dsw)
     if exists(self.task_gating):
       gating = F.sigmoid(self.task_gating(representations['single']))
     else:
@@ -1789,6 +1791,8 @@ class FitnessHead(nn.Module):
           ) * label_mask
 
       variant_mask = variant_mask[..., None]
+      if value['is_dsw']:
+          variant_mask = torch.ones_like(variant_mask)
       if 'variant_task_mask' in batch:
         variant_mask = batch['variant_task_mask'] * variant_task_mask
 
