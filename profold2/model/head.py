@@ -498,9 +498,6 @@ class DSWHead(nn.Module):
     self.neg = -1e4
     self.eps = 1e-6
 
-    self.min_posterior_probability = env(
-        'profold2_dsw_min_posterior_probability', defval=9, dtype=int
-    )
     self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
 
   @property
@@ -518,8 +515,8 @@ class DSWHead(nn.Module):
         msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
         score, P = functional.differentiable_smith_waterman(
             torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
-            mask = mask[..., :, None] * batch['mask'][..., None, :] * (
-                color[..., :, None] == batch['seq_color'][..., None, :]
+            mask = mask[..., :, None] * batch['mask'][..., None, None, :] * (
+                color[..., :, None] == batch['seq_color'][..., None, None, :]
             ),
             gap_open=self.gap_open,
             gap_extend=self.gap_extend,
@@ -577,7 +574,7 @@ class DSWHead(nn.Module):
     msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
 
     avg_align_error = 0
-    if exists(msa_p):
+    if exists(P) and exists(msa_p):
       mask_p = (msa_p != -1) * (mask_p if exists(mask_p) else 1)  # pad value
 
       msa_p = F.one_hot((msa_p % P.shape[-1]).long(), P.shape[-1]).float()
@@ -1588,6 +1585,9 @@ class FitnessHead(nn.Module):
     self.gij_noise = gij_noise
 
     self.focal_loss = focal_loss
+    self.min_posterior_probability = env(
+        'profold2_dsw_min_posterior_probability', defval=9, dtype=int
+    )
     self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, dtype=int)
     self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
 
@@ -1773,6 +1773,10 @@ class FitnessHead(nn.Module):
                         variant_label_mask) | (~variant_label_mask)
           motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
           motif_mask = motif_mask[..., None]
+        if 'pp_var' in batch:
+          motif_mask = motif_mask * (
+              batch['pp_var'][..., None, :, None] >= self.min_posterior_probability
+          )
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
         avg_error_motif = self.alpha * avg_error_motif
@@ -1794,7 +1798,7 @@ class FitnessHead(nn.Module):
       if value['is_dsw']:
           variant_mask = torch.ones_like(variant_mask)
       if 'variant_task_mask' in batch:
-        variant_mask = batch['variant_task_mask'] * variant_task_mask
+        variant_mask = batch['variant_task_mask'] * variant_mask
 
       if self.num_var_as_ref > 0:
         if num_var_as_ref > 0:
