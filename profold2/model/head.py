@@ -508,7 +508,7 @@ class DSWHead(nn.Module):
   def gap_extend(self):
     return F.softplus(self.log_gap_ext)
 
-  def align(self, profile, msa, mask, color, batch):
+  def align(self, profile, msa, mask, color, batch, return_P=True):
     def _dsw_run(msa, mask, color):
       def _dsw_ckpt(profile, msa, mask, color):
         num_class = profile.shape[-1]
@@ -532,6 +532,8 @@ class DSWHead(nn.Module):
             eps=self.eps,
         )
         msa = functional.soft_align_query(msa, P[..., :-1, :-1])
+        if not return_P:
+          P = None
         return msa, score, P
 
       if torch.is_grad_enabled():
@@ -542,7 +544,7 @@ class DSWHead(nn.Module):
       msa, score, P = zip(*msa)
       msa = torch.cat(msa, dim=-3)
       score = torch.cat(score, dim=-1)
-      P = torch.cat(P, dim=-3)
+      P = torch.cat(P, dim=-3) if return_P else None
       return msa, score, P
 
     return functional.sharded_apply(
@@ -567,7 +569,9 @@ class DSWHead(nn.Module):
           batch['seq_color'][..., None, :],
       )
 
-    msa, score, P = self.align(profile, msa, mask, color, batch)
+    return_P = batch.get('compute_loss', self.training)
+    return_P = return_P or env('profold2_dsw_return_P', defval=return_P, dtype=bool)
+    msa, score, P = self.align(profile, msa, mask, color, batch, return_P=return_P)
     return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
 
   def check(self, msa_tilde, P, msa, mask, msa_p=None, mask_p=None):
@@ -1659,7 +1663,7 @@ class FitnessHead(nn.Module):
         )
         variant_mask = batch['mask'][..., None, :]
       variant, *_ = headers['dsw']['aligner'].align(
-        headers['dsw']['profile'], msa, mask, color, batch
+        headers['dsw']['profile'], msa, mask, color, batch, return_P=False
       )
       variant_mask = torch.ones_like(variant_mask)
       is_dsw = True
