@@ -1649,7 +1649,7 @@ class FitnessHead(nn.Module):
       logits = torch.cat(logits, dim=-3)
       return motifs, logits
 
-    if 'dsw' in headers:
+    if 'dsw' in headers and env('profold2_fitness_is_dsw', defval=True, dtype=bool):
       if 'raw_var' in batch:
         assert 'raw_var_mask' in batch and 'raw_var_c' in batch
         msa, mask, color = batch['raw_var'], batch['raw_var_mask'], batch['raw_var_c']
@@ -1685,7 +1685,7 @@ class FitnessHead(nn.Module):
     motifs, logits = functional.sharded_apply(
         _hamiton_run, [variant * variant_mask[..., None]],
         shard_size=None if self.training else self.shard_size,
-        shard_dim=1,
+        shard_dim=-4,
         cat_dim=_hamiton_cat
     )
 
