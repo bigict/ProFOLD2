@@ -472,7 +472,15 @@ class DSWHead(nn.Module):
   """Head to predict an Alignment.
     """
   def __init__(
-      self, dim, gap_open=0.5, gap_ext=0.1, tau=2.0, sinkhorn_iters=5, dtype=None
+      self,
+      dim,
+      gap_open=0.5,
+      gap_ext=0.1,
+      tau=2.0,
+      sinkhorn_iters=5,
+      profile_min=None,
+      profile_max=None,
+      dtype=None
   ):
     super().__init__()
     dim_single, _ = commons.embedd_dim_get(dim)
@@ -494,6 +502,9 @@ class DSWHead(nn.Module):
         nn.Linear(dim_single, num_class)
     )
 
+    # Biologically grounded: BLOSUM62 ranges from -4 to +11, so [-10, 10] is reasonable
+    self.profile_min = profile_min
+    self.profile_max = profile_max
     self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
     self.eps = 1e-6
@@ -557,6 +568,10 @@ class DSWHead(nn.Module):
   def forward(self, headers, representations, batch):
     """Builds DSWHead module."""
     profile = self.profile(representations['single'])
+    if exists(self.profile_min):
+      profile = torch.clamp(profile, min=self.profile_min)
+    if exists(self.profile_max):
+      profile = torch.clamp(profile, max=self.profile_max)
 
     # pseudo msa if not exists
     if 'raw_msa' in batch and 'raw_msa_mask' in batch:
