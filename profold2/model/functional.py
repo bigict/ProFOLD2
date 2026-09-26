@@ -1824,6 +1824,7 @@ class SinkhornFunction(torch.autograd.Function):
         for k in range(t):
           X_t = fwd_step(X_t, k)
         g = row_adj(g, X_t) if t % 2 == 0 else col_adj(g, X_t)
+        g = g.clamp(min=-1.0/eps, max=1.0/eps)           # FIX: when r/s is very small.
     return g, None, None
 
 
@@ -1862,8 +1863,9 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   def _smax(*xs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
+    stacked = stacked.clamp(max=-neg)
     maxv = stacked.amax(dim=0)                       # [B]
-    return maxv + _lse(stacked - maxv[None, ...], dim=0)
+    return maxv + _lse((stacked - maxv[None, ...]).clamp(min=neg), dim=0)
 
   # DP matrices:
   #   M = best score ending with a match/mismatch (diagonal step)
@@ -1914,7 +1916,7 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A[..., Lq, Lr] = 0.0
-  P = torch.exp(A)                            # safe exp
+  P = torch.exp(A.clamp(min=neg))             # safe exp
 
   del A, M
 
