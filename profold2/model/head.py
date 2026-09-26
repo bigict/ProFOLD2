@@ -1,10 +1,13 @@
 import sys
+import functools
 import logging
 import math
 
+from Bio.Align import substitution_matrices
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
@@ -12,6 +15,11 @@ from profold2.model import accelerator, commons, functional, folding
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
+
+
+def label_smoothing(probs, num_class, alpha=1e-5):
+  assert alpha <= 1 and num_class > 0
+  return (1 - alpha) * probs + alpha / num_class
 
 
 def binary_focal_loss_weight(probs, labels, gammar, epsilon=1e-7):
@@ -50,6 +58,16 @@ def softmax_cross_entropy(logits, labels, mask=None, gammar=0):
     labels = labels.float() * ((1 - prob)**gammar)
   loss = -torch.sum(labels * F.log_softmax(logits, dim=-1) * mask, dim=-1)
   return loss
+
+
+def probability_kl_diversity(probs, labels, mode=None, epsilon=1e-7):
+  probs = torch.clamp(probs, min=epsilon, max=1. - epsilon)
+  labels = torch.clamp(labels, min=epsilon, max=1. - epsilon)
+
+  mode = default(mode, "forward")  # mode-covering
+  if mode == "forward":
+    return F.kl_div(torch.log(probs), labels, reduction='none')
+  return F.kl_div(torch.log(labels), probs, reduction='none')
 
 
 def softmax_kl_diversity(logits, labels, mask=None):
@@ -448,6 +466,183 @@ class DistogramHead(nn.Module):
     )
     logger.debug('DistogramHead.loss: %s', avg_error)
     return dict(loss=avg_error)
+
+
+class DSWHead(nn.Module):
+  """Head to predict an Alignment.
+    """
+  def __init__(
+      self,
+      dim,
+      gap_open=0.5,
+      gap_ext=0.1,
+      tau=2.0,
+      sinkhorn_iters=5,
+      profile_min=None,
+      profile_max=None,
+      dtype=None,
+      eps=1e-4,
+  ):
+    super().__init__()
+    dim_single, _ = commons.embedd_dim_get(dim)
+
+    # Gap penalties stored as learnable parameters (kept positive via softplus).
+    self.log_gap_open = nn.Parameter(torch.tensor(float(gap_open)))
+    self.log_gap_ext = nn.Parameter(torch.tensor(float(gap_ext)))
+    # Learned biases for leaving a query row / ref column unmatched.
+    self.q_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.r_unmatched = nn.Parameter(torch.tensor(0.0))
+    self.temperature = tau
+    self.sinkhorn_iters = sinkhorn_iters
+
+    num_class = len(residue_constants.restypes_with_x_and_gap)
+    self.profile = nn.Sequential(
+        nn.Linear(dim_single, dim_single),
+        nn.GELU(),
+        nn.LayerNorm(dim_single),
+        nn.Linear(dim_single, num_class)
+    )
+
+    # Biologically grounded: BLOSUM62 ranges from -4 to +11, so [-10, 10] is reasonable
+    self.profile_min = profile_min
+    self.profile_max = profile_max
+    self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
+    self.neg = -1e4
+    self.eps = eps
+
+    self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
+
+  @property
+  def gap_open(self):
+    return F.softplus(self.log_gap_open)
+
+  @property
+  def gap_extend(self):
+    return F.softplus(self.log_gap_ext)
+
+  def align(self, profile, msa, mask, color, batch, return_P=True):
+    def _dsw_run(msa, mask, color):
+      def _dsw_ckpt(profile, msa, mask, color):
+        num_class = profile.shape[-1]
+        msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
+        score, P = functional.differentiable_smith_waterman(
+            torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
+            mask = mask[..., :, None] * batch['mask'][..., None, None, :] * (
+                color[..., :, None] == batch['seq_color'][..., None, None, :]
+            ),
+            gap_open=self.gap_open,
+            gap_extend=self.gap_extend,
+            q_unmatched=self.q_unmatched,
+            r_unmatched=self.r_unmatched,
+            temperature=self.temperature,
+            sinkhorn_iters=self.sinkhorn_iters,
+            sinkhorn_custom_bwd=env(
+                'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
+            ),
+            dtype=self.dtype,
+            neg=self.neg,
+            eps=self.eps,
+        )
+        msa = functional.soft_align_query(msa, P[..., :-1, :-1])
+        if not return_P:
+          P = None
+        return msa, score, P
+
+      if torch.is_grad_enabled():
+        return checkpoint(_dsw_ckpt, profile, msa, mask, color, use_reentrant=True)
+      return _dsw_ckpt(profile, msa, mask, color)
+
+    def _dsw_cat(msa):
+      msa, score, P = zip(*msa)
+      msa = torch.cat(msa, dim=-3)
+      score = torch.cat(score, dim=-1)
+      P = torch.cat(P, dim=-3) if return_P else None
+      return msa, score, P
+
+    return functional.sharded_apply(
+        _dsw_run, [msa, mask, color],
+        shard_size=None if self.training else self.shard_size,
+        shard_dim=-2,
+        cat_dim=_dsw_cat,
+    )
+
+  def forward(self, headers, representations, batch):
+    """Builds DSWHead module."""
+    profile = self.profile(representations['single'])
+    if exists(self.profile_min):
+      profile = torch.clamp(profile, min=self.profile_min)
+    if exists(self.profile_max):
+      profile = torch.clamp(profile, max=self.profile_max)
+
+    # pseudo msa if not exists
+    if 'raw_msa' in batch and 'raw_msa_mask' in batch:
+      msa, mask, color = batch['raw_msa'], batch['raw_msa_mask'], batch['raw_msa_c']
+    else:
+      assert 'seq' in batch
+      msa, mask, color = (
+          batch['seq'][..., None, :, :],
+          batch['mask'][..., None, :],
+          batch['seq_color'][..., None, :],
+      )
+
+    return_P = batch.get('compute_loss', self.training)
+    return_P = return_P or env('profold2_dsw_return_P', defval=return_P, dtype=bool)
+    msa, score, P = self.align(profile, msa, mask, color, batch, return_P=return_P)
+    return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
+
+  def check(self, msa_tilde, P, msa, mask, msa_p=None, mask_p=None):
+    msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
+
+    avg_align_error = 0
+    if exists(P) and exists(msa_p):
+      mask_p = (msa_p != -1) * (mask_p if exists(mask_p) else 1)  # pad value
+
+      msa_p = F.one_hot((msa_p % P.shape[-1]).long(), P.shape[-1]).float()
+      msa_p = torch.cat(
+          (msa_p, ~torch.any(msa_p * mask_p[..., None], dim=-2, keepdim=True)), dim=-2
+      )
+      msa_p[..., -1, -1] = 1  # query and reference are matched
+
+      mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
+
+      errors = probability_kl_diversity(P, msa_p, mode='reverse')
+      avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
+
+    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse')
+    if exists(mask):
+      avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
+    else:
+      avg_msa_error = errors.mean()
+
+    return avg_align_error, avg_msa_error
+
+  def loss(self, value, batch):
+    """Log loss of a distogram."""
+
+    # pseudo msa if not exists
+    if 'msa' in batch and 'msa_mask' in batch:
+      msa, mask = batch['msa'], batch['msa_mask']
+    else:
+      assert 'seq' in batch
+      msa, mask = batch['seq'][..., None, :, :], batch['mask'][..., None, :]
+
+    avg_align_error, avg_msa_error = self.check(
+        value['msa'], value['P'], msa, mask, msa_p=batch.get('raw_msa_p')
+    )
+    logger.debug('DSWHead.msa.error: %s/%s', avg_align_error, avg_msa_error)
+
+    # if 'variant' in batch and 'variant_mask' in batch:
+    #   msa, mask = batch['variant'], batch['variant_mask']
+    #   msa_p, mask_p = batch.get('raw_var_p'), None
+    #   if 'pp_var' in batch:
+    #     mask_p = (batch['pp_var'][..., None, :] >= self.min_posterior_probability)
+
+    #   avg_align_error, avg_msa_error = self.check(
+    #       value['var'], value['T'], msa, mask, msa_p=msa_p, mask_p=mask_p
+    #   )
+    #   logger.debug('DSWHead.var.error: %s/%s', avg_align_error, avg_msa_error)
+
+    return dict(loss=avg_msa_error + avg_align_error)
 
 
 class FoldingHead(nn.Module):
@@ -1119,6 +1314,17 @@ class MetricDictHead(nn.Module):
     super().__init__()
     del dim
 
+    if residue_constants.prot_from_idx != -1:
+      blosum62 = substitution_matrices.load('BLOSUM62')
+      blosum62 = blosum62.select(
+          residue_constants.restypes[
+              residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+          ]
+      )
+      self.register_buffer(
+          'blosum', torch.as_tensor(blosum62, dtype=torch.float), persistent=False
+      )
+
     self.params = kwargs
 
   def forward(self, headers, representations, batch):
@@ -1208,6 +1414,45 @@ class MetricDictHead(nn.Module):
             )
             logger.debug('MetricDictHead.coevolution.perplexity: %s', avg_error)
             metrics['coevolution']['perplexity'] = avg_error
+
+      if 'dsw' in headers and residue_constants.prot_from_idx != -1:  # protein only
+        metrics['dsw'] = MetricDict()
+
+        assert 'msa' in headers['dsw']
+        msa = headers['dsw']['msa']
+        seq = F.one_hot(batch['seq'].long(), msa.shape[-1]).float()
+        eps = 1e-8
+
+        obs = torch.einsum('... m i a,... i c -> a c', msa, seq)
+        obs = obs[
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1,
+            residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
+        ]
+        obs = (obs + rearrange(obs, 'a c -> c a')) / 2  # symmetrize
+
+        q = obs / (obs.sum() + eps)
+        p = obs.sum(dim=1) / (obs.sum() + eps)
+        pblosum = torch.log((q + eps) / (p[:, None] * p[None, :] + eps))
+
+        row_idx, col_idx = torch.triu_indices(
+            row=pblosum.shape[0], col=pblosum.shape[1], offset=0, device=pblosum.device
+        )
+        pearson = torch.corrcoef(
+            torch.stack((pblosum[row_idx, col_idx], self.blosum[row_idx, col_idx]))
+        )[0, 1]
+        logger.debug('MetricDictHead.dsw.blosum.pearson: %s', pearson)
+        cosine = F.cosine_similarity(
+            pblosum[row_idx, col_idx].reshape(-1),
+            self.blosum[row_idx, col_idx].reshape(-1),
+            dim=0,
+        )
+        logger.debug('MetricDictHead.dsw.blosum.cosine: %s', cosine)
+        metrics['dsw']['blosum'] = MetricDict({'pearson': pearson, 'cosine': cosine})
+
+        if 'score' in headers['dsw']:
+          score = torch.mean(headers['dsw']['score'])
+          logger.debug('MetricDictHead.dsw.score: %s', score)
+          metrics['dsw']['score'] = score
 
       if 'folding' in headers and 'coords' in headers['folding'] and (
           'coord_mask' in batch or 'coord_exists' in batch
@@ -1360,6 +1605,9 @@ class FitnessHead(nn.Module):
     self.gij_noise = gij_noise
 
     self.focal_loss = focal_loss
+    self.min_posterior_probability = env(
+        'profold2_dsw_min_posterior_probability', defval=9, dtype=int
+    )
     self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, dtype=int)
     self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
 
@@ -1391,10 +1639,7 @@ class FitnessHead(nn.Module):
     else:
       wab = None
 
-    def _hamiton_run(variant, variant_mask):
-      variant = (
-          F.one_hot(variant.long(), num_class) * variant_mask[..., None]
-      ).float()
+    def _hamiton_run(variant):
       if exists(wab):
         hi = torch.einsum(
             '... m j t d,... i j q,q c d,d -> ... m i t c', variant, eij, wab, self.mask
@@ -1420,26 +1665,47 @@ class FitnessHead(nn.Module):
       logits = torch.cat(logits, dim=-3)
       return motifs, logits
 
-    if 'variant' in batch:
-      variant = batch['variant']
-      variant_mask = batch['variant_mask']
+    if 'dsw' in headers and env('profold2_fitness_is_dsw', defval=True, dtype=bool):
+      if 'raw_var' in batch:
+        assert 'raw_var_mask' in batch and 'raw_var_c' in batch
+        msa, mask, color = batch['raw_var'], batch['raw_var_mask'], batch['raw_var_c']
+        variant_mask = batch['variant_mask']
+      else:
+        assert 'seq' in batch
+        msa, mask, color = (
+            batch['seq'][..., None, :, :],
+            batch['mask'][..., None, :],
+            batch['seq_color'][..., None, :],
+        )
+        variant_mask = batch['mask'][..., None, :]
+      variant, *_ = headers['dsw']['aligner'].align(
+        headers['dsw']['profile'], msa, mask, color, batch, return_P=False
+      )
+      variant_mask = torch.ones_like(variant_mask)
+      is_dsw = True
     else:
-      assert 'seq' in batch
-      variant = batch['seq'][..., None, :]
-      variant_mask = batch['mask'][..., None, :]
+      if 'variant' in batch:
+        variant = batch['variant']
+        variant_mask = batch['variant_mask']
+      else:
+        assert 'seq' in batch
+        variant = batch['seq'][..., None, :]
+        variant_mask = batch['mask'][..., None, :]
+      variant = F.one_hot(variant.long(), num_class).float()
+      is_dsw = False
 
-    variant, variant_mask = variant[..., None], variant_mask[..., None]
+    variant, variant_mask = variant[..., None, :], variant_mask[..., None]
     if 'variant_task_mask' in batch:
-      variant_mask = batch['variant_task_mask']
+      variant_mask = variant_mask * batch['variant_task_mask']
 
     motifs, logits = functional.sharded_apply(
-        _hamiton_run, [variant, variant_mask],
+        _hamiton_run, [variant * variant_mask[..., None]],
         shard_size=None if self.training else self.shard_size,
-        shard_dim=1,
+        shard_dim=-4,
         cat_dim=_hamiton_cat
     )
 
-    r = dict(logits=logits)
+    r = dict(logits=logits, is_dsw=is_dsw)
     if exists(self.task_gating):
       gating = F.sigmoid(self.task_gating(representations['single']))
     else:
@@ -1519,7 +1785,7 @@ class FitnessHead(nn.Module):
               gammar=self.focal_loss
           )
         if 'variant_task_mask' in batch:
-          motif_mask = batch['variant_task_mask'] * rearrange(
+          motif_mask = batch['variant_task_mask'] * variant_mask[..., None] * rearrange(
               variant_label > self.label_threshold, '... m t -> ... m () t'
           )
         else:
@@ -1527,6 +1793,10 @@ class FitnessHead(nn.Module):
                         variant_label_mask) | (~variant_label_mask)
           motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
           motif_mask = motif_mask[..., None]
+        if 'pp_var' in batch:
+          motif_mask = motif_mask * (
+              batch['pp_var'][..., None, :, None] >= self.min_posterior_probability
+          )
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
         avg_error_motif = self.alpha * avg_error_motif
@@ -1544,10 +1814,11 @@ class FitnessHead(nn.Module):
               )
           ) * label_mask
 
+      variant_mask = variant_mask[..., None]
+      if value['is_dsw']:
+          variant_mask = torch.ones_like(variant_mask)
       if 'variant_task_mask' in batch:
-        variant_mask = batch['variant_task_mask']
-      else:
-        variant_mask = variant_mask[..., None]
+        variant_mask = batch['variant_task_mask'] * variant_mask
 
       if self.num_var_as_ref > 0:
         if num_var_as_ref > 0:
@@ -1785,6 +2056,7 @@ class HeaderBuilder:
       confidence=ConfidenceHead,
       contact=ContactHead,
       distogram=DistogramHead,
+      dsw=DSWHead,
       fitness=FitnessHead,
       folding=FoldingHead,
       lddt=PLDDTHead,

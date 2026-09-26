@@ -158,6 +158,22 @@ def parse_seq_type(description):
   return 'protein'
 
 
+def parse_posterior_probability(description):
+  def pp_to_int(v):
+    if v == '*':
+      return 10
+    elif v == '.':
+      return 0
+    return int(v)
+
+  fields = description.split()
+  for f in fields[1:]:
+    r = re.match('PP_cons:([0-9.*]+)', f)
+    if r:
+      return [pp_to_int(pp) for pp in r.group(1)]
+  return None
+
+
 def weights_from_file(filename_list):
   if filename_list:
     for filename in filename_list.split(','):
