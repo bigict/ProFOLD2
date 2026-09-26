@@ -480,7 +480,8 @@ class DSWHead(nn.Module):
       sinkhorn_iters=5,
       profile_min=None,
       profile_max=None,
-      dtype=None
+      dtype=None,
+      eps=1e-4,
   ):
     super().__init__()
     dim_single, _ = commons.embedd_dim_get(dim)
@@ -507,7 +508,7 @@ class DSWHead(nn.Module):
     self.profile_max = profile_max
     self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
-    self.eps = 1e-6
+    self.eps = eps
 
     self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
 
@@ -604,10 +605,10 @@ class DSWHead(nn.Module):
 
       mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
 
-      errors = probability_kl_diversity(P, msa_p, mode='reverse', epsilon=self.eps)
+      errors = probability_kl_diversity(P, msa_p, mode='reverse')
       avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
 
-    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse', epsilon=self.eps)
+    errors = probability_kl_diversity(msa_tilde, msa, mode='reverse')
     if exists(mask):
       avg_msa_error = functional.masked_mean(value=errors, mask=mask[..., None])
     else:
