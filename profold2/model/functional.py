@@ -1,5 +1,6 @@
 import collections
 import functools
+import math
 from typing import Optional, Union
 
 import numpy as np
@@ -1824,6 +1825,7 @@ class SinkhornFunction(torch.autograd.Function):
         for k in range(t):
           X_t = fwd_step(X_t, k)
         g = row_adj(g, X_t) if t % 2 == 0 else col_adj(g, X_t)
+        g = g.clamp(min=-1.0/eps, max=1.0/eps)           # FIX: when r/s is very small.
     return g, None, None
 
 
@@ -1862,8 +1864,9 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   def _smax(*xs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
+    stacked = stacked.clamp(min=neg, max=-neg)
     maxv = stacked.amax(dim=0)                       # [B]
-    return maxv + _lse(stacked - maxv[None, ...], dim=0)
+    return maxv + _lse((stacked - maxv[None, ...]).clamp(min=neg), dim=0)
 
   # DP matrices:
   #   M = best score ending with a match/mismatch (diagonal step)
@@ -1900,6 +1903,7 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   M = M[..., 1:, 1:].to(dtype)  # [B, Lq, Lr]
   # Padded cells are already ~NEG (match score added AFTER the aggregate),
   # so no post-hoc M mask and no downstream masks are needed.
+  M = M.clamp(min=neg, max=-neg)
 
   maxv = M.amax(dim=(-1, -2))
   score = maxv + _lse(M - maxv[..., None, None], dim=(-1, -2))  # [B]
@@ -1908,13 +1912,14 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   # Use the normalized M table as a soft-correspondence proxy:
   # high temperature -> uniform; low temperature -> sharp.
   # A = S.new_empty((*B, Lq + 1, Lr + 1))
-  A = M.new_empty((*B, Lq + 1, Lr + 1))
+  A = M.new_zeros((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau
   A[..., Lq, :Lr] = r_unmatched               # ref column left unmatched
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A[..., Lq, Lr] = 0.0
-  P = torch.exp(A)                            # safe exp
+  A = A.clamp(min=neg, max=math.log(-neg))    # safe exp
+  P = torch.exp(A)
 
   del A, M
 
