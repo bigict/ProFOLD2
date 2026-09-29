@@ -65,7 +65,7 @@ def parse_fasta(fasta_string: str) -> Tuple[Sequence[str], Sequence[str]]:
 
 
 def parse_stockholm(
-    stockholm_string: str
+    stockholm_string: str, return_pp: bool = False
 ) -> Tuple[Sequence[str], DeletionMatrix, Sequence[str]]:
   """Parses sequences and deletion matrix from stockholm format alignment.
 
@@ -84,8 +84,15 @@ def parse_stockholm(
         suffix.
   """
   name_to_sequence = collections.OrderedDict()
+  query_pp = None
   for line in stockholm_string.splitlines():
     line = line.strip()
+    if return_pp and line.startswith('#=GC PP_cons'):
+      if query_pp is None:
+        query_pp = ''
+      parts = line.split()
+      if len(parts) >= 3:
+        query_pp += parts[2]
     if not line or line.startswith(('#', '//')):
       continue
     name, sequence = line.split()
@@ -103,6 +110,8 @@ def parse_stockholm(
       # Gather the columns with gaps from the query
       query = sequence
       keep_columns = [i for i, res in enumerate(query) if res != '-']
+      if query_pp is not None:
+        query_pp = ''.join(query_pp[c] for c in keep_columns)
 
     # Remove the columns with gaps in the query from all sequences.
     aligned_sequence = ''.join(
@@ -123,6 +132,8 @@ def parse_stockholm(
           deletion_count = 0
     deletion_matrix.append(deletion_vec)
 
+  if return_pp:
+    return msa, deletion_matrix, list(name_to_sequence.keys()), query_pp
   return msa, deletion_matrix, list(name_to_sequence.keys())
 
 

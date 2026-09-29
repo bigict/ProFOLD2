@@ -121,7 +121,9 @@ class DataPipeline:
     self.mgnify_max_hits = mgnify_max_hits
     self.uniref_max_hits = uniref_max_hits
 
-  def process(self, input_fasta_path: str, msa_output_dir: str) -> FeatureDict:
+  def process(
+      self, input_fasta_path: str, msa_output_dir: str, add_posterior_probability: bool = False
+  ) -> FeatureDict:
     """Runs alignment tools on the input sequence and creates features."""
     with open(input_fasta_path) as f:
       input_fasta_str = f.read()
@@ -172,14 +174,20 @@ class DataPipeline:
     # uniref90_msa, uniref90_deletion_matrix, _ = parsers.parse_stockholm(
     #     jackhmmer_uniref90_result['sto'])
     if 'sto' in jackhmmer_uniref90_result:
-      uniref90_msa, _, uniref90_name_list = parsers.parse_stockholm(
-          jackhmmer_uniref90_result['sto']
+      uniref90_msa, _, *uniref90_name_list = parsers.parse_stockholm(
+          jackhmmer_uniref90_result['sto'], return_pp=add_posterior_probability
       )
+      if add_posterior_probability:
+        uniref90_name_list, pp = uniref90_name_list
+      else:
+        uniref90_name_listm, pp = uniref90_name_list[0], None
       uniref90_msa, uniref90_name_list = (
           uniref90_msa[:self.uniref_max_hits], uniref90_name_list[:self.uniref_max_hits]
       )
     else:
       uniref90_msa, uniref90_name_list = [], []
+      if add_posterior_probability:
+        pp = None
     if 'sto' in jackhmmer_mgnify_result:
       mgnify_msa, _, mgnify_name_list = parsers.parse_stockholm(
           jackhmmer_mgnify_result['sto']
@@ -258,6 +266,8 @@ class DataPipeline:
         seen_sequences.add(sequence)
         seq_msa.append((sequence, name))
 
+    if add_posterior_probability:
+      return seq_msa, pp
     return seq_msa
 
 
@@ -291,10 +301,16 @@ def main(args):
     if not os.path.exists(msa_output_dir):
       os.makedirs(msa_output_dir, exist_ok=True)
 
-    seq_msa = pipeline.process(input_fasta_path, msa_output_dir)
+    seq_msa = pipeline.process(input_fasta_path, msa_output_dir, args.add_posterior_probability)
+    if args.add_posterior_probability:
+      seq_msa, pp = seq_msa
+    else:
+      pp = None
     if seq_msa:
       with open(os.path.join(msa_output_dir, f'{fasta_name}.a3m'), 'w') as f:
-        for seq, desc in seq_msa:
+        for i, (seq, desc) in enumerate(seq_msa):
+          if i == 0 and pp is not None:
+            desc = f'{desc} PP_cons:{pp}'
           f.write(f'>{desc}\n{seq}\n')
 
 
@@ -325,6 +341,9 @@ if __name__ == '__main__':
   parser.add_argument('--fasta_paths', type=str, nargs='+', help='list of fasta files')
   parser.add_argument(
       '--use_small_bfd', action='store_true', help='use small bfd database or not'
+  )
+  parser.add_argument(
+      '--add_posterior_probability', action='store_true', help='add posterior probability if exists'
   )
   parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
 
