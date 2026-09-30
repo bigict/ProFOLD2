@@ -24,6 +24,10 @@ def default(val, d):
 
 
 def env(*keys, defval=None, dtype=None):
+  # autodetect dtype.
+  if exists(defval) and not exists(dtype):
+    dtype = type(defval)
+
   for key in keys:
     value = os.getenv(key)
     if exists(value):
