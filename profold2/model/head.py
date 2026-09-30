@@ -510,7 +510,7 @@ class DSWHead(nn.Module):
     self.neg = -1e4
     self.eps = eps
 
-    self.shard_size = env('profold2_dsw_shard_size', defval=768, dtype=int)
+    self.shard_size = env('profold2_dsw_shard_size', defval=768)
 
   @property
   def gap_open(self):
@@ -536,9 +536,7 @@ class DSWHead(nn.Module):
             r_unmatched=self.r_unmatched,
             temperature=self.temperature,
             sinkhorn_iters=self.sinkhorn_iters,
-            sinkhorn_custom_bwd=env(
-                'profold2_dsw_sinkhorn_custom_bwd', defval=True, dtype=bool
-            ),
+            sinkhorn_custom_bwd=env('profold2_dsw_sinkhorn_custom_bwd', defval=True),
             dtype=self.dtype,
             neg=self.neg,
             eps=self.eps,
@@ -586,27 +584,35 @@ class DSWHead(nn.Module):
       )
 
     return_P = batch.get('compute_loss', self.training)
-    return_P = return_P or env('profold2_dsw_return_P', defval=return_P, dtype=bool)
+    return_P = return_P or env('profold2_dsw_return_P', defval=return_P)
     msa, score, P = self.align(profile, msa, mask, color, batch, return_P=return_P)
     return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
 
   def check(self, msa_tilde, P, msa, mask, msa_p=None, mask_p=None):
+    # NOTE: mask_p is a tensor of shape equal to the broadcased shape of
+    #   `[B, M, Lq, Lr]` except `Lr`.
     msa = F.one_hot(msa.long(), msa_tilde.shape[-1]).float()
 
     avg_align_error = 0
     if exists(P) and exists(msa_p):
-      mask_p = (msa_p != -1) * (mask_p if exists(mask_p) else 1)  # pad value
+      if exists(mask_p):
+        mask_p = torch.cat(
+            (mask_p, mask_p.new_ones(*mask_p.shape[:-1], 1)), dim=-1
+        )  # [B, M, Lr, Lq + 1]
+      mask_p = (msa_p[..., None] != -1) * (mask_p if exists(mask_p) else 1)  # pad value
 
       msa_p = F.one_hot((msa_p % P.shape[-1]).long(), P.shape[-1]).float()
       msa_p = torch.cat(
-          (msa_p, ~torch.any(msa_p * mask_p[..., None], dim=-2, keepdim=True)), dim=-2
+          (msa_p, ~torch.any(msa_p * mask_p, dim=-2, keepdim=True)), dim=-2
       )
       msa_p[..., -1, -1] = 1  # query and reference are matched
 
-      mask_p = torch.cat((mask_p, mask_p.new_ones((*mask_p.shape[:-1], 1))), dim=-1)
+      mask_p = torch.cat(
+          (mask_p, mask_p.new_ones((*mask_p.shape[:-2], 1, mask_p.shape[-1]))), dim=-2
+      )
 
       errors = probability_kl_diversity(P, msa_p, mode='reverse')
-      avg_align_error = functional.masked_mean(value=errors, mask=mask_p[..., None])
+      avg_align_error = functional.masked_mean(value=errors, mask=mask_p)
 
     errors = probability_kl_diversity(msa_tilde, msa, mode='reverse')
     if exists(mask):
@@ -1606,10 +1612,10 @@ class FitnessHead(nn.Module):
 
     self.focal_loss = focal_loss
     self.min_posterior_probability = env(
-        'profold2_dsw_min_posterior_probability', defval=9, dtype=int
+        'profold2_dsw_min_posterior_probability', defval=9
     )
-    self.shard_size = env('profold2_fitness_shard_size', defval=shard_size, dtype=int)
-    self.return_motifs = env('profold2_fitness_return_motifs', defval=True, dtype=bool)
+    self.shard_size = env('profold2_fitness_shard_size', defval=shard_size)
+    self.return_motifs = env('profold2_fitness_return_motifs', defval=True)
 
   def predict(self, variant_logit, variant_mask, gating=None):
     if exists(gating):
@@ -1665,7 +1671,7 @@ class FitnessHead(nn.Module):
       logits = torch.cat(logits, dim=-3)
       return motifs, logits
 
-    if 'dsw' in headers and env('profold2_fitness_is_dsw', defval=True, dtype=bool):
+    if 'dsw' in headers and env('profold2_fitness_is_dsw_align', defval=True):
       if 'raw_var' in batch:
         assert 'raw_var_mask' in batch and 'raw_var_c' in batch
         msa, mask, color = batch['raw_var'], batch['raw_var_mask'], batch['raw_var_c']
