@@ -612,7 +612,9 @@ class DSWHead(nn.Module):
       )
 
       errors = probability_kl_diversity(P, msa_p, mode='reverse')
-      avg_align_error = functional.masked_mean(value=errors, mask=mask_p)
+      avg_align_error = functional.masked_mean(
+          value=errors * mask_p.sum(dim=-1, keepdim=True), mask=mask_p
+      )
 
     errors = probability_kl_diversity(msa_tilde, msa, mode='reverse')
     if exists(mask):
@@ -1684,8 +1686,10 @@ class FitnessHead(nn.Module):
             batch['seq_color'][..., None, :],
         )
         variant_mask = batch['mask'][..., None, :]
-      variant, *_ = headers['dsw']['aligner'].align(
-        headers['dsw']['profile'], msa, mask, color, batch, return_P=False
+      variant, _, P = headers['dsw']['aligner'].align(
+        headers['dsw']['profile'], msa, mask, color, batch, return_P=env(
+            'profold2_fitness_is_dsw_return_P', defval=False
+        )
       )
       variant_mask = torch.ones_like(variant_mask)
       is_dsw = True
@@ -1712,6 +1716,8 @@ class FitnessHead(nn.Module):
     )
 
     r = dict(logits=logits, is_dsw=is_dsw)
+    if is_dsw and env('profold2_fitness_is_dsw_check', defval=True):
+      r.update(variant=variant, P=P, aligner=headers['dsw']['aligner'])
     if exists(self.task_gating):
       gating = F.sigmoid(self.task_gating(representations['single']))
     else:
@@ -1781,11 +1787,11 @@ class FitnessHead(nn.Module):
       if exists(self.alpha) and self.alpha > 0:
         # predict motifs
         motifs = value['motifs']
-        labels = F.one_hot(batch['variant'].long(), num_class)
+        labels = F.one_hot(batch['variant'][..., None].long(), num_class)
 
         with accelerator.autocast(enabled=False):
           errors = softmax_cross_entropy(
-              labels=labels[..., None, :],
+              labels=labels,
               logits=motifs.float(),
               mask=self.mask,
               gammar=self.focal_loss
@@ -1804,8 +1810,25 @@ class FitnessHead(nn.Module):
               batch['pp_var'][..., None, :, None] >= self.min_posterior_probability
           )
         avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
+
+        avg_error_align = 0
+        if value['is_dsw'] and 'variant' in value:
+          msa, msa_mask = labels.argmax(-1), motif_mask
+          avg_align_error, avg_msa_error = value['aligner'].check(
+              rearrange(value['variant'], '... i t c -> ... t i c'),
+              value['P'][..., None, :, :] if value.get('P') is not None else None,
+              rearrange(labels.argmax(-1), '... i t -> ... t i'),
+              rearrange(motif_mask, '... i t -> ... t i'),
+              msa_p=repeat(
+                  batch['raw_var_p'], '... i -> ... t i', t=self.task_num
+              ) if 'raw_var_p' in batch else None,
+              mask_p=rearrange(motif_mask, '... i t -> ... t () i'),
+          )
+          logger.info('FitnessHead.aligner.loss: %s/%s', avg_align_error, avg_msa_error)
+          avg_error_align = avg_align_error + avg_msa_error
+
         logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
-        avg_error_motif = self.alpha * avg_error_motif
+        avg_error_motif = self.alpha * (avg_error_motif + avg_error_align)
 
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
