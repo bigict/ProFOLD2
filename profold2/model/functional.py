@@ -1916,8 +1916,8 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   A[..., :Lq, :Lr] = M * tau
   A[..., Lq, :Lr] = r_unmatched               # ref column left unmatched
   A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
-  A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A[..., Lq, Lr] = 0.0
+  A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A = A.clamp(min=neg, max=math.log(-neg))    # safe exp
   P = torch.exp(A)
 
