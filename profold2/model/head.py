@@ -492,7 +492,7 @@ class DSWHead(nn.Module):
     # Learned biases for leaving a query row / ref column unmatched.
     self.q_unmatched = nn.Parameter(torch.tensor(0.0))
     self.r_unmatched = nn.Parameter(torch.tensor(0.0))
-    self.temperature = tau
+    self.temperature = env('profold2_dsw_tau', defval=tau)
     self.sinkhorn_iters = sinkhorn_iters
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -587,6 +587,24 @@ class DSWHead(nn.Module):
     return_P = return_P or env('profold2_dsw_return_P', defval=return_P)
     msa, score, P = self.align(profile, msa, mask, color, batch, return_P=return_P)
     return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
+
+  def overlap(self, P, msa_p, mask_p=None):
+    if exists(mask_p):
+      mask_p = torch.cat(
+          (mask_p, mask_p.new_ones(*mask_p.shape[:-1], 1)), dim=-1
+      )  # [B, M, Lr, Lq + 1]
+    mask_p = (msa_p[..., None] != -1) * (mask_p if exists(mask_p) else 1)  # pad value
+
+    msa_p = F.one_hot((msa_p % P.shape[-1]).long(), P.shape[-1]).float()
+    msa_p = torch.cat((msa_p, ~torch.any(msa_p, dim=-2, keepdim=True)), dim=-2)
+    msa_p[..., -1, -1] = 1  # query and reference are matched
+
+    mask_p = torch.cat(
+        (mask_p, mask_p.new_ones((*mask_p.shape[:-2], 1, mask_p.shape[-1]))), dim=-2
+    )
+
+    o = torch.einsum('... i j,... i j,... i j -> ...', P, msa_p, mask_p.float())
+    return (o / (mask_p.sum(dim=(-1, -2)) + 1e-8)).mean()
 
   def check(self, msa_tilde, P, msa, mask, msa_p=None, mask_p=None):
     # NOTE: mask_p is a tensor of shape equal to the broadcased shape of
@@ -1461,6 +1479,90 @@ class MetricDictHead(nn.Module):
           score = torch.mean(headers['dsw']['score'])
           logger.debug('MetricDictHead.dsw.score: %s', score)
           metrics['dsw']['score'] = score
+        if 'P' in headers['dsw'] and exists(headers['dsw']['P']):
+          if 'raw_msa_p' in batch:
+            mask_p = (batch['raw_msa_p'] != -1)
+            msa_p = torch.argmax(headers['dsw']['P'], dim=-1)
+            overlap = (batch['raw_msa_p'] == msa_p[..., :-1])
+            overlap = functional.masked_mean(value=overlap, mask=mask_p)
+            logger.debug('MetricDictHead.dsw.overlap: %s', overlap)
+            metrics['dsw']['overlap'] = overlap
+
+      if 'fitness' in headers and residue_constants.prot_from_idx != -1:  # protein only
+        metrics['fitness'] = MetricDict()
+        if 'P' in headers['fitness'] and exists(headers['fitness']['P']):
+          metrics['fitness']['dsw'] = MetricDict()
+          if 'variant' in batch and 'raw_var_p' in batch:
+            variant_mask = batch['variant_mask']
+            variant_label = batch['variant_label']
+            variant_label_mask = batch['variant_label_mask']
+            label_threshold = headers['fitness'].get('label_threshold', 0)
+            if 'variant_task_mask' in batch:
+              mask_p = (
+                  batch['variant_task_mask'] * variant_mask[..., None] * rearrange(
+                      variant_label > label_threshold, '... m t -> ... m () t'
+                  )
+              )
+            else:
+              mask_p = ((variant_label > label_threshold) &
+                        variant_label_mask) | (~variant_label_mask)
+              mask_p = torch.all(mask_p, dim=-1, keepdim=True) * variant_mask
+              mask_p = mask_p[..., None]
+            if 'pp_var' in batch:
+              min_posterior_probability = headers['fitness'].get(
+                  'min_posterior_probability', 9
+              )
+              mask_p = mask_p * (
+                  batch['pp_var'][..., None, :, None] >= min_posterior_probability
+              )
+            mask_p = rearrange(mask_p, '... i t->... t i')
+
+            overlap = headers['fitness']['aligner'].overlap(
+                headers['fitness']['P'][..., None, :, :],
+                batch['raw_var_p'][..., None, :],
+                mask_p[..., None, :],
+            )
+            logger.debug('MetricDictHead.fitness.dsw.overlap: %s', overlap)
+            metrics['fitness']['dsw']['overlap'] = overlap
+
+            if 'pseudo_beta' in batch:
+              gij_cutoff = headers['fitness'].get('gij_cutoff', 6)
+              gij_noise = headers['fitness'].get('gij_noise', 0.15)
+
+              positions = batch['pseudo_beta']
+              mask = batch['pseudo_beta_mask']
+              seq_color = batch["seq_color"]
+              assert positions.shape[-1] == 3
+
+              targets = F.sigmoid(gij_cutoff - torch.cdist(positions, positions))
+              targets = targets * mask[..., :, None] * mask[..., None, :] * (
+                  seq_color[..., :, None] != seq_color[..., None, :]
+              ) * (targets >= gij_noise)
+              targets = repeat(targets, "...->... t", t=mask_p.shape[-1])
+              if 'variant_task_mask' in batch:
+                variant_task_mask = batch['variant_task_mask'][..., 0, :, :]
+                targets = targets * (
+                    variant_task_mask[..., :, None, :] * variant_task_mask[..., None, :, :]
+                )
+              targets = torch.clamp(
+                  1. - torch.exp(
+                      torch.sum(torch.log(torch.clamp(1 - targets, min=1e-10, max=1.)), dim=-2)
+                  ), min=0
+              )
+              mask = mask[..., None] * torch.any(
+                  seq_color[..., :, None] != seq_color[..., None, :], dim=-1, keepdim=True
+              )
+              if 'variant_task_mask' in batch:
+                mask = mask * batch['variant_task_mask'][..., 0, :, :]
+
+              color_p = rearrange((targets >= 0.5) * mask, '... i t -> ... t i')
+              ioverlap = headers['fitness']['aligner'].overlap(
+                  headers['fitness']['P'][..., None, :, :],
+                  batch['raw_var_p'][..., None, :],
+                  mask_p[..., None, :] * color_p[..., None, :, None, :],
+              )
+              logger.debug('MetricDictHead.fitness.dsw.ioverlap: %s', ioverlap)
+              metrics['fitness']['dsw']['ioverlap'] = ioverlap
 
       if 'folding' in headers and 'coords' in headers['folding'] and (
           'coord_mask' in batch or 'coord_exists' in batch
@@ -1733,6 +1835,7 @@ class FitnessHead(nn.Module):
 
     if exists(motifs):
       r.update(motifs=motifs)
+    r.update(gij_cutoff=self.gij_cutoff, gij_noise=self.gij_noise)
     return r
 
   def loss(self, value, batch):
