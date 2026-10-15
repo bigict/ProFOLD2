@@ -180,7 +180,7 @@ class DataPipeline:
       if add_posterior_probability:
         uniref90_name_list, pp = uniref90_name_list
       else:
-        uniref90_name_listm, pp = uniref90_name_list[0], None
+        uniref90_name_list, pp = uniref90_name_list[0], None
       uniref90_msa, uniref90_name_list = (
           uniref90_msa[:self.uniref_max_hits], uniref90_name_list[:self.uniref_max_hits]
       )
