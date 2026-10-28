@@ -375,3 +375,42 @@ def Pairformer(depth, *args, **kwargs):
   """The Pairformer in AlphaFold3
    """
   return commons.layer_stack(PairformerBlock, depth, *args, **kwargs)
+
+
+class MSAPairWeightedAveragingBlock(nn.Module):
+  """MSAPairWeightedAveragingBlock
+    """
+  def __init__(
+      self,
+      *,
+      dim_single,
+      dim_pairwise,
+      heads,
+      dim_head,
+      attn_dropout=0.,
+      ff_dropout=0.,
+  ):
+    super().__init__()
+
+    self.attn = commons.MSAPairWeightedAveraging(
+        dim_node=dim_single,
+        dim_edge=dim_pairwise,
+        heads=heads,
+        dim_head=dim_head,
+        dropout=attn_dropout,
+    )
+    self.ff = commons.FeedForward(
+        dim=dim_single, dropout=ff_dropout, activation='SwiGLU', use_bias=False
+    )
+
+  def forward(self, m, z, mask=None, z_mask=None, shard_size=None):
+    with profiler.record_function('weighted_avg'):
+        m = commons.tensor_add(m, self.attn(m, z, mask=mask, edge_mask=z_mask))
+    m = commons.tensor_add(m, self.ff(m, shard_size=shard_size))
+    return m, z
+
+
+def MSAPairWeightedAveraging(depth, *args, **kwargs):
+  """The MSA stack in AlphaFold3
+   """
+  return commons.layer_stack(MSAPairWeightedAveragingBlock, depth, *args, **kwargs)
