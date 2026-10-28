@@ -1471,6 +1471,58 @@ class AttentionPairBias(nn.Module):
     )
 
 
+class MSAPairWeightedAveraging(nn.Module):
+  """MSAPairWeightedAveraging
+    """
+  def __init__(
+      self, dim_node, dim_edge, heads, dim_head=None, gating=True, dropout=0.
+  ):
+    super().__init__()
+
+    self.heads = heads
+    dim_inner = default(dim_head, dim_node) * heads
+
+    self.norm = nn.LayerNorm(dim_node)
+    self.to_v = nn.Linear(dim_node, dim_inner, bias=False)
+    self.to_b = nn.Sequential(
+        nn.LayerNorm(dim_edge), nn.Linear(dim_edge, heads, bias=False)
+    )
+    self.to_out = nn.Linear(dim_inner, dim_node, bias=False)
+
+    self.gating = nn.Linear(dim_node, dim_inner, bias=False) if gating else None
+    if exists(self.gating):
+      init_linear_(self.gating, b=1.)
+
+    init_linear_(self.to_out)
+
+    self.dropout_fn = functools.partial(shared_dropout, broadcast_dim=-3, p=dropout)
+
+  def forward(self, x, edges, mask=None, edge_mask=None):
+    x = self.norm(x)
+
+    # input projection
+    v = rearrange(self.to_v(x), '... m i (h d) -> ... m i h d', h=self.heads)
+    if exists(mask):
+      v = v * mask[..., None, None]
+
+    # weighted average
+    w = F.softmax(self.to_b(edges), dim=-2)
+    if exists(edge_mask):
+      w = w * edge_mask[..., None]
+    o = torch.einsum('... m j h d,... i j h -> ... m i h d', v, w)
+    o = rearrange(o, '... m i h d -> ... m i (h d)')
+
+    # gating
+    if exists(self.gating):
+      gates = self.gating(x)
+      o = tensor_mul(o, gates.sigmoid())
+
+    # output projection
+    o = self.to_out(o)
+
+    return self.dropout_fn(o)
+
+
 def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   # Hack for keyword-only parameter in a python 2.7-compliant way
   preserve = kwargs.pop('preserve_rng_state', True)
