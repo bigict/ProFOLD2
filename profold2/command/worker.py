@@ -218,7 +218,10 @@ class WorkerFunction(object):
               defval=False
           )
       ):
-        self.work_fn(xpu, args)
+        with torch.autograd.set_detect_anomaly(
+          env('profold2_autograd_detect_anomaly', defval=False, dtype=bool)
+        ):
+          self.work_fn(xpu, args)
 
     #--------------
     # cleanup
