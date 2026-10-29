@@ -403,11 +403,11 @@ class MSAPairWeightedAveragingBlock(nn.Module):
         dim=dim_single, dropout=ff_dropout, activation='SwiGLU', use_bias=False
     )
 
-  def forward(self, m, z, mask=None, z_mask=None, shard_size=None):
+  def forward(self, m, *, z, mask=None, z_mask=None, shard_size=None):
     with profiler.record_function('weighted_avg'):
-        m = commons.tensor_add(m, self.attn(m, z, mask=mask, edge_mask=z_mask))
+      m = commons.tensor_add(m, self.attn(m, z, mask=mask, edge_mask=z_mask))
     m = commons.tensor_add(m, self.ff(m, shard_size=shard_size))
-    return m, z
+    return m
 
 
 def MSAPairWeightedAveraging(depth, *args, **kwargs):
