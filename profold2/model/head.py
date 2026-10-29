@@ -362,7 +362,7 @@ class CoevolutionHead(nn.Module):
                        ) + torch.tril(mask, diagonal=-self.dij_diagonal)
 
       avg_error_dij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.info('CoevolutionHead.dij.loss: %s', avg_error_dij)
+      logger.debug('CoevolutionHead.dij.loss: %s', avg_error_dij)
       avg_error = avg_error + self.dij_guidance * avg_error_dij
 
     if exists(self.loss_min) or exists(self.loss_max):
@@ -1492,13 +1492,13 @@ class FitnessHead(nn.Module):
       if 'variant_task_mask' in batch:
         mask = mask * batch['variant_task_mask'][..., 0, :, :]
 
-      logger.info('FitnessHead.gij.loss.targets: %s', torch.sum(targets >= 0.5, dim=-2))
-      logger.info('FitnessHead.gij.loss.masked: %s', torch.sum(mask, dim=-2))
+      logger.debug('FitnessHead.gij.loss.targets: %s', torch.sum(targets >= 0.5, dim=-2))
+      logger.debug('FitnessHead.gij.loss.masked: %s', torch.sum(mask, dim=-2))
 
       errors = sigmoid_cross_entropy(gating, targets, gammar=self.focal_loss)
 
       avg_error_gij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.info('FitnessHead.gij.loss: %s', avg_error_gij)
+      logger.debug('FitnessHead.gij.loss: %s', avg_error_gij)
       avg_error_gij = self.gij_guidance * avg_error_gij
 
     if 'variant' in batch:
