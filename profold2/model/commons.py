@@ -353,6 +353,22 @@ class FeedForward(nn.Module):
     )
 
 
+class GatedFusion(nn.Module):
+  """Gated Feature Fusion"""
+  def __init__(self, dim1, dim2=None, init_gate_value=-4.):
+    super().__init__()
+
+    dim2 = default(dim2, dim1)
+
+    self.project = nn.Linear(dim1, dim2, bias=False)
+    self.gating = nn.Linear(dim1 + dim2, dim2)
+    init_linear_(self.gating, b=init_gate_value)
+
+  def forward(self, x, g):
+    gates = self.gating(torch.cat((x, g), dim=-1)).sigmoid()
+    return x + gates * self.project(g)
+
+
 class ConditionedFeedForward(nn.Module):
   """ConditionedFeedForward layer in transformer
     """
@@ -1238,11 +1254,10 @@ class RelativePositionEmbedding(nn.Module):
     self.s_max = s_max
 
     if exists(self.s_max):
-      self.embedding = nn.Linear(
-          2 * 2 * self.r_max + 2 * self.s_max + 7, dim, bias=False
+      self.fusion = GatedFusion(
+          self.r_max * 2 + self.s_max * 2 + 5, dim, init_gate_value=-8.
       )
-    else:
-      self.embedding = nn.Embedding(self.r_max * 2 + 1, dim)
+    self.embedding = nn.Embedding(self.r_max * 2 + 1, dim)
 
   def forward(
       self,
@@ -1264,8 +1279,8 @@ class RelativePositionEmbedding(nn.Module):
           seq_index[..., :, None] - seq_index_j[..., None, :],
           min=-self.r_max, max=self.r_max
       ) + self.r_max
+      x = self.embedding(dij_seq_index)
 
-      feats = []
       if exists(self.s_max):
         bij_seq_index = (seq_index[..., :, None] == seq_index_j[..., None, :])
         bij_seq_color = (seq_color[..., :, None] == seq_color_j[..., None, :])
@@ -1294,15 +1309,14 @@ class RelativePositionEmbedding(nn.Module):
             ).long(),
             2 * (self.s_max + 1)
         )
-        feats = [dij_token_index, bij_seq_entity[..., None], dij_seq_sym]
+        feats = torch.cat(
+            [dij_token_index, bij_seq_entity[..., None], dij_seq_sym], dim=-1
+        ).float()
 
-      if exists(self.s_max):
         with accelerator.autocast(enabled=False):
-          dij_seq_index = torch.cat(
-              [F.one_hot(dij_seq_index.long(), 2 * (self.r_max + 1))] + feats, dim=-1
-          ).float()
-          return self.embedding(dij_seq_index)
-      return self.embedding(dij_seq_index)
+          x = self.fusion(x, feats)
+
+      return x
 
     args = [seq_index]
     if exists(self.s_max):
