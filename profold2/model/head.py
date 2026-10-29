@@ -11,7 +11,7 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
-from profold2.model import accelerator, commons, functional, folding
+from profold2.model import accelerator, commons, evoformer, functional, folding
 from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
@@ -478,13 +478,18 @@ class DSWHead(nn.Module):
       gap_ext=0.1,
       tau=2.0,
       sinkhorn_iters=5,
+      profile_depth=0,
+      profile_heads=6,
+      profile_dim_head=32,
+      profile_attn_dropout=0.15,
+      profile_ff_dropout=0.,
       profile_min=None,
       profile_max=None,
       dtype=None,
       eps=1e-4,
   ):
     super().__init__()
-    dim_single, _ = commons.embedd_dim_get(dim)
+    dim_single, dim_pairwise = commons.embedd_dim_get(dim)
 
     # Gap penalties stored as learnable parameters (kept positive via softplus).
     self.log_gap_open = nn.Parameter(torch.tensor(float(gap_open)))
@@ -496,12 +501,27 @@ class DSWHead(nn.Module):
     self.sinkhorn_iters = sinkhorn_iters
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
-    self.profile = nn.Sequential(
-        nn.Linear(dim_single, dim_single),
-        nn.GELU(),
-        nn.LayerNorm(dim_single),
-        nn.Linear(dim_single, num_class)
-    )
+    if profile_depth > 0:
+        self.preprocess = evoformer.MSAPairWeightedAveraging(
+            profile_depth,
+            dim_single=dim_single,
+            dim_pairwise=dim_pairwise,
+            heads=profile_heads,
+            dim_head=profile_dim_head,
+            attn_dropout=profile_attn_dropout,
+            ff_dropout=profile_ff_dropout,
+        )
+        self.profile = nn.Sequential(
+            nn.LayerNorm(dim_single), nn.Linear(dim_single, num_class)
+        )
+    else:
+        self.preprocess = None
+        self.profile = nn.Sequential(
+            nn.Linear(dim_single, dim_single),
+            nn.GELU(),
+            nn.LayerNorm(dim_single),
+            nn.Linear(dim_single, num_class)
+        )
 
     # Biologically grounded: BLOSUM62 ranges from -4 to +11, so [-10, 10] is reasonable
     self.profile_min = profile_min
@@ -566,7 +586,19 @@ class DSWHead(nn.Module):
 
   def forward(self, headers, representations, batch):
     """Builds DSWHead module."""
-    profile = self.profile(representations['single'])
+    if exists(self.preprocess):
+      profile = self.profile(
+          rearrange(
+              self.preprocess(
+                  rearrange(representations['single'], '... i d -> ... () i d'),
+                  z=representations['pair'],
+                  mask=rearrange(batch['mask'], '... i -> ... () i'),
+                  z_mask=batch['mask'][..., :, None] * batch['mask'][..., None, :],
+              ), '... m i d -> ... (m i) d'
+          )
+      )
+    else:
+      profile = self.profile(representations['single'])
     if exists(self.profile_min):
       profile = torch.clamp(profile, min=self.profile_min)
     if exists(self.profile_max):
