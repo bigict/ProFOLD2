@@ -168,7 +168,7 @@ def shared_dropout(x, p, broadcast_dim=None, training=True):
   return F.dropout(x, p=p, training=training)
 
 
-def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
+def evoformer_attn(q, k, v, attn_mask, *, dropout_p=0.0, scale=None, dtype=None):
   del dropout_p, scale
   assert kernel.is_available()
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
@@ -187,8 +187,8 @@ def evoformer_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
   return rearrange(o.to(dtype=dtype_from), '... i h d -> ... h i d')
 
 
-def cuequivariance_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
-  import cuequivariance_torch as cuet
+def cuequivariance_attn(q, k, v, attn_mask, *, dropout_p=0.0, scale=None, dtype=None):
+  import cuequivariance_torch as cuet  # pylint: disable=import-outside-toplevel
 
   del dropout_p
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
@@ -200,7 +200,7 @@ def cuequivariance_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=Non
   return o.to(dtype=dtype_from)
 
 
-def pytorch_attn(q, k, v, attn_mask, dropout_p=0.0, scale=None, dtype=None):
+def pytorch_attn(q, k, v, attn_mask, *, dropout_p=0.0, scale=None, dtype=None):
   assert hasattr(F, 'scaled_dot_product_attention')
   dtype_from, dtype_to = q.dtype, default(dtype, torch.float16)
   q, k, v = map(lambda t: t.to(dtype=dtype_to), (q, k, v))
@@ -1279,13 +1279,14 @@ class RelativePositionEmbedding(nn.Module):
           seq_index[..., :, None] - seq_index_j[..., None, :],
           min=-self.r_max, max=self.r_max
       ) + self.r_max
-      x = self.embedding(dij_seq_index)
 
       if exists(self.s_max):
         bij_seq_index = (seq_index[..., :, None] == seq_index_j[..., None, :])
         bij_seq_color = (seq_color[..., :, None] == seq_color_j[..., None, :])
         bij_seq_entity = (seq_entity[..., :, None] == seq_entity_j[..., None, :])
-        dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max + 1)
+        # FIX: to be compitable with monomer.
+        dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max)
+        # dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max + 1)
 
         dij_token_index = F.one_hot(  # pylint: disable=not-callable
             torch.where(
@@ -1313,14 +1314,16 @@ class RelativePositionEmbedding(nn.Module):
             [dij_token_index, bij_seq_entity[..., None], dij_seq_sym], dim=-1
         ).float()
 
-        with accelerator.autocast(enabled=False):
-          x = self.fusion(x, feats)
-
+      x = self.embedding(dij_seq_index)
+      if exists(self.s_max):
+        x = self.fusion(x, feats)
       return x
 
     args = [seq_index]
+    if exists(seq_color):
+      args = args + [seq_color]
     if exists(self.s_max):
-      args = args + [seq_color, seq_sym, seq_entity, token_index]
+      args = args + [seq_sym, seq_entity, token_index]
 
     return functional.sharded_apply(
         run_proj, args,
@@ -1489,7 +1492,7 @@ class MSAPairWeightedAveraging(nn.Module):
   """MSAPairWeightedAveraging
     """
   def __init__(
-      self, dim_node, dim_edge, heads, dim_head=None, gating=True, dropout=0.
+      self, dim_node, dim_edge, heads, *, dim_head=None, gating=True, dropout=0.
   ):
     super().__init__()
 
