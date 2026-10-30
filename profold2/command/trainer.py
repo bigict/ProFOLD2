@@ -301,6 +301,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         prefix = f'{prefix}.'
       for k, v in loss.items():
         writer_add_scalars(writer, v, it, prefix=f'{prefix}{k}')
+    elif isinstance(loss, list):
+      for k, v in enumerate(loss):
+        writer_add_scalars(writer, v, it, prefix=f'{prefix}.{k}')
     elif exists(writer):
       if isinstance(loss, torch.Tensor):
         loss = torch.nanmean(loss).item()
@@ -352,9 +355,8 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   def _step(data_loader, it, writer, stage='train', batch_callback=None):
     optimizer.zero_grad(set_to_none=True)
 
-    logging.debug(
-        '_step it: %d, loss_scaler: %f, lr: %s', it, loss_scaler,
-        scheduler.get_last_lr()
+    writer_add_scalars(
+        writer, scheduler.get_last_lr(), it, prefix=f'Loss/{stage}@learning_rate'
     )
 
     running_loss = MetricDict()
