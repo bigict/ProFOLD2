@@ -483,8 +483,7 @@ class DSWHead(nn.Module):
       profile_dim_head=32,
       profile_attn_dropout=0.15,
       profile_ff_dropout=0.,
-      profile_min=None,
-      profile_max=None,
+      profile_cap=None,
       dtype=None,
       eps=1e-4,
   ):
@@ -524,8 +523,7 @@ class DSWHead(nn.Module):
         )
 
     # Biologically grounded: BLOSUM62 ranges from -4 to +11, so [-10, 10] is reasonable
-    self.profile_min = profile_min
-    self.profile_max = profile_max
+    self.profile_cap = profile_cap
     self.dtype = accelerator.dtype_from_string(env('profold2_dsw_dtype', defval=dtype))
     self.neg = -1e4
     self.eps = eps
@@ -599,10 +597,8 @@ class DSWHead(nn.Module):
       )
     else:
       profile = self.profile(representations['single'])
-    if exists(self.profile_min):
-      profile = torch.clamp(profile, min=self.profile_min)
-    if exists(self.profile_max):
-      profile = torch.clamp(profile, max=self.profile_max)
+    if exists(self.profile_cap) and self.profile_cap > 0:
+      profile = self.profile_cap * (profile / self.profile_cap).tanh()
 
     # pseudo msa if not exists
     if 'raw_msa' in batch and 'raw_msa_mask' in batch:
