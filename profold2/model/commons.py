@@ -1314,10 +1314,8 @@ class RelativePositionEmbedding(nn.Module):
             [dij_token_index, bij_seq_entity[..., None], dij_seq_sym], dim=-1
         ).float()
 
-      x = self.embedding(dij_seq_index)
-      if exists(self.s_max):
-        x = self.fusion(x, feats)
-      return x
+        return self.fusion(self.embedding(dij_seq_index), feats)
+      return self.embedding(dij_seq_index)
 
     args = [seq_index]
     if exists(seq_color):
