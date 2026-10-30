@@ -1520,9 +1520,10 @@ class MSAPairWeightedAveraging(nn.Module):
       v = v * mask[..., None, None]
 
     # weighted average
-    w = F.softmax(self.to_b(edges), dim=-2)
+    b = self.to_b(edges)
     if exists(edge_mask):
-      w = w * edge_mask[..., None]
+      b = b.masked_fill(~edge_mask[..., None], max_neg_value(b))
+    w = F.softmax(b, dim=-2)
     o = torch.einsum('... m j h d,... i j h -> ... m i h d', v, w)
     o = rearrange(o, '... m i h d -> ... m i (h d)')
 
