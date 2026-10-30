@@ -1903,7 +1903,8 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   M = M[..., 1:, 1:].to(dtype)  # [B, Lq, Lr]
   # Padded cells are already ~NEG (match score added AFTER the aggregate),
   # so no post-hoc M mask and no downstream masks are needed.
-  M = M.clamp(min=neg, max=-neg)
+  # M = M.clamp(min=neg, max=-neg)
+  M = -neg * (M / -neg).tanh()
 
   maxv = M.amax(dim=(-1, -2))
   score = maxv + _lse(M - maxv[..., None, None], dim=(-1, -2))  # [B]
