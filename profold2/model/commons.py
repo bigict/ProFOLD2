@@ -1255,7 +1255,7 @@ class RelativePositionEmbedding(nn.Module):
 
     if exists(self.s_max):
       self.fusion = GatedFusion(
-          self.r_max * 2 + self.s_max * 2 + 5, dim, init_gate_value=-8.
+          self.r_max * 2 + self.s_max * 2 + 5, dim, init_gate_value=-4.
       )
     self.embedding = nn.Embedding(self.r_max * 2 + 1, dim)
 
