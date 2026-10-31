@@ -415,16 +415,6 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     grad_scaler.update()
     scheduler.step()
 
-  def batch_seq_only(batch):
-    batch = copy.copy(batch)
-    for field in ('coord', 'coord_alt', 'coord_mask', 'coord_alt_mask', 'coord_plddt', 'backbone_affine', 'backbone_affine_mask', 'atom_affine', 'atom_affine_mask', 'pseudo_beta', 'pseudo_beta_mask', 'torsion_angles', 'torsion_angles_mask', 'torsion_angles_alt'):  # pylint: disable=line-too-long
-      if field in batch:
-        del batch[field]
-    return batch
-
-  def batch_with_coords(batch):
-    return batch
-
   # training loop
   for it in range(global_step, args.num_batches):
     _step(train_data, it, writer, stage='train')
@@ -432,15 +422,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     if (
         args.tuning_data and args.tuning_every > 0 and (it + 1) % args.tuning_every == 0
     ):
-      _step(
-          tuning_data,
-          it,
-          writer,
-          stage='tuning',
-          batch_callback=(
-              batch_with_coords if args.tuning_with_coords else batch_seq_only
-          )
-      )
+      _step(tuning_data, it, writer, stage='tuning')
 
     if (
         args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
@@ -553,9 +535,6 @@ def add_arguments(parser):  # pylint: disable=redefined-outer-name
       type=str,
       default=None,
       help='sample tuning data by weights.'
-  )
-  parser.add_argument(
-      '--tuning_with_coords', action='store_true', help='use `coord` when tuning.'
   )
   parser.add_argument(
       '--min_protein_len',
