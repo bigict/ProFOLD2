@@ -1829,16 +1829,18 @@ class SinkhornFunction(torch.autograd.Function):
     return g, None, None
 
 
-def differentiable_smith_waterman(S, mask=None, **kwargs):
+def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   """
   S: [B, Lq, Lr] substitution scores.
   """
   *B, Lq, Lr = S.shape
   dtype = S.dtype
   S = S.to(default(kwargs.get('dtype'), S.dtype))
+  if exists(penalty):
+    penalty = penalty.to(S.dtype)
 
-  go = kwargs['gap_open']
-  ge = kwargs['gap_extend']
+  log_gap_open = kwargs['gap_open']
+  log_gap_ext = kwargs['gap_extend']
 
   q_unmatched = kwargs.get('q_unmatched', 0)
   r_unmatched = kwargs.get('r_unmatched', 0)
@@ -1890,11 +1892,21 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   # --- sequential DP (correct intra-row dependency for I / D) ---
   for u, j, z in _wavefront(Lq, Lr, Z, S.device):
     s = S[..., u - 1, j - 1]
+
+    if exists(penalty):
+      go_r = F.softplus(penalty[..., None, j - 1, 0] + log_gap_open)
+      ge_r = F.softplus(penalty[..., None, j - 1, 1] + log_gap_ext)
+    else:
+      go_r = F.softplus(log_gap_open)
+      ge_r = F.softplus(log_gap_ext)
+    go_q = F.softplus(log_gap_open)
+    ge_q = F.softplus(log_gap_ext)
+
     M[..., u, j] = _smax(
         M[..., u - 1, j - 1], I[..., u - 1, j - 1], D[..., u - 1, j - 1], z
     ) + s
-    I[..., u, j] = _smax(M[..., u, j - 1] - go, I[..., u, j - 1] - ge, z)
-    D[..., u, j] = _smax(M[..., u - 1, j] - go, D[..., u - 1, j] - ge, z)
+    I[..., u, j] = _smax(M[..., u, j - 1] - go_r, I[..., u, j - 1] - ge_r, z)
+    D[..., u, j] = _smax(M[..., u - 1, j] - go_q, D[..., u - 1, j] - ge_q, z)
 
   del D, I
 
@@ -1915,8 +1927,11 @@ def differentiable_smith_waterman(S, mask=None, **kwargs):
   # A = S.new_empty((*B, Lq + 1, Lr + 1))
   A = M.new_zeros((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau
-  A[..., Lq, :Lr] = r_unmatched               # ref column left unmatched
-  A[..., :Lq, Lr] = q_unmatched               # query row left unmatched
+  if exists(penalty):
+    A[..., Lq, :Lr] = F.softplus(penalty[..., None, :, 2] + r_unmatched)
+  else:
+    A[..., Lq, :Lr] = F.softplus(r_unmatched) # ref column left unmatched
+  A[..., :Lq, Lr] = F.softplus(q_unmatched)   # query row left unmatched
   A[..., Lq, Lr] = 0.0
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
   A = A.clamp(min=neg, max=math.log(-neg))    # safe exp

@@ -510,17 +510,15 @@ class DSWHead(nn.Module):
             attn_dropout=profile_attn_dropout,
             ff_dropout=profile_ff_dropout,
         )
-        self.profile = nn.Sequential(
-            nn.LayerNorm(dim_single), nn.Linear(dim_single, num_class)
-        )
+        self.process = nn.Sequential(nn.LayerNorm(dim_single))
     else:
         self.preprocess = None
-        self.profile = nn.Sequential(
-            nn.Linear(dim_single, dim_single),
-            nn.GELU(),
-            nn.LayerNorm(dim_single),
-            nn.Linear(dim_single, num_class)
+        self.process = nn.Sequential(
+            nn.Linear(dim_single, dim_single), nn.GELU(), nn.LayerNorm(dim_single)
         )
+    self.profile = nn.Linear(dim_single, num_class, bias=False)
+    self.penalty = nn.Linear(dim_single, 3, bias=False)
+    commons.init_linear_(self.penalty)
 
     # Biologically grounded: BLOSUM62 ranges from -4 to +11, so [-10, 10] is reasonable
     self.profile_cap = profile_cap
@@ -530,17 +528,9 @@ class DSWHead(nn.Module):
 
     self.shard_size = env('profold2_dsw_shard_size', defval=768)
 
-  @property
-  def gap_open(self):
-    return F.softplus(self.log_gap_open)
-
-  @property
-  def gap_extend(self):
-    return F.softplus(self.log_gap_ext)
-
-  def align(self, profile, msa, mask, color, batch, return_P=True):
+  def align(self, profile, penalty, msa, mask, color, batch, return_P=True):
     def _dsw_run(msa, mask, color):
-      def _dsw_ckpt(profile, msa, mask, color):
+      def _dsw_ckpt(profile, penalty, msa, mask, color):
         num_class = profile.shape[-1]
         msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
         score, P = functional.differentiable_smith_waterman(
@@ -548,8 +538,9 @@ class DSWHead(nn.Module):
             mask = mask[..., :, None] * batch['mask'][..., None, None, :] * (
                 color[..., :, None] == batch['seq_color'][..., None, None, :]
             ),
-            gap_open=self.gap_open,
-            gap_extend=self.gap_extend,
+            penalty=penalty,
+            gap_open=self.log_gap_open,
+            gap_extend=self.log_gap_ext,
             q_unmatched=self.q_unmatched,
             r_unmatched=self.r_unmatched,
             temperature=self.temperature,
@@ -565,8 +556,10 @@ class DSWHead(nn.Module):
         return msa, score, P
 
       if torch.is_grad_enabled():
-        return checkpoint(_dsw_ckpt, profile, msa, mask, color, use_reentrant=True)
-      return _dsw_ckpt(profile, msa, mask, color)
+        return checkpoint(
+            _dsw_ckpt, profile, penalty, msa, mask, color, use_reentrant=True
+        )
+      return _dsw_ckpt(profile, penalty, msa, mask, color)
 
     def _dsw_cat(msa):
       msa, score, P = zip(*msa)
@@ -584,19 +577,18 @@ class DSWHead(nn.Module):
 
   def forward(self, headers, representations, batch):
     """Builds DSWHead module."""
+    feat = representations['single']
     if exists(self.preprocess):
-      profile = self.profile(
-          rearrange(
-              self.preprocess(
-                  rearrange(representations['single'], '... i d -> ... () i d'),
-                  z=representations['pair'],
-                  mask=rearrange(batch['mask'], '... i -> ... () i'),
-                  z_mask=batch['mask'][..., :, None] * batch['mask'][..., None, :],
-              ), '... m i d -> ... (m i) d'
-          )
+      feat = rearrange(
+          self.preprocess(
+              rearrange(representations['single'], '... i d -> ... () i d'),
+              z=representations['pair'],
+              mask=rearrange(batch['mask'], '... i -> ... () i'),
+              z_mask=batch['mask'][..., :, None] * batch['mask'][..., None, :],
+          ), '... m i d -> ... (m i) d'
       )
-    else:
-      profile = self.profile(representations['single'])
+    feat = self.process(feat)
+    profile, penalty = self.profile(feat), self.penalty(feat)
     if exists(self.profile_cap) and self.profile_cap > 0:
       profile = self.profile_cap * (profile / self.profile_cap).tanh()
 
@@ -613,8 +605,12 @@ class DSWHead(nn.Module):
 
     return_P = batch.get('compute_loss', self.training)
     return_P = return_P or env('profold2_dsw_return_P', defval=return_P)
-    msa, score, P = self.align(profile, msa, mask, color, batch, return_P=return_P)
-    return dict(msa=msa, score=score, P=P, aligner=self, profile=profile)
+    msa, score, P = self.align(
+        profile, penalty, msa, mask, color, batch, return_P=return_P
+    )
+    return dict(
+        msa=msa, score=score, P=P, aligner=self, profile=profile, penalty=penalty
+    )
 
   def overlap(self, P, msa_p, mask_p=None):
     if exists(mask_p):
@@ -1832,9 +1828,13 @@ class FitnessHead(nn.Module):
         )
         variant_mask = batch['mask'][..., None, :]
       variant, _, P = headers['dsw']['aligner'].align(
-        headers['dsw']['profile'], msa, mask, color, batch, return_P=env(
-            'profold2_fitness_is_dsw_return_P', defval=False
-        )
+          headers['dsw']['profile'],
+          headers['dsw']['penalty'],
+          msa,
+          mask,
+          color,
+          batch,
+          return_P=env('profold2_fitness_is_dsw_return_P', defval=False),
       )
       variant_mask = torch.ones_like(variant_mask)
       is_dsw = True
