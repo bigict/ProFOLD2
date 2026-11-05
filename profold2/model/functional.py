@@ -1866,7 +1866,8 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   def _smax(*xs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
-    stacked = stacked.clamp(min=neg, max=-neg)
+    # stacked = stacked.clamp(min=neg, max=-neg)
+    stacked = -neg * (stacked / -neg).tanh()
     maxv = stacked.amax(dim=0)                       # [B]
     return maxv + _lse((stacked - maxv[None, ...]).clamp(min=neg), dim=0)
 
@@ -1932,8 +1933,8 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   else:
     A[..., Lq, :Lr] = F.softplus(r_unmatched) # ref column left unmatched
   A[..., :Lq, Lr] = F.softplus(q_unmatched)   # query row left unmatched
-  A[..., Lq, Lr] = 0.0
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
+  A[..., Lq, Lr] = 0.0
   A = A.clamp(min=neg, max=math.log(-neg))    # safe exp
   P = torch.exp(A)
 

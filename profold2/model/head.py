@@ -659,6 +659,7 @@ class DSWHead(nn.Module):
             ) * mask_p.any(dim=-2, keepdim=True),
         ), dim=-2
       )
+      mask_p[..., -1, -1] = 0  # meaningless
 
       errors = probability_kl_diversity(P, msa_p, mode='reverse')
       avg_align_error = functional.masked_mean(
