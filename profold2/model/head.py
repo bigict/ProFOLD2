@@ -589,8 +589,7 @@ class DSWHead(nn.Module):
       )
     feat = self.process(feat)
     profile, penalty = self.profile(feat), self.penalty(feat)
-    if exists(self.profile_cap) and self.profile_cap > 0:
-      profile = self.profile_cap * (profile / self.profile_cap).tanh()
+    profile = functional.softcap_tanh(profile, self.profile_cap)
 
     # pseudo msa if not exists
     if 'raw_msa' in batch and 'raw_msa_mask' in batch:
