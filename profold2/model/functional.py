@@ -1829,6 +1829,13 @@ class SinkhornFunction(torch.autograd.Function):
     return g, None, None
 
 
+def softcap_tanh(x: torch.Tensor, cap: Optional[float] = None) -> torch.Tensor: 
+    if exists(cap):
+        assert cap > 0
+        return cap * (x / cap).tanh()
+    return x
+
+
 def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   """
   S: [B, Lq, Lr] substitution scores.
@@ -1867,7 +1874,7 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
     """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
     stacked = torch.stack(xs, dim=0)                 # [K, B]
     # stacked = stacked.clamp(min=neg, max=-neg)
-    stacked = -neg * (stacked / -neg).tanh()
+    stacked = softcap_tanh(stacked, -neg)
     maxv = stacked.amax(dim=0)                       # [B]
     return maxv + _lse((stacked - maxv[None, ...]).clamp(min=neg), dim=0)
 
@@ -1917,7 +1924,7 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   # Padded cells are already ~NEG (match score added AFTER the aggregate),
   # so no post-hoc M mask and no downstream masks are needed.
   # M = M.clamp(min=neg, max=-neg)
-  M = -neg * (M / -neg).tanh()
+  M = softcap_tanh(M, -neg)
 
   maxv = M.amax(dim=(-1, -2))
   score = maxv + _lse(M - maxv[..., None, None], dim=(-1, -2))  # [B]
