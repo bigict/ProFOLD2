@@ -1255,7 +1255,7 @@ class RelativePositionEmbedding(nn.Module):
 
     if exists(self.s_max):
       self.fusion = GatedFusion(
-          self.r_max * 2 + self.s_max * 2 + 5, dim, init_gate_value=-4.
+          self.r_max * 2 + self.s_max * 2 + 6, dim, init_gate_value=-4.
       )
     self.embedding = nn.Embedding(self.r_max * 2 + 1, dim)
 
@@ -1285,6 +1285,7 @@ class RelativePositionEmbedding(nn.Module):
         bij_seq_color = (seq_color[..., :, None] == seq_color_j[..., None, :])
         bij_seq_entity = (seq_entity[..., :, None] == seq_entity_j[..., None, :])
         # FIX: to be compitable with monomer.
+        #      add bij_seq_color to feats.
         dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max)
         # dij_seq_index = torch.where(bij_seq_color, dij_seq_index, 2 * self.r_max + 1)
 
@@ -1311,7 +1312,12 @@ class RelativePositionEmbedding(nn.Module):
             2 * (self.s_max + 1)
         )
         feats = torch.cat(
-            [dij_token_index, bij_seq_entity[..., None], dij_seq_sym], dim=-1
+            [
+                dij_token_index,
+                bij_seq_color[..., None],
+                bij_seq_entity[..., None],
+                dij_seq_sym,
+            ], dim=-1
         ).float()
 
         return self.fusion(self.embedding(dij_seq_index), feats)
