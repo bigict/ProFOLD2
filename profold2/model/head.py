@@ -478,6 +478,8 @@ class DSWHead(nn.Module):
       gap_ext=0.1,
       tau=2.0,
       sinkhorn_iters=5,
+      query_kernel_size=0,
+      query_dim_hidden=None,
       profile_depth=0,
       profile_heads=6,
       profile_dim_head=32,
@@ -517,6 +519,40 @@ class DSWHead(nn.Module):
             nn.Linear(dim_single, dim_single), nn.GELU(), nn.LayerNorm(dim_single)
         )
     self.profile = nn.Linear(dim_single, num_class, bias=False)
+    if query_kernel_size > 0:
+        class QueryContextEncoder(nn.Module):
+          def __init__(self, num_class, dim_hidden=None, kernel_size=3):
+            super().__init__()
+
+            assert kernel_size % 2 == 1 and kernel_size > 0
+            padding = (kernel_size - 1) // 2
+
+            dim_hidden = default(dim_hidden, num_class)
+            self.conv1 = nn.Conv1d(
+                num_class, dim_hidden, kernel_size=kernel_size, padding=padding
+            )
+            self.conv2 = nn.Conv1d(
+                dim_hidden, num_class, kernel_size=kernel_size, padding=padding
+            )
+            self.norm = nn.LayerNorm(num_class)
+
+          def forward(self, x):
+            b = x.shape[:-2]
+
+            x = rearrange(x, '... i d -> ... d i')
+            x = x.reshape(-1, *x.shape[-2:])
+            x = F.gelu(self.conv1(x))
+            x = F.gelu(self.conv2(x))
+            x = x.reshape(*b, *x.shape[-2:])
+            x = rearrange(x, '... d i -> ... i d')
+
+            return x
+
+        self.query = QueryContextEncoder(
+            num_class, dim_hidden=query_dim_hidden, kernel_size=query_kernel_size
+        )
+    else:
+        self.query = nn.Identity()
     self.penalty = nn.Linear(dim_single, 3, bias=False)
     commons.init_linear_(self.penalty)
 
@@ -534,7 +570,7 @@ class DSWHead(nn.Module):
         num_class = profile.shape[-1]
         msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
         score, P = functional.differentiable_smith_waterman(
-            torch.einsum('... m u d,... j d -> ... m u j', msa, profile),
+            torch.einsum('... m u d,... j d -> ... m u j', self.query(msa), profile),
             mask = mask[..., :, None] * batch['mask'][..., None, None, :] * (
                 color[..., :, None] == batch['seq_color'][..., None, None, :]
             ),
@@ -658,7 +694,7 @@ class DSWHead(nn.Module):
             ) * mask_p.any(dim=-2, keepdim=True),
         ), dim=-2
       )
-      mask_p[..., -1, -1] = 0  # meaningless
+      mask_p[..., -1, -1] = env('profold2_dsw_corner_mask', defval=False)  # meaningless?
 
       errors = probability_kl_diversity(P, msa_p, mode='reverse')
       avg_align_error = functional.masked_mean(
@@ -1478,9 +1514,10 @@ class MetricDictHead(nn.Module):
         assert 'msa' in headers['dsw']
         msa = headers['dsw']['msa']
         seq = F.one_hot(batch['seq'].long(), msa.shape[-1]).float()
+        mask = batch['mask']
         eps = 1e-8
 
-        obs = torch.einsum('... m i a,... i c -> a c', msa, seq)
+        obs = torch.einsum('... m i a,... i c,... i -> a c', msa, seq, mask)
         obs = obs[
             residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1,
             residue_constants.prot_from_idx:residue_constants.prot_to_idx + 1
