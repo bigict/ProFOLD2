@@ -220,17 +220,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       conditional_pos=args.model_conditional_pos,
       recycling_frames=args.model_recycling_frames,
       recycling_pos=args.model_recycling_pos,
+      params_requires_grad=args.model_params_requires_grad,
       headers=headers
   )
   ####
   # HACK
-  if exists(args.model_params_requires_grad):
-    params_requires_grad_pattern = re.compile(args.model_params_requires_grad)
-    for name, param in model.named_parameters():
-      if not params_requires_grad_pattern.match(name):
-        param.requires_grad = False
-      else:
-        logging.info('params_requires_grad: name=%s', name)
   if exists(args.model_params_requires_hook):
     # torch.set_printoptions(profile='full')
     params_requires_hook = re.compile(args.model_params_requires_hook)
