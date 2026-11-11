@@ -1966,7 +1966,7 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
     mask = torch.cat((mask, mask.new_ones((*B,  1, Lr + 1))), dim=-2)
     A = A.masked_fill(~mask, neg)
 
-  return score, A.exp()
+  return score, A
 
 
 def soft_align_query(A, P):
