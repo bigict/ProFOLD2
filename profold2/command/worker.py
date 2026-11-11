@@ -131,8 +131,18 @@ class WorkerModel(object):
       _load_state_dict_pre_hook = functools.partial(_load_state_dict_pre_hook, model)
     return register_hook(_load_state_dict_pre_hook)
 
-  def wrap(self, **kwargs):
+  def wrap(self, params_requires_grad=None, **kwargs):
     model = AlphaFold2(**kwargs)
+
+    # NOTE: must freeze before DistributedDataParallel. The Reducer captures
+    # requires_grad params at construction and never unregisters their hooks,
+    # so freezing afterwards leaves buckets that can never complete.
+    if exists(params_requires_grad):
+      pattern = re.compile(params_requires_grad)
+      for name, param in model.named_parameters():
+        param.requires_grad = bool(pattern.match(name))
+        if param.requires_grad:
+          logging.info('params_requires_grad: name=%s', name)
 
     if self.xpu.is_available():
       model.to(self.xpu.device)
