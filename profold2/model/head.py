@@ -693,8 +693,8 @@ class DSWHead(nn.Module):
                 (*mask_p.shape[:-2], 1, mask_p.shape[-1])
             ) * mask_p.any(dim=-2, keepdim=True),
         ), dim=-2
-      )
-      mask_p[..., -1, -1] = env('profold2_dsw_corner_mask', defval=False)  # meaningless?
+      ).float()
+      mask_p[..., -1, -1] = env('profold2_dsw_corner_mask', defval=1.0)
 
       errors = probability_kl_diversity(P, msa_p, mode='reverse')
       avg_align_error = functional.masked_mean(

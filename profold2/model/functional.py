@@ -1,11 +1,11 @@
 import collections
 import functools
-import math
 from typing import Optional, Union
 
 import numpy as np
 import torch
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
@@ -1767,65 +1767,63 @@ class SinkhornFunction(torch.autograd.Function):
     * each REAL column (cols 0..Lr-1, over all rows incl. dummy row) sums to 1
     * each REAL row    (rows 0..Lq-1, over all cols incl. dummy col) sums to 1
     * dummy row / dummy col stay free (unmatched slack)
-  forward stores only P0; backward replays forward per reverse step.
+    * log-space
+  forward stores only A0; backward replays forward per reverse step.
   """
 
   @staticmethod
-  def forward(ctx, P0, iters, eps):
-    *B, Nr, Nc = P0.shape
+  def forward(ctx, A0, iters, eps):
+    *B, Nr, Nc = A0.shape
     Lq, Lr = Nr - 1, Nc - 1
-    P = P0
+    A = A0
     with torch.no_grad():
       for _ in range(iters):
-        r = P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
-        P = torch.cat([P[..., :Lq, :] / r, P[..., Lq:, :]], dim=-2)   # row step
-        s = P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
-        P = torch.cat([P[..., :, :Lr] / s, P[..., :, Lr:]], dim=-1)   # col step
-    ctx.save_for_backward(P0)
+        r = A[..., :Lq, :].logsumexp(dim=-1, keepdim=True)
+        A = torch.cat([A[..., :Lq, :] - r, A[..., Lq:, :]], dim=-2)   # row step
+        s = A[..., :, :Lr].logsumexp(dim=-2, keepdim=True)
+        A = torch.cat([A[..., :, :Lr] - s, A[..., :, Lr:]], dim=-1)   # col step
+    ctx.save_for_backward(A0)
     ctx.dims = (Lq, Lr)
     ctx.iters = iters
     ctx.eps = eps
-    return P
+    return A
 
   @staticmethod
   def backward(ctx, grad_output):
-    P0, = ctx.saved_tensors
+    A0, = ctx.saved_tensors
     Lq, Lr = ctx.dims
     iters, eps = ctx.iters, ctx.eps
 
     def fwd_step(X, k):
       if k % 2 == 0:                                     # row step
-        r = X[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
-        return torch.cat([X[..., :Lq, :] / r, X[..., Lq:, :]], dim=-2)
+        r = X[..., :Lq, :].logsumexp(dim=-1, keepdim=True)
+        return torch.cat([X[..., :Lq, :] - r, X[..., Lq:, :]], dim=-2)
       else:                                              # column step
-        s = X[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
-        return torch.cat([X[..., :, :Lr] / s, X[..., :, Lr:]], dim=-1)
+        s = X[..., :, :Lr].logsumexp(dim=-2, keepdim=True)
+        return torch.cat([X[..., :, :Lr] - s, X[..., :, Lr:]], dim=-1)
 
     def col_adj(g, X):                                   # adjoint of column step
-      s = X[..., :, :Lr].sum(dim=-2, keepdim=True) + eps
-      Y = X[..., :, :Lr] / s
-      c = (g[..., :, :Lr] * Y).sum(dim=-2, keepdim=True)
+      p = X[..., :, :Lr].exp()
+      s = g[..., :, :Lr].sum(dim=-2, keepdim=True)
       out = g.clone()
-      out[..., :, :Lr] = (g[..., :, :Lr] - c) / s
+      out[..., :, :Lr] = g[..., :, :Lr] - p * s
       return out
 
     def row_adj(g, X):                                   # adjoint of row step
-      r = X[..., :Lq, :].sum(dim=-1, keepdim=True) + eps
-      Y = X[..., :Lq, :] / r
-      d = (g[..., :Lq, :] * Y).sum(dim=-1, keepdim=True)
+      p = X[..., :Lq, :].exp()
+      r = g[..., :Lq, :].sum(dim=-1, keepdim=True)
       out = g.clone()
-      out[..., :Lq, :] = (g[..., :Lq, :] - d) / r
+      out[..., :Lq, :] = g[..., :Lq, :] - p * r
       return out
 
     g = grad_output
     T = 2 * iters
     with torch.no_grad():
       for t in range(T - 1, -1, -1):                     # reverse sweep
-        X_t = P0                                         # replay forward to step t
-        for k in range(t):
+        X_t = A0                                         # replay forward to step t + 1
+        for k in range(t + 1):
           X_t = fwd_step(X_t, k)
         g = row_adj(g, X_t) if t % 2 == 0 else col_adj(g, X_t)
-        g = g.clamp(min=-1.0/eps, max=1.0/eps)           # FIX: when r/s is very small.
     return g, None, None
 
 
@@ -1942,33 +1940,33 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   A[..., :Lq, Lr] = F.softplus(q_unmatched)   # query row left unmatched
   # A[..., Lq, Lr] = 0.0
   A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
-  A = A.clamp(min=neg, max=math.log(-neg))    # safe exp
-  P = torch.exp(A)
 
-  del A, M
+  del M
 
   # A few Sinkhorn rounds push P toward a soft doubly-stochastic matching.
   if kwargs.get('sinkhorn_custom_bwd', True):
-    P = SinkhornFunction.apply(P, sinkhorn_iters, eps)
+    A = SinkhornFunction.apply(A, sinkhorn_iters, eps)
   else:
-    O = P.new_ones((*B, 1, 1))
-    for _ in range(sinkhorn_iters):
+    def sinkhorn_step(X, O):
       # ROW step: each REAL row (real cols + dummy col) sums to 1
-      # P[..., :Lq, :] = P[..., :Lq, :] / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps)
-      P = P * torch.cat(
-          (1.0 / (P[..., :Lq, :].sum(dim=-1, keepdim=True) + eps), O), dim=-2
+      X = X - torch.cat(
+          (torch.logsumexp(X[..., :Lq, :], dim=-1, keepdim=True), O), dim=-2
       )
       # COLUMN step: each REAL column (real rows + dummy row) sums to 1
-      # P[..., :, :Lr] = P[..., :, :Lr] / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps)
-      P = P * torch.cat(
-          (1.0 / (P[..., :, :Lr].sum(dim=-2, keepdim=True) + eps), O), dim=-1
+      X = X - torch.cat(
+          (torch.logsumexp(X[..., :, :Lr], dim=-2, keepdim=True), O), dim=-1
       )
-  if exists(mask):
-    mask = torch.cat((mask, P.new_ones((*B, Lq,      1))), dim=-1)
-    mask = torch.cat((mask, P.new_ones((*B,  1, Lr + 1))), dim=-2)
-    P = P * mask
+      return X
 
-  return score, P
+    O = A.new_zeros((*B, 1, 1))
+    for _ in range(sinkhorn_iters):
+        A = checkpoint(sinkhorn_step, A, O, use_reentrant=False)
+  if exists(mask):
+    mask = torch.cat((mask, mask.new_ones((*B, Lq,      1))), dim=-1)
+    mask = torch.cat((mask, mask.new_ones((*B,  1, Lr + 1))), dim=-2)
+    A = A.masked_fill(~mask, neg)
+
+  return score, A.exp()
 
 
 def soft_align_query(A, P):
