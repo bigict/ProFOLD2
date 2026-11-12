@@ -14,7 +14,7 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 from profold2.model import accelerator, functional, kernel, profiler
-from profold2.utils import default, env, exists, version_cmp
+from profold2.utils import default, env, exists
 
 logger = logging.getLogger(__name__)
 
@@ -1568,17 +1568,16 @@ def checkpoint_sequential_nargs(functions, segments, *inputs, **kwargs):
   for start in range(0, segment_size * (segments - 1), segment_size):
     end = start + segment_size - 1
     if torch.is_grad_enabled():
-      if version_cmp(torch.__version__, '1.11.0') >= 0:
-        inputs = checkpoint(
-            run_function(start, end, functions),
-            *inputs,
-            preserve_rng_state=preserve,
-            use_reentrant=True
-        )  # compatible with torch 2.4+
-      else:
-        inputs = checkpoint(
-            run_function(start, end, functions), *inputs, preserve_rng_state=preserve
-        )
+      # NOTE: must stay non-reentrant. Blocks can receive grad-requiring tensors
+      # through **kwargs, which run_function closes over instead of passing as
+      # checkpoint inputs. Reentrant checkpoint detaches only explicit inputs,
+      # so its recompute would walk and free the live upstream graph.
+      inputs = checkpoint(
+          run_function(start, end, functions),
+          *inputs,
+          preserve_rng_state=preserve,
+          use_reentrant=False
+      )
     else:
       inputs = run_function(start, end, functions)(*inputs)
   return run_function(end + 1, len(functions) - 1, functions, is_last=True)(*inputs)
