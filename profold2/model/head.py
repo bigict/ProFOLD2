@@ -559,7 +559,7 @@ class DSWHead(nn.Module):
       def _dsw_ckpt(profile, penalty, msa, mask, color):
         num_class = profile.shape[-1]
         msa = F.one_hot(msa.long(), num_class).float() * mask[..., None]
-        score, P = functional.differentiable_smith_waterman(
+        score, logP = functional.differentiable_smith_waterman(
             torch.einsum('... m u d,... j d -> ... m u j', self.query(msa), profile),
             mask = mask[..., :, None] * batch['mask'][..., None, None, :] * (
                 color[..., :, None] == batch['seq_color'][..., None, None, :]
@@ -576,10 +576,10 @@ class DSWHead(nn.Module):
             neg=self.neg,
             eps=self.eps,
         )
-        msa = functional.soft_align_query(msa, P[..., :-1, :-1].exp())
+        msa = functional.soft_align_query(msa, logP[..., :-1, :-1].exp())
         if not return_P:
-          P = None
-        return msa, score, P
+          logP = None
+        return msa, score, logP
 
       if torch.is_grad_enabled():
         return checkpoint(
@@ -588,11 +588,11 @@ class DSWHead(nn.Module):
       return _dsw_ckpt(profile, penalty, msa, mask, color)
 
     def _dsw_cat(msa):
-      msa, score, P = zip(*msa)
+      msa, score, logP = zip(*msa)
       msa = torch.cat(msa, dim=-3)
       score = torch.cat(score, dim=-1)
-      P = torch.cat(P, dim=-3) if return_P else None
-      return msa, score, P
+      logP = torch.cat(logP, dim=-3) if return_P else None
+      return msa, score, logP
 
     return functional.sharded_apply(
         _dsw_run, [msa, mask, color],
@@ -1857,7 +1857,7 @@ class FitnessHead(nn.Module):
             batch['seq_color'][..., None, :],
         )
         variant_mask = batch['mask'][..., None, :]
-      variant, _, P = headers['dsw']['aligner'].align(
+      variant, _, logP = headers['dsw']['aligner'].align(
           headers['dsw']['profile'],
           headers['dsw']['penalty'],
           msa,
@@ -1892,7 +1892,7 @@ class FitnessHead(nn.Module):
 
     r = dict(logits=logits, is_dsw=is_dsw)
     if is_dsw and env('profold2_fitness_is_dsw_check', defval=True):
-      r.update(variant=variant, P=P, aligner=headers['dsw']['aligner'])
+      r.update(variant=variant, logP=logP, aligner=headers['dsw']['aligner'])
     if exists(self.task_gating):
       gating = F.sigmoid(self.task_gating(representations['single']))
     else:
