@@ -1960,7 +1960,10 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
 
     O = A.new_zeros((*B, 1, 1))
     for _ in range(sinkhorn_iters):
+      if torch.is_grad_enabled():
         A = checkpoint(sinkhorn_step, A, O, use_reentrant=False)
+      else:
+        A = sinkhorn_step(A, O)
   if exists(mask):
     mask = torch.cat((mask, mask.new_ones((*B, Lq,      1))), dim=-1)
     mask = torch.cat((mask, mask.new_ones((*B,  1, Lr + 1))), dim=-2)
