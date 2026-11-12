@@ -582,8 +582,10 @@ class DSWHead(nn.Module):
         return msa, score, logP
 
       if torch.is_grad_enabled():
+        # NOTE: non-reentrant — _dsw_ckpt closes over DSWHead parameters, and
+        # align() runs twice (DSWHead + FitnessHead) on the same profile/penalty.
         return checkpoint(
-            _dsw_ckpt, profile, penalty, msa, mask, color, use_reentrant=True
+            _dsw_ckpt, profile, penalty, msa, mask, color, use_reentrant=False
         )
       return _dsw_ckpt(profile, penalty, msa, mask, color)
 
