@@ -5,6 +5,7 @@ from typing import Optional, Union
 import numpy as np
 import torch
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat
 
 from profold2.common import residue_constants
@@ -1758,3 +1759,227 @@ def multi_chain_permutation_alignment(value, batch):
             angles_from_positions(batch['seq'], batch['coord'], batch['coord_mask'])
         )
   return batch
+
+
+class SinkhornFunction(torch.autograd.Function):
+  """
+  Sinkhorn normalization of the augmented matrix with O(1)-memory backward.
+    * each REAL column (cols 0..Lr-1, over all rows incl. dummy row) sums to 1
+    * each REAL row    (rows 0..Lq-1, over all cols incl. dummy col) sums to 1
+    * dummy row / dummy col stay free (unmatched slack)
+    * log-space
+  forward stores only A0; backward replays forward per reverse step.
+  """
+
+  @staticmethod
+  def forward(ctx, A0, iters, eps):
+    *B, Nr, Nc = A0.shape
+    Lq, Lr = Nr - 1, Nc - 1
+    A = A0
+    with torch.no_grad():
+      for _ in range(iters):
+        r = A[..., :Lq, :].logsumexp(dim=-1, keepdim=True)
+        A = torch.cat([A[..., :Lq, :] - r, A[..., Lq:, :]], dim=-2)   # row step
+        s = A[..., :, :Lr].logsumexp(dim=-2, keepdim=True)
+        A = torch.cat([A[..., :, :Lr] - s, A[..., :, Lr:]], dim=-1)   # col step
+    ctx.save_for_backward(A0)
+    ctx.dims = (Lq, Lr)
+    ctx.iters = iters
+    ctx.eps = eps
+    return A
+
+  @staticmethod
+  def backward(ctx, grad_output):
+    A0, = ctx.saved_tensors
+    Lq, Lr = ctx.dims
+    iters, eps = ctx.iters, ctx.eps
+
+    def fwd_step(X, k):
+      if k % 2 == 0:                                     # row step
+        r = X[..., :Lq, :].logsumexp(dim=-1, keepdim=True)
+        return torch.cat([X[..., :Lq, :] - r, X[..., Lq:, :]], dim=-2)
+      else:                                              # column step
+        s = X[..., :, :Lr].logsumexp(dim=-2, keepdim=True)
+        return torch.cat([X[..., :, :Lr] - s, X[..., :, Lr:]], dim=-1)
+
+    def col_adj(g, X):                                   # adjoint of column step
+      p = X[..., :, :Lr].exp()
+      s = g[..., :, :Lr].sum(dim=-2, keepdim=True)
+      out = g.clone()
+      out[..., :, :Lr] = g[..., :, :Lr] - p * s
+      return out
+
+    def row_adj(g, X):                                   # adjoint of row step
+      p = X[..., :Lq, :].exp()
+      r = g[..., :Lq, :].sum(dim=-1, keepdim=True)
+      out = g.clone()
+      out[..., :Lq, :] = g[..., :Lq, :] - p * r
+      return out
+
+    g = grad_output
+    T = 2 * iters
+    with torch.no_grad():
+      for t in range(T - 1, -1, -1):                     # reverse sweep
+        X_t = A0                                         # replay forward to step t + 1
+        for k in range(t + 1):
+          X_t = fwd_step(X_t, k)
+        g = row_adj(g, X_t) if t % 2 == 0 else col_adj(g, X_t)
+    return g, None, None
+
+
+def softcap_tanh(x: torch.Tensor, cap: Optional[float] = None) -> torch.Tensor: 
+    if exists(cap):
+        assert cap > 0
+        return cap * (x / cap).tanh()
+    return x
+
+
+def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
+  """
+  S: [B, Lq, Lr] substitution scores.
+  """
+  *B, Lq, Lr = S.shape
+  dtype = S.dtype
+  S = S.to(default(kwargs.get('dtype'), S.dtype))
+  if exists(penalty):
+    penalty = penalty.to(S.dtype)
+
+  log_gap_open = kwargs['gap_open']
+  log_gap_ext = kwargs['gap_extend']
+
+  q_unmatched = kwargs.get('q_unmatched', 0)
+  r_unmatched = kwargs.get('r_unmatched', 0)
+
+  tau = kwargs.get('temperature', 2.0)
+  sinkhorn_iters = kwargs.get('sinkhorn_iters', 5)
+  neg = kwargs.get('neg', torch.finfo(S.dtype).min / 4)
+  eps = kwargs.get('eps', 1e-8)
+
+  def _wavefront(Lq, Lr, z, device):
+    if kwargs.get('use_wavefront', True):
+      for k in range(2, Lq + Lr + 1):
+        u = torch.arange(max(1, k - Lr), min(Lq + 1, k), device=device)
+        yield u, k - u, repeat(z, '... -> ... n', n=u.numel())
+    else:
+      for u in range(1, Lq + 1):
+        for j in range(1, Lr + 1):
+          yield u, j, z
+
+  def _lse(t, dim):
+    return (torch.logsumexp(t.to(dtype) * tau, dim=dim) / tau).to(t.dtype)
+
+  def _smax(*xs):
+    """Stable smooth-max at sharpness T: (1/T) logsumexp(T x)."""
+    stacked = torch.stack(xs, dim=0)                 # [K, B]
+    # stacked = stacked.clamp(min=neg, max=-neg)
+    stacked = softcap_tanh(stacked, -neg)
+    maxv = stacked.amax(dim=0)                       # [B]
+    return maxv + _lse((stacked - maxv[None, ...]).clamp(min=neg), dim=0)
+
+  # DP matrices:
+  #   M = best score ending with a match/mismatch (diagonal step)
+  #   I = best score ending with a gap on the query side (ref advances)
+  #   D = best score ending with a gap on the ref side (query advances)
+  # Initialize to a large negative value (soft version of -inf).
+  M = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  I = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  D = S.new_full((*B, Lq + 1, Lr + 1), neg)
+  Z = S.new_zeros(B)
+
+  # --- validity masks for right-padded variable-length batches ---
+  if exists(mask):
+    S = S.masked_fill(~mask, neg)
+
+  # Local alignment: free start from any position -> 0.
+  M[..., 0, :] = M[..., :, 0] = 0.0
+  I[..., 0, :] = I[..., :, 0] = 0.0
+  D[..., 0, :] = D[..., :, 0] = 0.0
+
+  # --- sequential DP (correct intra-row dependency for I / D) ---
+  for u, j, z in _wavefront(Lq, Lr, Z, S.device):
+    s = S[..., u - 1, j - 1]
+
+    if exists(penalty):
+      go_r = F.softplus(penalty[..., None, j - 1, 0] + log_gap_open)
+      ge_r = F.softplus(penalty[..., None, j - 1, 1] + log_gap_ext)
+    else:
+      go_r = F.softplus(log_gap_open)
+      ge_r = F.softplus(log_gap_ext)
+    go_q = F.softplus(log_gap_open)
+    ge_q = F.softplus(log_gap_ext)
+
+    M[..., u, j] = _smax(
+        M[..., u - 1, j - 1], I[..., u - 1, j - 1], D[..., u - 1, j - 1], z
+    ) + s
+    I[..., u, j] = _smax(M[..., u, j - 1] - go_r, I[..., u, j - 1] - ge_r, z)
+    D[..., u, j] = _smax(M[..., u - 1, j] - go_q, D[..., u - 1, j] - ge_q, z)
+
+  del D, I
+
+  # Soft alignment score = soft-max over all M cells (local alignment picks
+  # the best region in a differentiable way).
+  M = M[..., 1:, 1:].to(dtype)  # [B, Lq, Lr]
+  # Padded cells are already ~NEG (match score added AFTER the aggregate),
+  # so no post-hoc M mask and no downstream masks are needed.
+  # M = M.clamp(min=neg, max=-neg)
+  M = softcap_tanh(M, -neg)
+
+  maxv = M.amax(dim=(-1, -2))
+  score = maxv + _lse(M - maxv[..., None, None], dim=(-1, -2))  # [B]
+
+  # --- Soft correspondence P with dummy (unmatched) states ---
+  # Use the normalized M table as a soft-correspondence proxy:
+  # high temperature -> uniform; low temperature -> sharp.
+  # A = S.new_empty((*B, Lq + 1, Lr + 1))
+  A = M.new_zeros((*B, Lq + 1, Lr + 1))
+  A[..., :Lq, :Lr] = M * tau
+  if exists(penalty):
+    A[..., Lq, :Lr] = F.softplus(penalty[..., None, :, 2] + r_unmatched)
+  else:
+    A[..., Lq, :Lr] = F.softplus(r_unmatched) # ref column left unmatched
+  A[..., :Lq, Lr] = F.softplus(q_unmatched)   # query row left unmatched
+  # A[..., Lq, Lr] = 0.0
+  A = A - A.amax(dim=-1, keepdim=True)        # numerical stability
+
+  del M
+
+  # A few Sinkhorn rounds push P toward a soft doubly-stochastic matching.
+  if kwargs.get('sinkhorn_custom_bwd', True):
+    A = SinkhornFunction.apply(A, sinkhorn_iters, eps)
+  else:
+    def sinkhorn_step(X, O):
+      # ROW step: each REAL row (real cols + dummy col) sums to 1
+      X = X - torch.cat(
+          (torch.logsumexp(X[..., :Lq, :], dim=-1, keepdim=True), O), dim=-2
+      )
+      # COLUMN step: each REAL column (real rows + dummy row) sums to 1
+      X = X - torch.cat(
+          (torch.logsumexp(X[..., :, :Lr], dim=-2, keepdim=True), O), dim=-1
+      )
+      return X
+
+    O = A.new_zeros((*B, 1, 1))
+    for _ in range(sinkhorn_iters):
+      if torch.is_grad_enabled():
+        A = checkpoint(sinkhorn_step, A, O, use_reentrant=False)
+      else:
+        A = sinkhorn_step(A, O)
+  if exists(mask):
+    mask = torch.cat((mask, mask.new_ones((*B, Lq,      1))), dim=-1)
+    mask = torch.cat((mask, mask.new_ones((*B,  1, Lr + 1))), dim=-2)
+    A = A.masked_fill(~mask, neg)
+
+  return score, A
+
+
+def soft_align_query(A, P):
+  """
+  Smear the raw Query amino-acid distribution onto the Reference coordinate
+  system through the soft alignment matrix P.
+
+  A     : [B, Lq, 20]  raw Query sequence (one-hot or soft distribution)
+  P     : [B, Lq, Lr]  soft alignment matrix (query -> ref)
+  returns [B, Lr, 20]  soft amino-acid distribution in Reference coordinates (A_tilde)
+  """
+  # A_tilde[j, d] = sum_u P[u, j] * A[u, d]
+  return torch.einsum('... i j,... i d -> ... j d', P, A)
