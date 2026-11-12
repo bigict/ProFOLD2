@@ -249,5 +249,7 @@ class ESMEmbedding(nn.Module):
     # Extract per-residue representations
     x = _esm_lookup(self.model, self.alphabet, batch, clips=clips)
     if torch.is_grad_enabled():
-      return checkpoint(run_function(repr_layer, return_contacts), x, batch)
+      return checkpoint(
+          run_function(repr_layer, return_contacts), x, batch, use_reentrant=False
+      )
     return run_function(repr_layer, return_contacts)(x, batch)
