@@ -28,7 +28,7 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
   features = FeatureBuilder(feats).to(wm.device())
   logging.info('feats: %s', feats)
 
-  kwargs = {}
+  kwargs = {'shuffle': False}
   if rank.is_available() and accelerator.world_size(args.nnodes) > 1:
     kwargs['num_replicas'] = accelerator.world_size(args.nnodes)
     kwargs['rank'] = rank.rank
