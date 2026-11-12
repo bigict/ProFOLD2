@@ -21,12 +21,12 @@ from Bio import PDB
 import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import WeightedRandomSampler
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import RandomSampler, SequentialSampler, WeightedRandomSampler
 from einops import repeat
 
 from profold2.common import residue_constants
 from profold2.data import cropper, padding, parsers, utils
+from profold2.data.sampler import DistributedSamplerWrapper
 from profold2.utils import default, env, exists, timing
 
 logger = logging.getLogger(__file__)
@@ -2093,16 +2093,33 @@ def load(
     kwargs['collate_fn'] = functools.partial(
         ProteinStructureDataset.collate_fn, feat_flags=feat_flags
     )
-  if 'weights' in kwargs:
-    weights = kwargs.pop('weights')
-    if weights:
-      assert len(dataset) == len(weights)
-      kwargs['sampler'] = WeightedRandomSampler(weights, num_samples=len(weights))
-      if 'shuffle' in kwargs:
-        kwargs.pop('shuffle')
-  elif 'num_replicas' in kwargs and 'rank' in kwargs:
-    num_replicas, rank = kwargs.pop('num_replicas'), kwargs.pop('rank')
-    kwargs['sampler'] = DistributedSampler(
-        dataset, num_replicas=num_replicas, rank=rank
+  # NOTE: pop every custom key up front, otherwise it leaks into DataLoader.
+  num_replicas, rank = kwargs.pop('num_replicas', None), kwargs.pop('rank', None)
+  weights, seed = kwargs.pop('weights', None), kwargs.pop('sampler_seed', 42)
+  distributed = exists(num_replicas) and exists(rank) and num_replicas > 1
+  # Seeds the non-distributed path; the wrapper re-seeds per epoch when it wraps.
+  g = torch.Generator()
+  g.manual_seed(seed)
+  if weights:
+    assert len(dataset) == len(weights)
+    sampler = WeightedRandomSampler(
+        weights, num_samples=len(weights), generator=g
     )
+  elif distributed or 'shuffle' in kwargs:
+    # NOTE: peek, do not pop. Distributed defaults to True (mirrors torch's
+    # DistributedSampler); otherwise the caller was explicit. With neither, fall
+    # through so DataLoader keeps its own default (False).
+    if kwargs.get('shuffle', True):
+      sampler = RandomSampler(dataset, generator=g)
+    else:
+      sampler = SequentialSampler(dataset)
+  else:
+    sampler = None
+  if exists(sampler):
+    if distributed:
+      sampler = DistributedSamplerWrapper(
+          sampler, num_replicas=num_replicas, rank=rank, seed=seed
+      )
+    kwargs['sampler'] = sampler
+    kwargs.pop('shuffle', None)
   return torch.utils.data.DataLoader(dataset, **kwargs)

@@ -128,6 +128,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         crop_probability=crop_probability,
         batch_size=args.batch_size,
         weights=list(weights_from_file(weights)),
+        num_replicas=accelerator.world_size(args.nnodes),
+        rank=rank.rank,
+        sampler_seed=default(args.random_seed, 42),
         shuffle=True,
         prefetch_factor=args.prefetch_factor,
         drop_last=True,
@@ -138,6 +141,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     while True:
       logging.info('epoch: %d', epoch)
 
+      # NOTE: must precede iter(): workers are rebuilt and the sampler re-read.
+      if hasattr(data_loader.sampler, 'set_epoch'):
+        data_loader.sampler.set_epoch(epoch)
       data_iter = iter(data_loader)
       for data in data_iter:
         if data_filter(data):
