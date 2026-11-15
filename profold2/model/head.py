@@ -366,7 +366,7 @@ class CoevolutionHead(nn.Module):
       loss['dij'] = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
       logger.debug('CoevolutionHead.dij.loss: %s', loss['dij'])
 
-    loss['main'] = loss['trunk'] + self.dij_guidance * loss.get('dif', 0)
+    loss['main'] = loss['trunk'] + self.dij_guidance * loss.get('dij', 0)
 
     if exists(self.loss_min) or exists(self.loss_max):
       loss['main'] = torch.clamp(loss['main'], min=self.loss_min, max=self.loss_max)
