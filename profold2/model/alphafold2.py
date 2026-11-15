@@ -351,11 +351,16 @@ class AlphaFold2(nn.Module):
           loss = module.loss(ret.headers[name], batch)
           if exists(loss):
             ret.headers[name].update(loss)
-            lossw = loss['loss'] * options.get('weight', 1.0)
+            loss = loss['loss']
+            if isinstance(loss, dict):
+              assert 'main' in loss
+              loss = loss['main']
+            assert torch.is_tensor(loss)
+            loss = loss * options.get('weight', 1.0)
             if exists(ret.loss):
-              ret.loss = commons.tensor_add(ret.loss, lossw)
+              ret.loss = commons.tensor_add(ret.loss, loss)
             else:
-              ret.loss = lossw
+              ret.loss = loss
 
     if return_recyclables:
       msa_first_row_repr, pairwise_repr = m[..., 0, :, :], representations['pair']

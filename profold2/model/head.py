@@ -332,9 +332,11 @@ class CoevolutionHead(nn.Module):
     if 'msa_mask' in batch:
       mask = mask * batch['msa_mask']  # (b m i)
 
+    loss = MetricDict()
+
     errors, w = _make_dynamic_errors(errors, batch, self.num_pivot)
-    avg_error = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-    logger.debug('CoevolutionHead.loss(%s): %s', w, avg_error)
+    loss['trunk'] = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+    logger.debug('CoevolutionHead.loss(%s): %s', w, loss['trunk'])
 
     if self.dij_guidance > 0 and 'pseudo_beta' in batch:
       positions = batch['pseudo_beta']
@@ -361,13 +363,14 @@ class CoevolutionHead(nn.Module):
       mask = torch.triu(mask, diagonal=self.dij_diagonal
                        ) + torch.tril(mask, diagonal=-self.dij_diagonal)
 
-      avg_error_dij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.debug('CoevolutionHead.dij.loss: %s', avg_error_dij)
-      avg_error = avg_error + self.dij_guidance * avg_error_dij
+      loss['dij'] = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+      logger.debug('CoevolutionHead.dij.loss: %s', loss['dij'])
+
+    loss['main'] = loss['trunk'] + self.dij_guidance * loss.get('dif', 0)
 
     if exists(self.loss_min) or exists(self.loss_max):
-      avg_error = torch.clamp(avg_error, min=self.loss_min, max=self.loss_max)
-    return dict(loss=avg_error)
+      loss['main'] = torch.clamp(loss['main'], min=self.loss_min, max=self.loss_max)
+    return dict(loss=loss)
 
 
 class DistogramHead(nn.Module):
@@ -1274,7 +1277,6 @@ class MetricDictHead(nn.Module):
             'MetricDictHead.violation.within_residue_clash: %s', within_residue_clash
         )
 
-
     return dict(loss=metrics) if metrics else None
 
 
@@ -1392,9 +1394,7 @@ class FitnessHead(nn.Module):
       wab = None
 
     def _hamiton_run(variant, variant_mask):
-      variant = (
-          F.one_hot(variant.long(), num_class) * variant_mask[..., None]
-      ).float()
+      variant = (F.one_hot(variant.long(), num_class) * variant_mask[..., None]).float()
       if exists(wab):
         hi = torch.einsum(
             '... m j t d,... i j q,q c d,d -> ... m i t c', variant, eij, wab, self.mask
@@ -1461,9 +1461,9 @@ class FitnessHead(nn.Module):
     logits, logits_ref = value['logits'], None
     gating = value.get('gating')
     num_class = self.mask.shape[0]
-    avg_error_motif = 0
 
-    avg_error_gij = 0
+    loss = MetricDict()
+
     if self.gij_guidance > 0 and 'pseudo_beta' in batch:
       positions = batch['pseudo_beta']
       mask = batch['pseudo_beta_mask']
@@ -1492,14 +1492,14 @@ class FitnessHead(nn.Module):
       if 'variant_task_mask' in batch:
         mask = mask * batch['variant_task_mask'][..., 0, :, :]
 
-      logger.debug('FitnessHead.gij.loss.targets: %s', torch.sum(targets >= 0.5, dim=-2))
+      logger.debug(
+          'FitnessHead.gij.loss.targets: %s', torch.sum(targets >= 0.5, dim=-2)
+      )
       logger.debug('FitnessHead.gij.loss.masked: %s', torch.sum(mask, dim=-2))
 
       errors = sigmoid_cross_entropy(gating, targets, gammar=self.focal_loss)
-
-      avg_error_gij = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
-      logger.debug('FitnessHead.gij.loss: %s', avg_error_gij)
-      avg_error_gij = self.gij_guidance * avg_error_gij
+      loss['gij'] = functional.masked_mean(value=errors, mask=mask, epsilon=1e-6)
+      logger.debug('FitnessHead.gij.loss: %s', loss['gij'])
 
     if 'variant' in batch:
       variant_mask = batch['variant_mask']
@@ -1527,9 +1527,8 @@ class FitnessHead(nn.Module):
                         variant_label_mask) | (~variant_label_mask)
           motif_mask = torch.all(motif_mask, dim=-1, keepdim=True) * variant_mask
           motif_mask = motif_mask[..., None]
-        avg_error_motif = functional.masked_mean(value=errors, mask=motif_mask)
-        logger.info('FitnessHead.motifs.loss: %s', avg_error_motif)
-        avg_error_motif = self.alpha * avg_error_motif
+        loss['motif'] = functional.masked_mean(value=errors, mask=motif_mask)
+        logger.info('FitnessHead.motifs.loss: %s', loss['motif'])
 
       if self.num_var_as_ref > 0:
         # minimum of variants in batch
@@ -1626,11 +1625,15 @@ class FitnessHead(nn.Module):
           alpha=self.pos_weight,
           gammar=self.focal_loss
       )
-    avg_error_fitness = functional.masked_mean(
+    loss['rank'] = functional.masked_mean(
         value=errors, mask=variant_label_mask * self.task_weight
     )
-    logger.debug('FitnessHead.loss: %s', avg_error_fitness)
-    return dict(loss=avg_error_gij + avg_error_motif + avg_error_fitness)
+    logger.debug('FitnessHead.loss: %s', loss['rank'])
+    loss['main'] = (
+        self.gij_guidance * loss.get('gij', 0) + self.alpha * loss.get('motif', 0) +
+        loss['rank']
+    )
+    return dict(loss=loss)
 
 
 class SequenceProfileHead(nn.Module):
