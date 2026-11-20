@@ -10,7 +10,7 @@ from einops import rearrange
 
 from profold2.common import residue_constants
 from profold2.model import accelerator, commons, functional
-from profold2.utils import exists
+from profold2.utils import env, exists
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,11 @@ class StructureModule(nn.Module):
     self.single_repr_dim = nn.Sequential(nn.Linear(dim_single, dim_single))
 
     self.to_angles = AngleNet(dim_single)
+
+    # NOTE: compile the bound method, not the module, so state_dict keys stay
+    # free of the OptimizedModule `_orig_mod.` prefix (checkpoint compatible).
+    if env('profold2_compile_ipa', defval=0, dtype=int):
+      self.ipa_block.forward = torch.compile(self.ipa_block.forward, dynamic=True)
 
   def forward(self, representations, batch):
     b, n, device = batch['seq'].shape[:-1], batch['seq'].shape[-1], batch['seq'].device
