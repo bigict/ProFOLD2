@@ -1805,6 +1805,10 @@ class HeaderBuilder:
     def gen():
       for name, args, options in config:
         h = HeaderBuilder._headers[name](dim=dim, **args)
+        # NOTE: compile the bound method, not the module, so state_dict keys
+        # stay free of the OptimizedModule `_orig_mod.` prefix.
+        if env(f'profold2_{name}_compile', defval=False, dtype=bool):
+          h.forward = torch.compile(h.forward, dynamic=True)
         if exists(parent) and isinstance(parent, nn.Module):
           parent.add_module(f'head_{name}', h)
         yield name, h, options
