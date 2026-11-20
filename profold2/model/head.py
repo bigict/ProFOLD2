@@ -1805,6 +1805,16 @@ class HeaderBuilder:
     def gen():
       for name, args, options in config:
         h = HeaderBuilder._headers[name](dim=dim, **args)
+        # NOTE: compile the bound method, not the module, so state_dict keys
+        # stay free of the OptimizedModule `_orig_mod.` prefix.
+        if env(f'profold2_{name}_compile', defval=False, dtype=bool):
+          # DDPOptimizer hijacks any compile inside DDP.forward and splits
+          # the graph at bucket boundaries; a split inside IPA exposes float
+          # constants as submodule outputs, which inductor rejects (torch
+          # 2.9). Heads are submodule compiles, not whole-DDP compiles.
+          from torch import _dynamo  # pylint: disable=import-outside-toplevel
+          _dynamo.config.optimize_ddp = False
+          h.forward = torch.compile(h.forward, dynamic=True)
         if exists(parent) and isinstance(parent, nn.Module):
           parent.add_module(f'head_{name}', h)
         yield name, h, options
