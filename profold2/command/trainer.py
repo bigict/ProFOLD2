@@ -416,75 +416,80 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
     scheduler.step()
 
   # training loop
-  for it in range(global_step, args.num_batches):
-    _step(train_data, it, writer, stage='train')
+  try:
+    for it in range(global_step, args.num_batches):
+      _step(train_data, it, writer, stage='train')
 
-    if (
-        args.tuning_data and args.tuning_every > 0 and (it + 1) % args.tuning_every == 0
-    ):
-      _step(tuning_data, it, writer, stage='tuning')
+      if (
+          args.tuning_data and args.tuning_every > 0 and
+          (it + 1) % args.tuning_every == 0
+      ):
+        _step(tuning_data, it, writer, stage='tuning')
 
+      if (
+          args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
+          wm.is_master()
+      ):
+        # Save a checkpoint every N iters.
+        checkpoint_manager.save(it)
+
+        # Add embeddings
+        writer_add_embeddings(writer, model, it)
+
+      if (
+          args.eval_data and wm.is_master() and args.eval_every > 0 and
+          (it + 1) % args.eval_every == 0
+      ):
+
+        model.eval()
+        with torch.no_grad():
+          # eval loss
+          n, eval_loss = 0, MetricDict()
+          for jt, batch in enumerate(iter(eval_loader)):
+            seq = batch['seq']
+            logging.debug(
+                '%d %d %d seq.shape: %s, pid: %s, clips: %s', 0, it, jt, seq.shape,
+                ','.join(batch['pid']), batch.get('clip')
+            )
+            batch = features(batch, is_training=True)
+            with status(batch, compute_loss=True):
+              r = ReturnValues(
+                  **model(
+                      batch=batch,
+                      num_recycle=args.model_recycles,
+                      shard_size=args.model_shard_size
+                  )
+              )
+            for h, v in r.headers.items():
+              if 'loss' in v:
+                eval_loss += MetricDict({h: v['loss']})
+            n += 1
+          for k, v in eval_loss.items():
+            v /= n
+            writer_add_scalars(writer, v, it, prefix=f'Loss/eval@{k}')
+            #writer.add_scalar(f'Loss/eval@{k}', v, it)
+
+        model.train()
+
+    # latest checkpoint
     if (
-        args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
-        wm.is_master()
+        global_step < args.num_batches and args.checkpoint_every > 0 and
+        (it + 1) % args.checkpoint_every != 0 and wm.is_master()
     ):
-      # Save a checkpoint every N iters.
       checkpoint_manager.save(it)
 
       # Add embeddings
       writer_add_embeddings(writer, model, it)
 
-    if (
-        args.eval_data and wm.is_master() and args.eval_every > 0 and
-        (it + 1) % args.eval_every == 0
-    ):
-
-      model.eval()
-      with torch.no_grad():
-        # eval loss
-        n, eval_loss = 0, MetricDict()
-        for jt, batch in enumerate(iter(eval_loader)):
-          seq = batch['seq']
-          logging.debug(
-              '%d %d %d seq.shape: %s, pid: %s, clips: %s', 0, it, jt, seq.shape,
-              ','.join(batch['pid']), batch.get('clip')
-          )
-          batch = features(batch, is_training=True)
-          with status(batch, compute_loss=True):
-            r = ReturnValues(
-                **model(
-                    batch=batch,
-                    num_recycle=args.model_recycles,
-                    shard_size=args.model_shard_size
-                )
-            )
-          for h, v in r.headers.items():
-            if 'loss' in v:
-              eval_loss += MetricDict({h: v['loss']})
-          n += 1
-        for k, v in eval_loss.items():
-          v /= n
-          writer_add_scalars(writer, v, it, prefix=f'Loss/eval@{k}')
-          #writer.add_scalar(f'Loss/eval@{k}', v, it)
-
-      model.train()
-
-  # latest checkpoint
-  if (
-      global_step < args.num_batches and args.checkpoint_every > 0 and
-      (it + 1) % args.checkpoint_every != 0 and wm.is_master()
-  ):
-    checkpoint_manager.save(it)
-
-    # Add embeddings
-    writer_add_embeddings(writer, model, it)
-
-  if exists(writer):
-    writer.close()
-
-  # save model
-  if wm.is_master():
-    wm.save(os.path.join(args.prefix, 'model.pth'), feats, model)
+    # save model
+    if wm.is_master():
+      wm.save(os.path.join(args.prefix, 'model.pth'), feats, model)
+  finally:
+    # Also on Ctrl+C: flush writers and stop the wandb service process.
+    if exists(writer):
+      writer.close()
+    if exists(wandb_run):
+      wandb_run.finish()
 
 
 setattr(train, 'preprocess', preprocess)

@@ -6,6 +6,7 @@ import logging
 from logging.handlers import QueueHandler, QueueListener
 import re
 import resource
+import time
 
 import torch
 import torch.multiprocessing as mp
@@ -220,23 +221,26 @@ class WorkerFunction(object):
     # available on new NVIDIA GPUs since Ampere, internally to compute
     # matmul (matrix multiplies and batched matrix multiplies) and
     # convolutions.
-    with commons.torch_allow_tf32(allow=True):
-      with commons.torch_allow_fp16_reduced_precision_reduction(
-          env(
-              'profold2_allow_fp16_reduced_precision_reduction',
-              dtype=bool,
-              defval=False
-          )
-      ):
-        with torch.autograd.set_detect_anomaly(
-          env('profold2_autograd_detect_anomaly', defval=False, dtype=bool)
+    try:
+      with commons.torch_allow_tf32(allow=True):
+        with commons.torch_allow_fp16_reduced_precision_reduction(
+            env(
+                'profold2_allow_fp16_reduced_precision_reduction',
+                dtype=bool,
+                defval=False
+            )
         ):
-          self.work_fn(xpu, args)
-
-    #--------------
-    # cleanup
-    #--------------
-    xpu.destroy_process_group()
+          with torch.autograd.set_detect_anomaly(
+            env('profold2_autograd_detect_anomaly', defval=False, dtype=bool)
+          ):
+            self.work_fn(xpu, args)
+    finally:
+      #--------------
+      # cleanup
+      #--------------
+      # Also on KeyboardInterrupt: leaving the group alive keeps peer ranks
+      # blocked in NCCL collectives until NCCL_TIMEOUT.
+      xpu.destroy_process_group()
 
 
 def main(args, fn):  # pylint: disable=redefined-outer-name
@@ -262,12 +266,35 @@ def main(args, fn):  # pylint: disable=redefined-outer-name
   work_fn = WorkerFunction(fn, work_log.queue)
   if exists(args.nnodes):
     #mp.set_start_method('spawn', force=True)
-    mp.spawn(
+    context = mp.spawn(
         work_fn,
         args=(args, ),
         nprocs=accelerator.device_count() if accelerator.device_count() > 0 else 1,
-        join=True
+        join=False
     )
+    try:
+      while not context.join():
+        pass
+    except KeyboardInterrupt:
+      # torch's spawn does not kill children when the parent is interrupted;
+      # escalate like torchrun (SIGTERM -> grace -> SIGKILL) so no rank is
+      # left behind on Ctrl+C.
+      logging.warning(
+          'KeyboardInterrupt: terminating %d worker process(es)',
+          len(context.processes)
+      )
+      for p in context.processes:
+        if p.is_alive():
+          p.terminate()
+      deadline = time.monotonic() + 10
+      for p in context.processes:
+        p.join(timeout=max(0., deadline - time.monotonic()))
+      for p in context.processes:
+        if p.is_alive():
+          logging.warning('worker %s ignored SIGTERM, killing', p.pid)
+          p.kill()
+          p.join(timeout=10)
+      raise
   else:
     work_fn(args.local_rank, args)
 

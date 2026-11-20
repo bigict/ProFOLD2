@@ -73,24 +73,26 @@ class Checkpoint:
       orig_handler = None
 
     # Create a snapshot of the current state.
-    save_dict = {}
-    for k, v in self.__dict__.items():
-      save_dict[k] = v.state_dict()
+    try:
+      save_dict = {}
+      for k, v in self.__dict__.items():
+        save_dict[k] = v.state_dict()
 
-    #with tempfile.TemporaryDirectory() as tmp_dir:
-    #    tmp_path = Path(tmp_dir) / "tmp.ckpt"
-    #    torch.save(save_dict, tmp_path)
-    #    # `rename` is POSIX-compliant and thus, is an atomic operation.
-    #    # Ref: https://docs.python.org/3/library/os.html#os.rename
-    #    os.rename(tmp_path, save_path)
+      #with tempfile.TemporaryDirectory() as tmp_dir:
+      #    tmp_path = Path(tmp_dir) / "tmp.ckpt"
+      #    torch.save(save_dict, tmp_path)
+      #    # `rename` is POSIX-compliant and thus, is an atomic operation.
+      #    # Ref: https://docs.python.org/3/library/os.html#os.rename
+      #    os.rename(tmp_path, save_path)
 
-    tmp_path = save_path.parent / f'tmp-{unique_id()}'
-    torch.save(save_dict, tmp_path)
-    os.rename(tmp_path, save_path)
-
-    # Restore SIGINT handler.
-    if orig_handler is not None:
-      signal.signal(signal.SIGINT, orig_handler)
+      tmp_path = save_path.parent / f'tmp-{unique_id()}'
+      torch.save(save_dict, tmp_path)
+      os.rename(tmp_path, save_path)
+    finally:
+      # Restore SIGINT handler even if saving fails, otherwise this process
+      # would ignore Ctrl+C (and the parent's pdeathsig SIGINT) forever.
+      if orig_handler is not None:
+        signal.signal(signal.SIGINT, orig_handler)
 
   def restore(self, save_path: Union[str, Path]) -> bool:
     """Restore a state from a saved checkpoint.
