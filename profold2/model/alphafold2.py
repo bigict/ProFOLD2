@@ -195,6 +195,7 @@ class AlphaFold2(nn.Module):
         recycling_pos_num_bin, dim_pairwise
     ) if conditional_pos else None
     if conditional_pos:
+      commons.init_linear_(self.conditional_pos_linear)
       conditional_pos_breaks = torch.linspace(
           conditional_pos_min_bin,
           conditional_pos_max_bin,
@@ -211,6 +212,7 @@ class AlphaFold2(nn.Module):
     ) if recycling_pos else None
     self.recycling_frames = recycling_frames
     if recycling_pos:
+      commons.init_linear_(self.recycling_pos_linear)
       recycling_pos_breaks = torch.linspace(
           recycling_pos_min_bin, recycling_pos_max_bin, steps=recycling_pos_num_bin
       )
