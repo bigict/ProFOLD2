@@ -92,6 +92,22 @@
 - 本质是 **fold-switching 倾向性预测**（Porter/Dishman 等有文献）：可做成前置筛选器，先筛 AFDB 候选再聚焦获取多态（模板/MD/实验），比盲目整理全 AFDB 高效。
 - **加剧失衡**：AFDB 海量扩充 fold0，fold1 仍稀缺（仅 PDB/模板）→ 平衡采样比例需相应调整。
 
+**替代 fold 保守性证据（模板转移的依据与边界）**：
+- Porter 综述（Curr Opin Struct Biol 2024）：metamorphic 蛋白通常**源于单折叠祖先、在亚家族内保守**（RfaH 同序列分支常共享 switching；MinE/Mad2 近乎普遍保守）。
+- Schafer & Porter（Nat Commun 2023, **ACE**）：超家族 MSA 剪成**亚家族特异 MSA** 才暴露替代 fold 共进化信号（56/56 switcher 显著）→ 替代 fold **保守但信号弱、亚家族特异**。
+- Chakravarty（Nat Commun 2024）：AF 找替代 fold **主要靠结构记忆/序列关联**，成功集中在**高同源（~40–70%+ identity）**；<35% identity 基本失败（BCCIPα/β 80% 相同却不同 fold 为反例）。
+- → **模板转移置信度按序列 identity 分层**：高同源主链模板可信，低同源替代 fold 未必保守 → 降权/丢弃。与"backbone-only fold1 + 置信度分层"吻合。
+
+### 4.3 fold1 表示：backbone-only + frame 级生成 + 侧链后补
+
+**fold1 常只有主链结构**（替代态多低分辨率/瞬态：cryo-EM 柔性态、NMR 系综、预测替代 fold、结构域模板）。这**不是缺陷而是契合**：fold-switching 本质是**骨架拓扑变化**，backbone 即多模核心，侧链次要。
+
+- **生成任务统一在 backbone frame 级**：fold0/fold1 都生成骨架（frame FM 天然适配），mode_rank 控制哪个 fold；**侧链堆积作单独确定性步骤**（用 fold0 全原子数据训现有 torsion 头）。多模生成只管骨架，任务更纯更易学。
+- **训练不对称**（ProFOLD2 loss 本分离 backbone/sidechain FAPE）：fold0 全原子 FAPE；**fold1 只算 backbone FAPE，mask 侧链 loss**。
+- **放宽数据**：backbone trace/模板即可用 → AFDB 转移/NMR/cryo-EM 主链系综都可用。
+- **评测对齐**：mode coverage 用 **backbone TM-score/RMSD**（fold-switching 本为骨架级），不要求 fold1 全原子。
+- **caveat**：fold1 侧链重排（核心 repacking）学不到，对 fold-switching 检测/召回次要，可后补堆积。
+
 ## 5. 候选机制（mode 如何表示/采样）
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
@@ -147,6 +163,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 连续 frame FM 解
 ```
 
 - trunk 冻结/轻调，**数据构造的 mode_rank（0=主导/1=非主导）早注入**产态特异 repr；连续 frame FM 学 `p(frames|repr, mode_rank)`，CFG dropout 学边缘 `p(frames|repr)`。
+- **生成统一在 backbone frame 级**（§4.3）：fold0/fold1 都生成骨架；**侧链堆积为单独确定性步骤**（fold0 全原子训 torsion 头）。fold1 backbone-only → 只算 backbone FAPE、mask 侧链。
 - 推理：mode_rank=0/1 → 指定态；drop → 无条件系综。
 - 最简单，先验证"同序列多态数据 + mode-rank 条件 + 态特异 repr + CFG 能否让连续 FM 不塌缩、held-out 泛化"。
 
@@ -174,7 +191,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 ## 7. 评测协议（真指标）
 
 - **按序列 split** train/val/test，test 序列训练里没见过（泛化命门）。
-- **无条件**采样 N → 聚类（TM-score/RMSD）→ 匹配真实态 → **mode coverage（recall/precision）**。
+- **无条件**采样 N → 聚类（**backbone TM-score/RMSD**，fold-switching 为骨架级；fold1 backbone-only 不要求全原子）→ 匹配真实态 → **mode coverage（recall/precision）**。
 - 对照：AF3 / 单态基线 / 确定性解码器。
 - 辅助指标：条件精度（免费推论，非主指标）。
 - **不是**训练 recall，**不是**条件精度。
@@ -200,6 +217,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 - **AFDB 伪标签风险**：相似 ≠ 必然 switch（倾向性假设）；转移的是标签非替代结构（模板 fold1 假设家族保守，噪声）；AFDB 柔性区 pLDDT 低。须降权/过滤，真值锚 PDB，评测在实验 fold-switcher 上；AFDB 扩充加剧 fold0/fold1 失衡。
 - 离散 latent 风险：mode 发现质量、token→结构非保距（MultiStateFold：88.7% token 差异仍可 TM 0.96）、codebook collapse——需实测。
 - 泛化到新序列的 fold repertoire 依赖数据多样性，非解码器/条件化能单独解决。
+- **fold1 侧链缺失**：backbone-only fold1 学不到替代态侧链重排（核心 repacking），对 fold-switching 检测/召回次要，可后补堆积；模板转移置信度按序列 identity 衰减（高同源可信、<35% 基本失败）。
 
 ## 10. 被否决候选（决策记录）
 
@@ -219,3 +237,6 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 - MultiStateFold：ESM3 离散 token + 并行回火 MCMC（非保距证据）。
 - Peng 2025（Briefings in Bioinformatics）：AF3 多态恢复 ~20–23%。
 - ConforNets：latent 调制 eliciting 多态（fold-switcher 基准）。
+- Porter 2024（Curr Opin Struct Biol, PMC11102287）：metamorphic 蛋白源于单折叠祖先、亚家族内保守。
+- Schafer & Porter 2023（Nat Commun, ACE）：亚家族特异 MSA 暴露替代 fold 共进化信号（56/56）。
+- Chakravarty 2024（Nat Commun, PMC11344769）：AF 替代 fold 靠结构记忆/序列关联，高同源（~40–70%+）成功、<35% 失败。
