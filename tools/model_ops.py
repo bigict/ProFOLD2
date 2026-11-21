@@ -187,7 +187,7 @@ def tokens_modify_main(args):
   print(m.shape)
   assert m.shape[0] == aa_num + 1
 
-  padd = torch.empty(mol_num + 1 - m.shape[0], m.shape[1])
+  padd = torch.empty(mol_num + 1 - m.shape[0], m.shape[1], dtype=m.dtype)
   torch.nn.init.uniform_(padd)
   m = torch.cat((m[:-1], padd, m[-1:]), dim=0)
   x['model'][token_emb_key] = m
@@ -258,11 +258,13 @@ def tokens_modify_main(args):
   coevolution_states_key = f'{args.key_prefix}head_coevolution.states'
   if coevolution_states_key in x['model']:
     m = x['model'][coevolution_states_key]
-    assert m.shape[1] == aa_num + 1, m.shape[2] == aa_num + 1
-    padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], m.shape[2])
+    assert m.shape[1] == aa_num + 1 and m.shape[2] == aa_num + 1
+    padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], m.shape[2],
+                       dtype=m.dtype)
     torch.nn.init.uniform_(padd)
     m = torch.cat((m[:,:-2,:], padd[:,:-gap_num,:], m[:, -2:,:], padd[:,-gap_num:,:]), dim=1)
-    padd = torch.zeros(m.shape[0], m.shape[1], mol_num + 1 + gap_num - m.shape[2])
+    padd = torch.zeros(m.shape[0], m.shape[1], mol_num + 1 + gap_num - m.shape[2],
+                       dtype=m.dtype)
     torch.nn.init.uniform_(padd)
     m = torch.cat((m[:,:,:-2], padd[:,:,:-gap_num], m[:,:,-2:], padd[:,:,-gap_num:]), dim=2)
     x['model'][coevolution_states_key] = m
@@ -275,9 +277,11 @@ def tokens_modify_main(args):
       m = x['model'][coevolution_pair_weight_key]
       assert m.shape[0] == (aa_num + 1) * (aa_num + 1)
       m = rearrange(m, '(c d) e -> c d e', c=aa_num + 1, d=aa_num + 1)
-      padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1], m.shape[2])
+      padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1], m.shape[2],
+                         dtype=m.dtype)
       m = torch.cat((m[:-1], padd[:-gap_num], m[-1:], padd[-gap_num:]), dim=0)
-      padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], m.shape[2])
+      padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], m.shape[2],
+                         dtype=m.dtype)
       m = torch.cat((m[:,:-1], padd[:,:-gap_num], m[:,-1:], padd[:,-gap_num:]), dim=1)
       m = rearrange(m, 'c d e -> (c d) e')
       x['model'][coevolution_pair_weight_key] = m
@@ -285,9 +289,9 @@ def tokens_modify_main(args):
       m = x['model'][coevolution_pair_bias_key]
       assert m.shape[0] == (aa_num + 1) * (aa_num + 1)
       m = rearrange(m, '(c d) -> c d', c=aa_num + 1, d=aa_num + 1)
-      padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1])
+      padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1], dtype=m.dtype)
       m = torch.cat((m[:-1], padd[:-gap_num], m[-1:], padd[-gap_num:]), dim=0)
-      padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1])
+      padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], dtype=m.dtype)
       m = torch.cat((m[:,:-1], padd[:,:-gap_num], m[:,-1:], padd[:,-gap_num:]), dim=1)
       m = rearrange(m, 'c d -> (c d)')
       x['model'][coevolution_pair_bias_key] = m
