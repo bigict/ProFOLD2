@@ -108,6 +108,24 @@
 - **评测对齐**：mode coverage 用 **backbone TM-score/RMSD**（fold-switching 本为骨架级），不要求 fold1 全原子。
 - **caveat**：fold1 侧链重排（核心 repacking）学不到，对 fold-switching 检测/召回次要，可后补堆积。
 
+### 4.4 态特异表示：路线 C（trunk 条件化 + 解码器 skip）——核心难点
+
+**问题**：预训练 trunk 按"序列→单一主导 fold"训，repr 很可能**已塌到主导 fold**，丢掉替代 fold 信息。注入 mode_rank=1 不保证 trunk 能产出替代 fold 的 repr——它从没学过"序列→替代 fold"映射。**"态特异 repr"是整条路线的根基假设，未验证。**
+
+**seq-only 张力（更尖锐）**：ACE 文献表明替代 fold 信号是**共进化信号、只在亚家族 MSA 暴露**；本设计**无 MSA、纯序列**，缺这个信号源。纯序列 trunk 能否编码替代 fold 倾向是**真实未验证假设**——最大不确定性在此，不在解码器（FM 是 commodity）。
+
+**路线 C（采纳，混合）**：trunk 轻调学模式条件映射（保留主导能力 + 学替代映射）+ FM 解码器做几何生成。常见且有先例：
+- **AF3 范式**：条件/全原子特征**既进 trunk**（塑造表示），**又 skip connection 直达 diffusion 解码器**（不让信息全挤过 trunk 瓶颈）。
+- 本设计对应：**mode_rank（+序列特征）注入 trunk** 产态特异 repr，**同时 skip 到 frame FM 解码器**——解码器既拿 trunk 处理后的 repr，又直接拿条件/输入特征，缓解 trunk 塌缩丢信息。
+- 对比：A 全压 trunk（微调难、易遗忘）；B 全压解码器（小解码器扛不住序列→fold 映射）；C 折中且 AF3 已验证可行。
+
+**根基探针（先于全管线， cheapest de-risk）**：
+1. 取 fold-switcher 序列过预训练 trunk 得 repr。
+2. 接轻量解码器，条件 mode_rank=1，重建 fold1 backbone。
+3. held-out fold-switcher 上看 fold1 重建 TM-score：能重建 → 根基成立；不能 → seq-only trunk 编码不了替代 fold，须先解决表示（引入亚家族/共进化信号、更强序列编码器、或收缩到高同源 scope），否则全管线白建。
+
+**诚实风险**：seq-only + fold-switcher 数据稀缺双重不利；trunk 替代-fold 可表示性是生死线。探针失败则重议编码器/scope，而非硬搭管线。
+
 ## 5. 候选机制（mode 如何表示/采样）
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
@@ -156,16 +174,16 @@
 **基线架构（先做）**：
 
 ```
-sequence ─► 预训练 trunk ─► 态特异 repr ─► 连续 frame FM 解码器 ─► frames ─► torsion ─► atom
-                  ▲                              ▲
-            mode_rank 早注入                CFG mode_rank dropout
-            (0=主导/1=非主导, 数据标签)        (训练脚手架, 推理 drop)
+sequence ─► 预训练 trunk(轻调) ─► 态特异 repr ─► 连续 frame FM 解码器 ─► frames ─►(侧链后补)─► atom
+                  ▲                                   ▲   ▲
+            mode_rank 早注入                    repr  │   │ skip: mode_rank+输入特征
+            (0=主导/1=非主导)                  CFG dropout┘   (AF3 式, 不经 trunk 瓶颈)
 ```
 
-- trunk 冻结/轻调，**数据构造的 mode_rank（0=主导/1=非主导）早注入**产态特异 repr；连续 frame FM 学 `p(frames|repr, mode_rank)`，CFG dropout 学边缘 `p(frames|repr)`。
+- **路线 C（§4.4，AF3 范式）**：mode_rank（+序列特征）**既注入 trunk**（轻调产态特异 repr），**又 skip 直达 frame FM 解码器**——解码器同时拿 trunk repr 与原始条件/特征，缓解 trunk 塌缩丢替代-fold 信息。连续 frame FM 学 `p(frames|repr, mode_rank)`，CFG dropout 学边缘 `p(frames|repr)`。
 - **生成统一在 backbone frame 级**（§4.3）：fold0/fold1 都生成骨架；**侧链堆积为单独确定性步骤**（fold0 全原子训 torsion 头）。fold1 backbone-only → 只算 backbone FAPE、mask 侧链。
 - 推理：mode_rank=0/1 → 指定态；drop → 无条件系综。
-- 最简单，先验证"同序列多态数据 + mode-rank 条件 + 态特异 repr + CFG 能否让连续 FM 不塌缩、held-out 泛化"。
+- **先做根基探针**（§4.4）验证 trunk 替代-fold 可表示性，再搭全管线；验证"多态数据 + mode-rank + 态特异 repr + CFG 能否不塌缩、held-out 泛化"。
 
 **备选架构（VQ 混合，仅无 mode 标签时）**：
 
@@ -203,13 +221,15 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
   - 构象聚类（TM-score/RMSD）→ **二态 mode-rank 标签：0=主导、1=非主导（合并替代）**；条件解析；**平衡采样**（覆盖导向，比例可调）。
   - **AFDB 相似转移增广**（§4.2）：按结构相似性从 PDB fold-switcher 转移候选标签 + 模板 fold1，**伪标签按相似度过滤/降权**，真值锚 PDB。
   - **按序列 split** + 统计（多态序列数、态数、态间 TM-score 分布——区分大 fold-switch vs 小波动）。**先验证 mode 可分性**。
-- **Phase 1 · mode-rank 条件 FM 基线 pilot**：trunk 冻结 + mode_rank 早注入态特异 repr + 连续 frame FM（fold0 可确定性、fold1 生成式）+ CFG dropout + 平衡采样，小规模验证 **held-out 无条件 mode coverage**；对照确定性解码器（应单态）vs 条件生成式（应多态）。**先确认基线能否不塌缩且泛化。**
+- **Phase 0.5 · 根基探针（先于全管线）**：预训练 trunk repr + 轻量解码器 + mode_rank=1 重建 fold1 backbone，held-out fold-switcher 测 TM-score（§4.4）。**验证 seq-only trunk 替代-fold 可表示性**——生死线，失败则重议编码器/scope。
+- **Phase 1 · 路线 C 条件 FM 基线 pilot**：trunk 轻调 + mode_rank 注入 trunk **且 skip 到 frame FM 解码器**（AF3 式）+ CFG dropout + 平衡采样（fold0 确定性、fold1 生成式），小规模验证 **held-out 无条件 mode coverage**；对照确定性解码器（应单态）vs 条件生成式（应多态）。**先确认基线能否不塌缩且泛化。**
 - **Phase 1b · VQ 备选消融**：仅当无 mode 标签或基线 mode coverage 不足时，上 VQ 离散混合（同 trunk/repr/评测），实测是否更优；有标签且基线足够则 VQ 不必要。
-- **Phase 2 · 扩展**：trunk 轻调、采样增强（PT/repulsive）、条件化精修。
+- **Phase 2 · 扩展**：采样增强（PT/repulsive）、条件化精修、trunk 进一步微调。
 - **Phase 3 · 泛化评测**：held-out 无条件 mode coverage + 基线对比。
 
 ## 9. 诚实边界与风险
 
+- **核心生死线：trunk 替代-fold 可表示性**（§4.4）。预训练 trunk 塌到主导 fold；seq-only 缺共进化信号（ACE 表替代 fold 信号在亚家族 MSA）。纯序列 trunk 能否编码替代 fold 未验证——**最大不确定性在此，不在解码器**。先做根基探针，失败则重议编码器/scope。
 - **未解前沿**，无保证成功的配方（AF3 有 diffusion + 海量数据仍塌缩）。
 - **数据稀缺是硬约束**：fold-switcher 少，mode 覆盖上限由数据多样性决定。
 - **解码器是次要消融，非主杠杆**：数据 + 态特异 repr 必做；VQ 相对连续 FM 的"省样本/保分离"优势是假设，未证明，须基线对照实测——不先验押注 VQ。
