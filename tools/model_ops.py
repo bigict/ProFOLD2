@@ -190,8 +190,10 @@ def tokens_modify_main(args):
   mol_num = aa_num + base_num * 2
   gap_num = 2
 
-  # token embed.
-  token_emb_key = f'{args.key_prefix}token_emb.weight'
+  # token embed (current models: embedder.to_single_emb; legacy: token_emb).
+  token_emb_key = f'{args.key_prefix}embedder.to_single_emb.weight'
+  if token_emb_key not in x['model']:
+    token_emb_key = f'{args.key_prefix}token_emb.weight'
   assert token_emb_key in x['model']
   m = x['model'][token_emb_key]
   assert len(m.shape) == 2
