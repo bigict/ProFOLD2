@@ -1,0 +1,253 @@
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#1d4ed8; --cyan:#0891b2; --purple:#7c3aed; --orange:#b45309; --green:#166534; --rose:#be123c;
+    --green-bg:#e7f3ec; --orange-bg:#fbf0e3; --rose-bg:#fbe9ee; --gray-bg:#eef0f2;
+  }
+  *{box-sizing:border-box}
+  .wrap{max-width:1200px;margin:0 auto;padding:28px 20px 64px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);line-height:1.55}
+  h1{font-size:1.5rem;line-height:1.3;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:.95rem;margin:0 0 16px}
+  .scope{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px}
+  .scope span{font-size:.78rem;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 11px;color:var(--muted)}
+  .scope span b{color:var(--ink)}
+  .finding{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;padding:16px 18px;margin:0 0 22px}
+  .finding b{color:var(--blue)}
+  .finding ul{margin:8px 0 0;padding-left:20px}
+  .finding li{margin:5px 0}
+  h2{font-size:1.12rem;margin:32px 0 12px}
+  .mech{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .mcard{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;border-top:4px solid var(--line)}
+  .mcard.det{border-top-color:var(--blue)} .mcard.con{border-top-color:var(--cyan)} .mcard.dis{border-top-color:var(--purple)}
+  .mcard h3{margin:0 0 4px;font-size:1rem}
+  .mcard .verdict{font-size:.82rem;font-weight:700;margin:0 0 10px}
+  .mcard dl{margin:0;font-size:.83rem}
+  .mcard dt{color:var(--muted);font-size:.74rem;margin-top:7px}
+  .mcard dd{margin:1px 0 0}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 12px}
+  .group{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .glabel{font-size:.8rem;color:var(--muted);margin-right:2px}
+  button.chip{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:5px 12px;font-size:.82rem;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  button.chip:hover{border-color:#c7ccd1}
+  button.chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:0 0 auto}
+  input[type=search]{flex:1 1 200px;min-width:160px;border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:.88rem;background:var(--surface);color:var(--ink)}
+  .count{font-size:.82rem;color:var(--muted);margin:0 0 8px}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;min-width:1040px;font-size:.84rem}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafbfc;font-size:.76rem;letter-spacing:.02em;color:var(--muted);position:sticky;top:0}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#fcfcfd}
+  tr.proposed td{background:#f5f3ff}
+  .mname{font-weight:600}
+  .badge{display:inline-block;border-radius:6px;padding:2px 8px;font-size:.74rem;font-weight:600;white-space:nowrap}
+  .b-high{background:var(--green-bg);color:var(--green)}
+  .b-mid{background:var(--orange-bg);color:var(--orange)}
+  .b-low{background:var(--rose-bg);color:var(--rose)}
+  .b-na{background:var(--gray-bg);color:var(--muted)}
+  .b-yes{background:var(--rose-bg);color:var(--rose)}
+  .b-no{background:var(--green-bg);color:var(--green)}
+  .par{display:inline-flex;align-items:center;gap:6px;font-size:.76rem;color:var(--muted);white-space:nowrap}
+  .data{color:var(--muted)}
+  .src a{color:var(--blue);text-decoration:none;font-size:.76rem}
+  .src a:hover{text-decoration:underline}
+  .steps{counter-reset:s;display:grid;gap:10px}
+  .step{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:13px 16px 13px 52px;position:relative;font-size:.88rem}
+  .step::before{counter-increment:s;content:counter(s);position:absolute;left:14px;top:13px;width:26px;height:26px;border-radius:50%;background:var(--purple);color:#fff;font-weight:700;font-size:.85rem;display:flex;align-items:center;justify-content:center}
+  .step b{color:var(--ink)}
+  .note{background:var(--green-bg);border:1px solid #cfe6d8;border-radius:10px;padding:14px 16px;font-size:.88rem;margin:18px 0}
+  .caveat{background:var(--orange-bg);border:1px solid #ecd9c2;border-radius:10px;padding:14px 16px;font-size:.86rem;margin:18px 0}
+  .caveat ul{margin:6px 0 0;padding-left:20px} .caveat li{margin:3px 0}
+  .sources{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 18px}
+  .sources ol{margin:6px 0 0;padding-left:22px;columns:2;column-gap:32px}
+  .sources li{margin:3px 0;font-size:.78rem;break-inside:avoid}
+  .sources a{color:var(--blue);text-decoration:none;word-break:break-all}
+  .sources a:hover{text-decoration:underline}
+  footer{margin-top:26px;color:var(--muted);font-size:.78rem}
+  @media (max-width:640px){ .sources ol{columns:1} h1{font-size:1.25rem} }
+</style>
+
+<div class="wrap">
+  <h1>训练集多构象能否被采样？决定因素是「随机潜变量解码器 + 似然目标」，而非离散 vs 连续</h1>
+  <p class="sub">ProFOLD2 多构象扩展 · 聚焦"同一序列在训练集有多个构象，能否采样出来" · 文献调研 + 机制分析 2026-11-21</p>
+  <div class="scope">
+    <span>条件信号：<b>仅 target sequence（无 MSA）</b></span>
+    <span>系综 / MD 数据：<b>暂不考虑</b></span>
+    <span>目标：<b>训练集多模可采样性</b>（非泛化到未见构象）</span>
+    <span>解码器：<b>保留 torsion-frame StructureModule</b></span>
+  </div>
+
+  <div class="finding">
+    <b>核心结论</b>
+    <ul>
+      <li><b>确定性 StructureModule 数学上不可能。</b>无 MSA 时 trunk 对相同 seq 产出相同表示，angles/frames 是其确定性函数 → 相同输入唯一输出；FAPE/MSE 对"同输入多 GT"的最优解是<b>均值</b>（常不可物理）。无论训练集多少构象都只吐一个 —— 这是 AF2"即使训练集也采不出"的结构性根因。</li>
+      <li><b>AF3 diffusion 有随机性但塌缩。</b>trunk 条件表示对多构象序列学到混合态，去噪训练偏高密度区 → mode collapse（双态恢复 ~20–23%，Peng 2025）。</li>
+      <li><b>三要素缺一不可：</b>① 随机/潜变量解码器（打破唯一输出）；② 保多模似然目标（NLL，而非 MSE-to-mean）；③ 区分 mode 的索引（离散 code / 潜变量 z / 噪声）——multiplicity 必须完全由解码器潜变量承载。</li>
+      <li><b>离散似然生成对"训练集多模"最直接：</b>categorical NLL 不平均多峰，离散 code 显式索引 basin，训练集 mode 有清晰概率质量 → 温度/top-k 采样即可采出。比连续扩散更不易插值出混合态。</li>
+    </ul>
+  </div>
+
+  <h2>三类解码器范式 · 机制对比</h2>
+  <div class="mech">
+    <div class="mcard det">
+      <h3>确定性精修</h3>
+      <p class="verdict" style="color:var(--blue)">相同 seq → 不可能多模</p>
+      <dl>
+        <dt>代表</dt><dd>AF2 / ProFOLD2 StructureModule</dd>
+        <dt>训练目标</dt><dd>FAPE / MSE → 均值塌缩</dd>
+        <dt>mode 索引</dt><dd>无</dd>
+        <dt>训练集多模采样</dt><dd><span class="badge b-na">不可能</span></dd>
+        <dt>torsion 兼容</dt><dd><span class="badge b-high">高（本体）</span></dd>
+      </dl>
+    </div>
+    <div class="mcard con">
+      <h3>连续随机（扩散 / flow）</h3>
+      <p class="verdict" style="color:var(--cyan)">原则上能 · 实际易塌缩</p>
+      <dl>
+        <dt>代表</dt><dd>AF3 · AlphaFlow · ConfDiff · DynaRNA</dd>
+        <dt>训练目标</dt><dd>去噪 / flow 似然</dd>
+        <dt>mode 索引</dt><dd>噪声 / 连续 z</dd>
+        <dt>训练集多模采样</dt><dd><span class="badge b-low">易塌缩</span> 需引导/系综</dd>
+        <dt>torsion 兼容</dt><dd><span class="badge b-mid">中–高</span> frame 级高</dd>
+      </dl>
+    </div>
+    <div class="mcard dis">
+      <h3>离散似然生成</h3>
+      <p class="verdict" style="color:var(--purple)">保多模最直接 · 采样需探索</p>
+      <dl>
+        <dt>代表</dt><dd>VQ-VAE token / 离散化 torsion · ESM3+PT · ESMDiff</dd>
+        <dt>训练目标</dt><dd>categorical NLL（不平均）</dd>
+        <dt>mode 索引</dt><dd>离散 code</dd>
+        <dt>训练集多模采样</dt><dd><span class="badge b-high">保多模</span> 温度/PT 探索</dd>
+        <dt>torsion 兼容</dt><dd><span class="badge b-high">高（复用解码器）</span></dd>
+      </dl>
+    </div>
+  </div>
+
+  <h2>方法对照（按当前 scope 可筛选）</h2>
+  <div class="controls">
+    <div class="group" id="decFilters"><span class="glabel">解码器</span></div>
+    <div class="group" id="ensFilters"><span class="glabel">需系综数据</span></div>
+    <div class="group" id="msaFilters"><span class="glabel">需MSA</span></div>
+    <div class="group"><button class="chip" id="rnaToggle">仅 RNA</button></div>
+    <input type="search" id="search" placeholder="搜索方法 / 机制…">
+  </div>
+  <p class="count" id="count"></p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>方法</th><th>解码器</th><th>训练目标</th><th>mode 索引</th><th>训练集多模采样</th><th>需MSA</th><th>需系综</th><th>torsion兼容</th><th>来源</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <h2>最小可验证实验（无需系综 / MD）</h2>
+  <div class="steps">
+    <div class="step"><b>选案例</b>：取一小批训练集里同序列多构象的案例（蛋白 fold-switcher / apo-holo，RNA 多态）。</div>
+    <div class="step"><b>加离散生成头</b>：最轻量直接把 torsion 分 bin 预测 categorical 分布（或先训 frame→code 的 VQ-VAE tokenizer）；trunk 表示不动或端到端用 NLL 微调。</div>
+    <div class="step"><b>似然训练</b>：用 categorical NLL 在多模案例上训练。<b>关键：别用 FAPE-to-single-GT</b>，否则又平均塌缩。</div>
+    <div class="step"><b>评测 mode recall</b>：采样 N 次，能否覆盖训练集那几个构象（TM-score / RMSD 聚类匹配）。</div>
+    <div class="step"><b>等数据对照</b>：确定性头（应只出一个）vs 连续扩散头（看是否塌缩）vs 离散头 —— 隔离"离散 vs 连续"这一个变量。</div>
+  </div>
+
+  <div class="note">
+    <b>为什么离散特别适合你的 torsion 解码器 + RNA：</b>RNA 糖环 pucker（C2'/C3'-endo）、backbone suite rotamer、χ（anti/syn），蛋白 χ rotamer、φ/ψ Ramachandran basin —— <b>物理上本就离散</b>。把 torsion 离散化，生成头预测 code 分布，采样后仍用现有 torsion→frame→atom 解码，几何机制完全复用。训练集 mode 在 code 上有清晰峰，温度/top-k 即可采出（比 MultiStateFold 那种"单态偏置预训练模型上事后跨能垒"容易）。
+  </div>
+
+  <div class="caveat">
+    <b>诚实 caveat</b>
+    <ul>
+      <li><b>采样要探索</b>：少数清晰 mode 用温度/top-k；mode 多且崎岖仍需 PT/离散扩散。训练集 mode 通常较易。</li>
+      <li><b>torsion 耦合</b>：逐 torsion 独立 categorical 丢相关性；自回归/联合更好，先做独立 bin 验证可行性足够。</li>
+      <li><b>trunk 目标端到端</b>：冻结 FAPE 训出的 trunk（表示已平均）会削弱条件信息；最好让 trunk 随似然目标一起调。</li>
+      <li><b>token→结构非保距</b>（MultiStateFold：88.7% token 差异仍可 TM 0.96）：朴素改 logit 逼不出新构象，需真采样。</li>
+      <li>属改头/从头研究，与当前续训不兼容；但作为"训练集多模可采样性"小实验规模可控。</li>
+    </ul>
+  </div>
+
+  <h2>来源</h2>
+  <div class="sources"><ol id="srcList"></ol></div>
+  <footer>调研 2026-11-21 · 部分为 2026 预印本（MultiStateFold / ConforNets / REFLEX / Maddipatla），结论以原文为准 · 机制分析部分为推理而非基准复现 · 紫色行 = 本仓库适配的提议方案（待验证）。</footer>
+</div>
+
+<script>
+const DEC = {
+  det:{label:'确定性', color:'#1d4ed8'},
+  con:{label:'连续随机', color:'#0891b2'},
+  dis:{label:'离散随机', color:'#7c3aed'}
+};
+const PROS = {'不可能':'b-na','易塌缩':'b-low','可行':'b-mid','保多模':'b-high'};
+const DATA = [
+  {name:'AF2 / ProFOLD2 StructureModule', dec:'det', obj:'FAPE / MSE', idx:'无', pros:'不可能', prosNote:'相同 seq 唯一输出', msa:'可选', ens:false, compat:'高', note:'本体', src:'https://github.com/bigict/ProFOLD2', rna:false},
+  {name:'AF2 MSA 子采样 / AF-Cluster / AFsample3', dec:'det', obj:'FAPE + 输入扰动', idx:'输入扰动(非潜变量)', pros:'易塌缩', prosNote:'启发式、不稳定', msa:true, ens:false, compat:'高', note:'仅改输入', src:'https://arxiv.org/html/2604.18559v1', rna:false},
+  {name:'AlphaFold3 diffusion', dec:'con', obj:'去噪扩散', idx:'噪声', pros:'易塌缩', prosNote:'双态 ~20–23%', msa:'可选', ens:false, compat:'中', note:'替换解码器', src:'https://academic.oup.com/bib/article/26/6/bbaf616/8351050', rna:false},
+  {name:'ESM3（VQ-VAE + masked LM）', dec:'dis', obj:'masked categorical NLL', idx:'离散 code', pros:'易塌缩', prosNote:'默认解码=局部搜索', msa:false, ens:false, compat:'中', note:'需 tokenizer', src:'https://www.evolutionaryscale.ai/blog/esm3-release', rna:false},
+  {name:'ESMDiff / SLM', dec:'dis', obj:'token 离散扩散', idx:'离散 code', pros:'可行', prosNote:'序列特异构象分布', msa:false, ens:true, compat:'中', note:'系综微调', src:'https://arxiv.org/html/2410.18403v2', rna:false},
+  {name:'MultiStateFold（PT-MCMC）', dec:'dis', obj:'ESM3 + 并行回火采样', idx:'离散 code', pros:'可行', prosNote:'跨 basin，无需重训', msa:false, ens:false, compat:'中', note:'依赖 ESM3 tokenizer', src:'https://www.biorxiv.org/content/10.64898/2026.03.03.708411v2.full-text', rna:false},
+  {name:'ConforNets（latent 调制）', dec:'det', obj:'推理期 latent 仿射', idx:'latent 调制', pros:'可行', prosNote:'多态基准 SOTA', msa:'可选', ens:false, compat:'高', note:'trunk 侧', src:'https://arxiv.org/html/2604.18559v1', rna:false},
+  {name:'NOE-guided AF3 diffusion', dec:'con', obj:'去噪 + NOE 引导', idx:'噪声 + 约束', pros:'可行', prosNote:'约束满足 ~77%', msa:false, ens:true, compat:'中', note:'需实验约束', src:'https://www.nature.com/articles/s41587-026-03166-5', rna:false},
+  {name:'AlphaFlow / ESMFlow', dec:'con', obj:'flow matching', idx:'frame / 连续 z', pros:'可行', prosNote:'平衡系综', msa:false, ens:true, compat:'高', note:'frame 级', src:'https://github.com/bjing2016/alphaflow', rna:false},
+  {name:'Str2Str', dec:'con', obj:'score-based 零样本', idx:'噪声', pros:'可行', prosNote:'零样本构象采样', msa:false, ens:false, compat:'高', note:'架构无关', src:'https://arxiv.org/abs/2306.03117', rna:false},
+  {name:'ConfDiff', dec:'con', obj:'力引导 SE(3) 扩散', idx:'噪声 + 力', pros:'可行', prosNote:'物理合理', msa:false, ens:true, compat:'中', note:'坐标级', src:'https://github.com/bytedance/confdiff', rna:false},
+  {name:'DiG / BioEmu', dec:'con', obj:'平衡分布似然', idx:'连续 z', pros:'可行', prosNote:'平衡系综', msa:false, ens:true, compat:'中', note:'需大规模 MD', src:'https://www.biorxiv.org/content/10.1101/2024.12.05.626885v1.full-text', rna:false},
+  {name:'DynaRNA', dec:'con', obj:'DDPM + EGNN', idx:'噪声', pros:'可行', prosNote:'小 RNA；TAR 激发态', msa:false, ens:true, compat:'中', note:'坐标级', src:'https://pmc.ncbi.nlm.nih.gov/articles/PMC12528399/', rna:true},
+  {name:'REFLEX', dec:'con', obj:'柔性校准 flow/bridge', idx:'噪声(B-factor)', pros:'可行', prosNote:'刚性锐利/loop 广采', msa:false, ens:true, compat:'高', note:'frame 级', src:'https://arxiv.org/html/2610.26261v3', rna:true},
+  {name:'RNAbpFlow', dec:'con', obj:'碱基对条件 flow', idx:'碱基对条件', pros:'可行', prosNote:'碱基对约束系综', msa:false, ens:true, compat:'高', note:'frame 级', src:'https://arxiv.org/html/2610.26261v3', rna:true},
+  {name:'gRNAde', dec:'det', obj:'多态条件 NLL(逆向)', idx:'系综输入', pros:'可行', prosNote:'消费系综，非生成', msa:false, ens:true, compat:'高', note:'逆向设计', src:'https://www.biorxiv.org/content/10.1101/2024.03.31.587283v1.full-text', rna:true},
+  {name:'★ 离散化 torsion 生成头（本仓库适配）', dec:'dis', obj:'categorical NLL', idx:'torsion-bin code', pros:'保多模', prosNote:'提议，待验证', msa:false, ens:false, compat:'高', note:'复用 torsion 解码器', src:'', rna:true, proposed:true}
+];
+const COMPCLS={'高':'b-high','中':'b-mid'};
+const state={dec:'all', ens:'all', msa:'all', rna:false, q:''};
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function ynBadge(v){
+  if(v===true) return '<span class="badge b-yes">是</span>';
+  if(v===false) return '<span class="badge b-no">否</span>';
+  return '<span class="badge b-na">'+esc(v)+'</span>';
+}
+function render(){
+  const rows=DATA.filter(d=>
+    (state.dec==='all'||d.dec===state.dec) &&
+    (state.ens==='all'|| (state.ens==='yes'?d.ens:!d.ens)) &&
+    (state.msa==='all'|| (state.msa==='yes'?d.msa===true:(state.msa==='no'?d.msa!==true:true))) &&
+    (!state.rna||d.rna) &&
+    (state.q===''||(d.name+' '+d.obj+' '+d.idx+' '+d.prosNote+' '+DEC[d.dec].label).toLowerCase().includes(state.q))
+  );
+  document.getElementById('tbody').innerHTML=rows.map(d=>{
+    const p=DEC[d.dec];
+    const src=d.src?`<a href="${esc(d.src)}" target="_blank" rel="noopener">链接</a>`:'<span class="data">—</span>';
+    return `<tr class="${d.proposed?'proposed':''}">
+      <td class="mname">${esc(d.name)}</td>
+      <td><span class="par"><span class="dot" style="background:${p.color}"></span>${esc(p.label)}</span></td>
+      <td>${esc(d.obj)}</td>
+      <td class="data">${esc(d.idx)}</td>
+      <td><span class="badge ${PROS[d.pros]}">${esc(d.pros)}</span> <span class="data">${esc(d.prosNote)}</span></td>
+      <td>${ynBadge(d.msa)}</td>
+      <td>${ynBadge(d.ens)}</td>
+      <td><span class="badge ${COMPCLS[d.compat]}">${esc(d.compat)}</span> <span class="data">${esc(d.note)}</span></td>
+      <td class="src">${src}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('count').textContent=`显示 ${rows.length} / ${DATA.length} 个方法（紫色行 = 提议方案）`;
+}
+function chipGroup(elId, key, opts){
+  const el=document.getElementById(elId);
+  opts.forEach(([k,l,color])=>{
+    const b=document.createElement('button');
+    b.className='chip'+(state[key]===k?' active':'');
+    b.innerHTML=(color?`<span class="dot" style="background:${color}"></span>`:'')+esc(l);
+    b.onclick=()=>{state[key]=k;[...el.querySelectorAll('.chip')].forEach(c=>c.classList.remove('active'));b.classList.add('active');render();};
+    el.appendChild(b);
+  });
+}
+chipGroup('decFilters','dec',[['all','全部',null],['det','确定性',DEC.det.color],['con','连续随机',DEC.con.color],['dis','离散随机',DEC.dis.color]]);
+chipGroup('ensFilters','ens',[['all','全部'],['no','否'],['yes','是']]);
+chipGroup('msaFilters','msa',[['all','全部'],['no','否/可选'],['yes','是']]);
+const rt=document.getElementById('rnaToggle');
+rt.onclick=()=>{state.rna=!state.rna;rt.classList.toggle('active',state.rna);render();};
+document.getElementById('search').addEventListener('input',e=>{state.q=e.target.value.trim().toLowerCase();render();});
+(function(){const seen=new Set();const list=[];DATA.forEach(d=>{if(d.src&&!seen.has(d.src)){seen.add(d.src);list.push(d.src);}});
+  document.getElementById('srcList').innerHTML=list.map(u=>`<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a></li>`).join('');})();
+render();
+</script>
