@@ -263,7 +263,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
   - 构象聚类（TM-score/RMSD）→ **二态 mode-rank 标签：0=主导、1=非主导（合并替代）**；条件解析；**平衡采样**（覆盖导向，比例可调）。
   - **AFDB 相似转移增广**（§4.2）：按结构相似性从 PDB fold-switcher 转移候选标签 + 模板 fold1，**伪标签按相似度过滤/降权**，真值锚 PDB。
   - **按序列 split** + 统计（多态序列数、态数、态间 TM-score 分布——区分大 fold-switch vs 小波动）。**先验证 mode 可分性**。
-- **Phase 0.5 · 根基探针（先于全管线）**：预训练 trunk repr + 轻量解码器 + mode_rank=1 重建 fold1 backbone，held-out fold-switcher 测 TM-score（§4.4）。**验证 seq-only trunk 替代-fold 可表示性**——生死线，失败则重议编码器/scope。
+- **Phase 0.5 · 根基探针（先于全管线，按 identity 分层）**：预训练 trunk repr + 轻量解码器 + mode_rank=1 重建 fold1 backbone，held-out fold-switcher **按序列 identity 分层**测 TM-score（§4.4/§11）：高同源（>40%）能重建 → Tier 1 成立；低同源（<35%）失败 → 确认 Tier 3 不可达。**画"泛化 vs identity"曲线定能力边界**，而非单一 pass/fail。生死线，失败则重议编码器/scope。
 - **Phase 1 · 路线 C 条件 FM 基线 pilot**：trunk 轻调 + mode_rank 注入 trunk **且 skip 到 frame FM 解码器**（AF3 式）+ CFG dropout + 平衡采样（fold0 确定性、fold1 生成式），小规模验证 **held-out 无条件 mode coverage**；对照确定性解码器（应单态）vs 条件生成式（应多态）。**先确认基线能否不塌缩且泛化。**
 - **Phase 1b · VQ 备选消融**：仅当无 mode 标签或基线 mode coverage 不足时，上 VQ 离散混合（同 trunk/repr/评测），实测是否更优；有标签且基线足够则 VQ 不必要。
 - **Phase 2 · 扩展**：采样增强（PT/repulsive）、条件化精修、trunk 进一步微调。
@@ -290,6 +290,32 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 | 侧链多构象 | 难定义、难从 PDB 挑选 |
 | 纯条件预测 | AF3 强项，冗余 |
 | tied vs untied 结构模块 | 暂停；精度差未知，需从头消融，与续训不兼容 |
+
+## 11. 能力边界与 scope 分层（战略 reality check）
+
+**根本瓶颈是数据/信号，不是架构**——再加组件也突破不了泛化上限：
+- 已知 fold-switcher **百量级**（Porter 2018 ~96–100），替代 fold 拓扑高度多样，样本覆盖不了"序列→替代 fold"映射的多样性。
+- **seq-only 缺共进化信号**（ACE：替代 fold 信号在亚家族 MSA），比 AF2 带 MSA 更难。
+- **Chakravarty 2024 警示**：AF2 带 MSA + 海量数据，找替代 fold 仍靠**高同源记忆**（~40–70%+），<35% 基本失败。**连 AF2 都泛化不了低同源 fold-switching**，seq-only + 百例更难。
+
+**scope 三层（务实定位，不承诺做不到的）**：
+
+| 层 | 目标 | 可行性 |
+|---|---|---|
+| Tier 1 | 高同源 fold-switching：为已知 switcher 的 close homolog 生成替代 fold | 较可行（高同源记忆区） |
+| Tier 2 | fold-switching 检测/分类（§4.6 分类器 + AFDB 负例） | 较可行（分类比生成易，负例充足） |
+| Tier 3 | 新低同源 fold-switching 预测 | 很难，当前数据下可能不可达 |
+
+→ **先做 Tier 1 + Tier 2，Tier 3 当远期/数据充足后目标，不承诺。**
+
+**identity 分层探针定边界**（§8 Phase 0.5）：按序列 identity 分层测 fold1 重建，画"泛化 vs identity"曲线——高同源成立确认 Tier 1，低同源失败确认 Tier 3 不可达。比单一 pass/fail 更有信息。
+
+**seq-only niche 之问（novelty，须厘清）**：相对 Porter ACE / AF2 MSA 子采样（都需 MSA），本方案差异是 seq-only——
+- 劣势：信号更少，精度可能不如 MSA 方法。
+- 潜在 niche：**无 MSA 序列**（孤儿序列、设计蛋白、快速推理）——MSA 方法失效处。
+- 须诚实回答：seq-only fold-switching 生成/检测相对 MSA 方法有何**不可替代**贡献？若只是"更弱但免 MSA"价值有限；若覆盖 MSA 做不到场景（如设计蛋白 fold-switching）才有意义。
+
+**战略选择**：若目标是 Tier 3（真泛化），需**扩充多态数据**（MD 系综、cryo-EM 异质性、更多实验 switcher）或**引入共进化信号**（违背 seq-only？）——这是战略选择，非设计细节。当前设定下建议先 identity 分层探针定边界 + 定 scope（Tier 1+2）+ 想清 seq-only niche，再决定是否按此推进。
 
 ## 附：关键文献锚点
 
