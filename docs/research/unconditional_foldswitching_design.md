@@ -1,7 +1,8 @@
 # 无条件 Fold-Switching 构象系综采样 — 设计方案
 
-> 状态：设计蓝图（讨论稿，2026-11-21）· 配套对照页 `multiconformation_methods.html`
-> 目标读者：ProFOLD2 多构象研究 · 本文记录目标、战略、核心难点、基线（数据 mode-rank 条件 FM + CFG）与 VQ 无标签备选、架构、评测与分阶段计划，以及被否决候选的决策依据。
+> 状态：设计蓝图（讨论稿，2026-11-22 更新核心方法）· 配套对照页 `multiconformation_methods.html`
+> 目标读者：ProFOLD2 多构象研究 · 本文记录目标、战略、核心难点、**核心方法（逐残基 switching 场 + 靶向条件化，取代全局 mode 加值）**、架构、评测与分阶段计划，以及被否决候选的决策依据。
+> **核心原则**：feature + algorithm 必须显式刻画**哪些残基驱动构象变化**；全局均匀条件化不可行（探针 v1–v3 已证）。
 
 ## 1. 目标与战略定位
 
@@ -51,25 +52,35 @@
 - **一个模型，两种能力**；条件生成是免费推论。
 - 推论：若条件完全决定态，每个 `(seq,cond)` 单 GT → 无均值塌缩 → 确定性解码器 + FAPE 就够；FM 只处理"条件不能确定的剩余多模"。
 
-### 4.1 基线核心：数据构造 mode-rank 标签 + 条件 FM + CFG
+### 4.1 核心方法：逐残基 switching 场 + 靶向条件化（取代全局 mode 加值）
 
-用**数据构造的 mode-rank 标签**作为 CFG 的条件，比 VQ 无监督发现 mode 更简单——**这是基线首选**。
+**核心设计原则**：feature + algorithm 必须显式刻画**哪些残基驱动构象变化**。**全局均匀 mode 加值不可行**——不区分决定残基与响应残基，无的放矢，推动不了正确的局部触发（探针 v1–v3 已证实全局/均匀条件化失败，见 §4.4）。
 
-**数据组织**：
-- **多模信号锚定"同序列多结构"**（本组 PDB 多态资产：同序列多条目）。**家族聚合只作辅助**——识别 fold repertoire、协助标注/扩充；**不可拿家族间不同序列的结构差异冒充序列内多模**（那是普通序列→fold 预测，不是多构象）。
-- **mode-rank 标签（二态：主导/非主导）**：**0 = 主导态，1 = 非主导态（合并所有替代 fold）**。含义**序列相对、由数据赋予**，不是全局 fold 词表 → 绕开"fold0/fold1 跨蛋白无法定义"的否决理由。
-  - **为何二态而非 0/1/2…k**：k-秩排序对多态不稳定、难定义；合并 2..k 到"非主导"避开它。
-  - **代价（关键）**：fold0 单模（易，确定性解码器即可收敛）；**fold1 = 非主导合集，本身多模** → 多模被**隔离进 fold1 分支**，该分支需生成式解码器。这是干净的不对称分解：大部分预测只需 fold0，少数需 fold1（采替代系综）。
-- **平衡采样**：主导/非主导按比例见样，**覆盖导向**（稀有态充分学到），非物理布居导向；比例是 coverage-vs-布居旋钮，非固定 1:1（AFDB 扩充会加剧 fold0/fold1 失衡，见 §4.2）。
+**物理依据**：
+- fold-switching 由**少数决定残基**驱动（Porter："几个关键残基决定胜出构象"）；大部分残基基本不动。
+- **局部决定残基变化 → IPA 注意力耦合传播 → 全局 fold 重排**（local→global，StructureModule 已有此机制）。
+- 抓住决定残基 = 抓住构象变化的**因果把手**——这是解决多构象的关键，而非全局 mode 旗标。
 
-**模型/训练**：
-- 条件生成 `p(struct | seq, mode_rank)`：**fold0 单 GT** → 无均值塌缩，确定性 + FAPE 即可；**fold1 多 GT（非主导合集）** → 仍需生成式（FM）建模其多模。条件化把多模**限制在 fold1 分支**，fold0 易收敛。
-- **CFG dropout**：训练随机 drop mode_rank → 也学边缘 `p(struct|seq)`；推理 drop → 无条件采样。**条件/无条件一个模型**。
-- **mode-rank 查询是 AF3 没有的能力**：显式"给主导/替代 fold"，AF3 只吐单态 → 差异点，非冗余。
+**特征 = 逐残基 switching 场**（残基间异质，非全局同值）：
+- `s_i` = 残基 i 的 switching 倾向/变化量；switching 残基强信号，非 switching 残基 ≈0。
+- 显式编码"**哪个残基变、变多少**"——核心表征要求。
 
-**为何比 VQ 简单**：mode 由数据标签给定，无需无监督 discover（避开 codebook collapse / 非保距 / 两阶段）。**VQ 退为"无 mode 标签、需无监督发现"时的备选。**
+**算法**：
+- 从 `(seq, mode)` **预测逐残基 switching 场**（推理只有 seq+mode、无 fold1，场须预测而非给定）。
+- **靶向条件化** switching 残基 → IPA 把局部触发传播成全局 fold。
 
-**泛化命门（诚实）**：mode-rank 只说"主导/替代"，**没说是什么 fold**；对新序列模型须自学"序列→布居秩→fold"映射。能否泛化取决于数据多样性 + 序列决定因素可学性，**不是给条件就自动解决**。**held-out 序列评测**把它逼向泛化（架构同 mode-conditioned，但目标/评测是泛化而非 recall；家族聚合增每 mode 样本助泛化）。
+**监督信号**：fold0↔fold1 的**逐残基差异**（正确局部叠合后，避开全局 Kabsch 假象，见 §4.4）→ switching 场 GT。
+
+**核心学习问题（最难也最关键）**：从 `(seq, mode)` 预测 switching 场，须区分**决定残基（因）vs 响应残基（果）**——位移大 ≠ 因果驱动。这是"feature+algorithm 体现哪些残基影响构象变化"的落地。
+
+**mode 角色降级**：mode（0=主导/1=非主导）仍是态索引，但条件化**经 switching 场逐残基施加**，非全局加值。
+
+**数据组织（沿用）**：
+- 多模信号锚定**同序列多结构**（PDB 多态资产）；家族聚合只作辅助，**不可拿家族间差异冒充序列内多模**。
+- mode-rank 二态（0=主导/1=非主导合集），序列相对、数据赋予，绕开全局 fold 词表问题。
+- 平衡采样覆盖导向（比例是 coverage-vs-布居旋钮，非固定 1:1）。
+
+**泛化命门（诚实）**：switching 场须从 seq+mode 泛化预测；能否泛化取决于数据多样性 + 决定残基可学性，**held-out 序列评测**逼向泛化（非 recall）。
 
 ### 4.2 数据扩充：AFDB 相似转移（伪标签增广，真值锚 PDB）
 
@@ -108,31 +119,29 @@
 - **评测对齐**：mode coverage 用 **backbone TM-score/RMSD**（fold-switching 本为骨架级），不要求 fold1 全原子。
 - **caveat**：fold1 侧链重排（核心 repacking）学不到，对 fold-switching 检测/召回次要，可后补堆积。
 
-### 4.4 态特异表示：路线 C（trunk 条件化 + 解码器 skip）——核心难点
+### 4.4 探针教训与转向：全局条件化失败 → 逐残基 switching 场
 
-**问题**：预训练 trunk 按"序列→单一主导 fold"训，repr 很可能**已塌到主导 fold**，丢掉替代 fold 信息。注入 mode_rank=1 不保证 trunk 能产出替代 fold 的 repr——它从没学过"序列→替代 fold"映射。**"态特异 repr"是整条路线的根基假设，未验证。**
+**探针 v1–v3 实测（XCL1 单序列双 fold，400 步）**：
+- v1 加性 mode_emb（trunk 输入）：被 evoformer pre-norm LayerNorm 洗掉（正常尺度存活 <6%）。
+- v2 FiLM（to_single_repr 输出）：又被 folding head `single_repr_norm` 洗掉（注入点仍在 norm 前）。
+- v3 条件 LayerNorm（folding head 4 norm，全微调 lr1e-5）：最佳 fold1 偏向（mode1→fold1 3.20 < mode1→fold0 3.71），但**远未记忆**（应~0）。
+- **结论修正**：失败主因是**注入点 bug（norm 前被洗）+ 训练预算不足 + 单案例**，**不是**"trunk 表示不了 fold1"。早期"fold0 先验障碍/表示受限"结论**撤回**（过度解读）。
 
-**seq-only 张力（更尖锐）**：ACE 文献表明替代 fold 信号是**共进化信号、只在亚家族 MSA 暴露**；本设计**无 MSA、纯序列**，缺这个信号源。纯序列 trunk 能否编码替代 fold 倾向是**真实未验证假设**——最大不确定性在此，不在解码器（FM 是 commodity）。
+**关键教训**：
+- ProFOLD2 LayerNorm 极多（trunk 700+，folding head 每 IPA block attn/ff norm）；**任何 norm 前的加性注入都被洗**。条件化须 post-norm / 条件 LN / extra token（attention 传播）。
+- **全局均匀条件化不可行**：不区分决定/响应残基，无的放矢。
+- 148M 容量本该轻松记忆双 fold；停在 3 Å 是注入+训练问题，非容量。
 
-**路线 C（采纳，混合）**：trunk 轻调学模式条件映射（保留主导能力 + 学替代映射）+ FM 解码器做几何生成。常见且有先例：
-- **AF3 范式**：条件/全原子特征**既进 trunk**（塑造表示），**又 skip connection 直达 diffusion 解码器**（不让信息全挤过 trunk 瓶颈）。
-- 本设计对应：**mode_rank（+序列特征）注入 trunk** 产态特异 repr，**同时 skip 到 frame FM 解码器**——解码器既拿 trunk 处理后的 repr，又直接拿条件/输入特征，缓解 trunk 塌缩丢信息。
-- 对比：A 全压 trunk（微调难、易遗忘）；B 全压解码器（小解码器扛不住序列→fold 映射）；C 折中且 AF3 已验证可行。
+**转向逐残基 switching 场（§4.1 核心）**：
+- 不再全局 mode 加值；改为**预测逐残基 switching 场 + 靶向条件化决定残基 + IPA local→global**。
+- **align caveat**：XCL1 逐残基位移在全局 Kabsch 下弥散（95%>1Å），但中段核心稳定（~1Å）——弥散部分是叠合假象；switching 场须用**局部/核心叠合**识别，避开全局 Kabsch。
 
-**根基探针（先于全管线，cheapest de-risk）——须隔离 trunk 可表示性，避免解码器混淆**：
+**修订探针（测核心假设）**：
+- 测**模型能否预测逐残基 switching 场并据此驱动正确 fold 变化**，而非全局 mode 能否产 fold1。
+- 监督：fold0↔fold1 逐残基差异（局部叠合）；多案例 + 足够训练预算 + held-out。
+- 隔离 confound：注入 post-norm、训练充分、多案例、正确叠合。
 
-测的是 **trunk repr 本身**是否含替代 fold 信息，**不是解码器能力**。若用在 fold1 上训的解码器重建成功，可能只是解码器自己学会了 seq→fold1（绕过 repr 质量），阳性证明不了 trunk；阴性也可能是解码器太弱。**结果不可解释则探针失效。** 故：
-1. 取 fold-switcher 序列过预训练 trunk 得 repr（mode_rank=0/1）。
-2. **repr 判别探针**：mode_rank=0 vs 1 是否让 repr 产生与 fold0/fold1 实际结构对应、可区分的态特异表示（直接测"条件化是否让 repr 态特异"，不依赖重建）。
-3. **极简/冻结解码器**（线性/极浅）+ mode_rank=1 重建 fold1 backbone：极简解码器能重建 → fold1 信息在 repr 里**线性可访问**（真含信息）；必须深解码器才行 → 信息纠缠或其实是解码器在学。
-4. held-out **按 identity 分层**看结果（§11）。
-
-**结果反推设计（让数据说话，而非先验堆组件）**：
-- repr 态特异 + 极简解码可重建（高同源）→ trunk 可表示，路线 C 地基成立 → 进 Tier 1 全管线。
-- repr 不态特异 / 极简解码失败 → seq-only trunk 编码不了替代 fold → 重议编码器（共进化/更强序列模型）或收缩 scope，**别硬搭 FM/CFG/门**。
-- 低同源全失败 → 确认 Tier 3 不可达（与 Chakravarty 一致）。
-
-**诚实风险 + 收敛判断**：seq-only + 数据稀缺双重不利；trunk 可表示性是生死线且**一次未测**。设计已完备（12 节）但全未实证，**再堆组件边际收益递减**——正确动作是收敛到本探针实测，让结果决定后续，而非在未验证地基上继续盖楼。
+**诚实风险**：seq-only + 数据稀缺仍不利；决定残基识别（因 vs 果）是核心难点；先验证 switching 场可学性，再搭全管线。
 
 ### 4.5 无条件采样 = 混合采样（mode + 条件生成），非直接 FM 边缘
 
@@ -219,42 +228,33 @@
 
 **结论**：不是 diffusion 根本不行，是"条件均值平均多模"算法倾向 + 平均 repr + 单态数据三者叠加。**多态数据 + 态特异 repr 是必做的主杠杆**（解决两条主因）；解码器层面，连续 FM + CFG 是基线，VQ 离散混合是"规避算法倾向"的**可选候选**——是否必要由实测决定。纯换 FM/diffusion 而不动 repr/数据无用；但动了 repr/数据后，连续 FM 基线可能已足够，VQ 须对照验证。
 
-## 6. 架构（mode-rank 条件 FM 基线 + VQ 无标签备选）
+## 6. 架构（逐残基 switching 场 + 靶向条件化）
 
-**基线架构（先做）**：
-
-```
-sequence ─► 预训练 trunk(轻调) ─► 态特异 repr ─► 连续 frame FM 解码器 ─► frames ─►(侧链后补)─► atom
-                  ▲                                   ▲   ▲
-            mode_rank 早注入                    repr  │   │ skip: mode_rank+输入特征
-            (0=主导/1=非主导)                  CFG dropout┘   (AF3 式, 不经 trunk 瓶颈)
-```
-
-- **路线 C（§4.4，AF3 范式）**：mode_rank（+序列特征）**既注入 trunk**（轻调产态特异 repr），**又 skip 直达 frame FM 解码器**——解码器同时拿 trunk repr 与原始条件/特征，缓解 trunk 塌缩丢替代-fold 信息。连续 frame FM 学 `p(frames|repr, mode_rank)`，CFG dropout 学边缘 `p(frames|repr)`。
-- **生成统一在 backbone frame 级**（§4.3）：fold0/fold1 都生成骨架；**侧链堆积为单独确定性步骤**（fold0 全原子训 torsion 头）。fold1 backbone-only → 只算 backbone FAPE、mask 侧链。
-- 推理：mode_rank=0/1 → 指定态；**无条件 → 混合采样**（枚举/采 mode_rank + 条件生成，§4.5），不直接采 FM 边缘。
-- **先做根基探针**（§4.4）验证 trunk 替代-fold 可表示性，再搭全管线；验证"多态数据 + mode-rank + 态特异 repr + CFG 能否不塌缩、held-out 泛化"。
-
-**备选架构（VQ 混合，仅无 mode 标签时）**：
+**核心架构**：
 
 ```
-sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent (VQ) ─► mode code
-                  ▲                              │
-            condition 早注入                     ▼
-            (CFG dropout 脚手架)         mode code + repr
-                                               │
-                                               ▼
-                                  连续几何解码器 (frame FM/flow)
-                                               │
-                                               ▼
-                                     frames ─► torsion ─► atom
+sequence ─► 预训练 trunk(轻调) ─► repr ─────────────────────┐
+                                                            ▼
+(seq, mode) ─► switching 场预测器 ─► 逐残基 switching 场 s_i ─► 靶向条件化(post-norm/条件LN/extra token)
+                                                            │
+                                                            ▼
+                                            StructureModule IPA (local→global 传播)
+                                                            │
+                                                            ▼
+                                                frames ─►(侧链后补)─► atom
 ```
 
-- **trunk**：条件早注入（借鉴 `conditional_pos` 注入点，但需语义条件编码而非几何 distogram），产态特异表示；冻结或轻调。
-- **离散 mode latent**：VQ-VAE 在结构/表示空间 discover mode 码本；采样 code 即选 mode（离散、分离）。
-- **连续几何精修**：mode code 条件化 frame flow matching，生成精确骨架 → 复用 torsion 解码到全原子。
-- **训练**：CFG condition dropout（条件标签脚手架）+ 似然目标（不平均）。
-- **两架构共享 trunk/repr/条件/评测**，仅解码器不同 → 干净消融，隔离"离散 vs 连续"这一个变量。
+- **switching 场预测器**：从 `(seq, mode)` 预测逐残基 switching 场 `s_i`（哪些残基变、变多少）；监督来自 fold0↔fold1 逐残基差异（**局部/核心叠合**，§4.4）。
+- **靶向条件化**：`s_i` 施加到对应残基（switching 残基强、其余≈0）；**post-norm / 条件 LN / extra token**，避开 norm 前注入被洗（§4.4 教训）。
+- **IPA local→global**：靶向扰动决定残基 → IPA 注意力耦合传播成全局 fold 重排。
+- **生成统一 backbone frame 级**（§4.3）；侧链后补；fold1 只算 backbone FAPE、mask 侧链。
+- 推理：mode=0/1 → 指定态 switching 场；**无条件 → 混合采样**（§4.5）。
+
+**与旧全局 mode 架构的本质区别**：条件化**逐残基异质**（switching 场），非全局同值；**靶向决定残基**，非弥散广播。这是 §4.1 核心原则的架构落地。
+
+**备选（VQ 离散 mode，仅无 switching 场监督时）**：VQ discover mode 码本 + 连续几何精修；但 switching 场有显式逐残基监督时优先（更直接表征"哪个残基变"）。
+
+**先验证 switching 场可学性**（§4.4 修订探针：多案例 + 充分训练 + 正确叠合 + post-norm 注入），再搭全管线。
 
 ## 7. 评测协议（真指标）
 
@@ -294,6 +294,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 | 候选 | 否决理由 |
 |---|---|
 | 训练集 recall（mode-index 记忆） | 刷指标，不解决实际问题 |
+| **全局均匀 mode 加值/全局 mode token** | 不区分决定/响应残基，无的放矢；探针 v1–v3 失败（norm 前注入被洗 + 弥散无靶向）；改用逐残基 switching 场（§4.1） |
 | 全局预定义 fold token（候选 3） | 跨蛋白 fold0/fold1 无法定义；退化为序列相对索引 = recall-only |
 | 侧链多构象 | 难定义、难从 PDB 挑选 |
 | 纯条件预测 | AF3 强项，冗余 |
