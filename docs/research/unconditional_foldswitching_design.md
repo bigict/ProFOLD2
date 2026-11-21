@@ -1,7 +1,7 @@
 # 无条件 Fold-Switching 构象系综采样 — 设计方案
 
 > 状态：设计蓝图（讨论稿，2026-11-21）· 配套对照页 `multiconformation_methods.html`
-> 目标读者：ProFOLD2 多构象研究 · 本文记录目标、战略、核心难点、候选机制、主推架构、评测与分阶段计划，以及被否决候选的决策依据。
+> 目标读者：ProFOLD2 多构象研究 · 本文记录目标、战略、核心难点、候选机制（连续 FM 基线 + VQ 候选）、架构、评测与分阶段计划，以及被否决候选的决策依据。
 
 ## 1. 目标与战略定位
 
@@ -55,15 +55,17 @@
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
 |---|---|---|---|
-| 连续 FM + CFG | 噪声索引 mode + 条件脚手架 | 成熟（AlphaFlow）、几何精确 | 易塌缩/插值混合态 |
-| **学习离散 mode latent（VQ）+ 连续精修** | 离散 code 天然分离 mode | 离散保多模、**mode 从数据 discover** | 非保距、codebook collapse |
+| **连续 FM + CFG（基线）** | 噪声索引 mode + 条件脚手架 | 成熟（AlphaFlow）、几何精确、最简单 | 易塌缩/插值混合态 |
+| 学习离散 mode latent（VQ）+ 连续精修（候选） | 离散 code 天然分离 mode | 离散保多模、mode 从数据 discover、**或更省样本** | 非保距、codebook collapse、两阶段复杂度 |
 | 能量头 + PT 采样 | 能量景观 + 跨 basin 采样 | 采稀有态、物理可解释 | 采样慢、能量难训 |
 
-**主推：学习离散 mode latent + 连续几何精修。**
+**基线：连续 FM + CFG。候选：学习离散 mode latent（VQ）+ 连续精修——待实测验证，非先验 commitment。**
 
-关键连接：之前否决"fold0/fold1 跨蛋白无法预定义"——但 **VQ 的 mode 是从数据 discovered，不是预定义**，恰好绕开死结（不需要通用 fold 词表，模型自学 mode 码本）。离散 mode 天然不插值 → 对"覆盖分离的全局 fold"比连续 FM 更稳；几何精度交给后续连续精修。**离散保 mode 分离，连续保几何精度，各司其职。**
+定位澄清（重要）：**数据 + 态特异 repr 是主杠杆（必要，与解码器无关）；解码器是次要架构选择**。VQ 不是数据的替代，而是"稀缺数据下可能更省样本学多模"的**假设性**候选。其优势未被证明：VQ 自身也有数据需求（codebook 学习/collapse），连续 FM + 充足多态数据 + CFG 完全可能就够了（似然本 mode-covering，数据够时条件均值平均的弱点被缓解）。**故先跑连续 FM 基线，再上 VQ 做消融，实测决定谁更优；若基线就行，VQ 复杂度不必要。**
 
-### 5.1 塌缩根源分析：连续去噪的算法弱点 + 离散混合的硬理由
+VQ 候选的 rationale（假设）：之前否决"fold0/fold1 跨蛋白无法预定义"——但 **VQ 的 mode 是从数据 discovered，不是预定义**，绕开死结（不需通用 fold 词表）。离散 mode 天然不插值，几何精度交给连续精修。**但这只是"可能更稳/更省样本"的假设，须用连续 FM 基线对照证实。**
+
+### 5.1 塌缩根源分析：连续去噪的算法弱点 + 离散混合的假设性优势
 
 > 回答"为何 FM/diffusion 无条件采样多构象不理想，根源是不是算法本身"。AF3 以序列(+配体)为条件，无配体时≈ `p(struct|seq)`（即本文"无条件"），它确实塌缩——问题真实。
 
@@ -79,10 +81,10 @@
 
 **主因其实是数据 + 条件化（可修复、占主导）**：trunk repr 按单 fold 训→对 fold-switcher 平均；PDB 多单态→学到的 `p(struct|seq)` 本就单峰。**杠杆在 repr + 数据，不在换解码器算法。**
 
-**离散混合的硬理由（正面规避算法根源）**：
+**离散混合的假设性优势（待实测，非定论）**：
 > 连续去噪会在高噪声处平均多模（条件均值本性）；离散混合把多模性**从连续去噪挪进 categorical `p(z|repr)`**（不会平均），让每个连续分量 `p(frames|repr,z)` **单模**——单模去噪没有模态可平均。
 
-即离散混合**正面规避"条件均值平均多模"这个算法根源**，而非靠"离散看起来分离"。这是它相对纯连续 FM 的 principled 优势，也回答"离散是否必要"——它针对连续去噪的真实弱点。
+机制上离散混合**正面规避"条件均值平均多模"**，而非靠"离散看起来分离"。**但这是假设，不是证明**：该算法倾向在**数据稀缺时被放大**（模态间 score 估不准），故 VQ 的离散分解可能在少样本多模 regime 更省样本（每个子问题更简单）；然而数据充足时连续 FM 的似然 mode-covering 可能已足够，VQ 未必更优。**VQ 是否真比连续 FM 基线好，必须实测，不能先验断言。**
 
 | 根源 | 性质 | 可修复性 |
 |---|---|---|
@@ -92,9 +94,22 @@
 | trunk repr 平均 | **条件化**（主因） | 态特异 repr / 条件早注入 |
 | 数据单态为主 | **数据**（主因） | 多态数据（本组有） |
 
-**结论**：不是 diffusion 根本不行，是"条件均值平均多模"算法倾向 + 平均 repr + 单态数据三者叠加。多态数据解决一条、态特异 repr 解决一条、离散混合规避算法那条——**三管齐下**才完整；纯换 FM/diffusion 无用，必须同时动 repr/数据/模态表示。
+**结论**：不是 diffusion 根本不行，是"条件均值平均多模"算法倾向 + 平均 repr + 单态数据三者叠加。**多态数据 + 态特异 repr 是必做的主杠杆**（解决两条主因）；解码器层面，连续 FM + CFG 是基线，VQ 离散混合是"规避算法倾向"的**可选候选**——是否必要由实测决定。纯换 FM/diffusion 而不动 repr/数据无用；但动了 repr/数据后，连续 FM 基线可能已足够，VQ 须对照验证。
 
-## 6. 主推架构
+## 6. 架构（连续 FM 基线 + VQ 候选）
+
+**基线架构（先做）**：
+
+```
+sequence ─► 预训练 trunk ─► 态特异 repr ─► 连续 frame FM 解码器 ─► frames ─► torsion ─► atom
+                  ▲                              ▲
+            condition 早注入                CFG condition dropout
+            (语义条件编码)                  (训练脚手架, 推理 drop)
+```
+
+- trunk 冻结/轻调，条件早注入产态特异 repr；连续 frame FM（AlphaFlow 式）直接学 `p(frames|repr)`，CFG dropout 学边缘系综。最简单，先验证"多态数据 + 态特异 repr + CFG 能否让连续 FM 不塌缩"。
+
+**候选架构（VQ 混合，待 vs 基线实测）**：
 
 ```
 sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent (VQ) ─► mode code
@@ -113,6 +128,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 - **离散 mode latent**：VQ-VAE 在结构/表示空间 discover mode 码本；采样 code 即选 mode（离散、分离）。
 - **连续几何精修**：mode code 条件化 frame flow matching，生成精确骨架 → 复用 torsion 解码到全原子。
 - **训练**：CFG condition dropout（条件标签脚手架）+ 似然目标（不平均）。
+- **两架构共享 trunk/repr/条件/评测**，仅解码器不同 → 干净消融，隔离"离散 vs 连续"这一个变量。
 
 ## 7. 评测协议（真指标）
 
@@ -125,7 +141,8 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 ## 8. 分阶段计划
 
 - **Phase 0 · 数据地基 + mode 可分性**：多态 grouping（按序列跨条目）+ 构象聚类 + 条件解析 + 按序列 split + 统计（多态序列数、态数、态间 TM-score 分布——区分大 fold-switch vs 小波动）。**先验证 mode 可分性**，决定离散 latent 可行性。
-- **Phase 1 · 最小 pilot**：trunk 冻结 + 离散 mode latent + 连续精修 + CFG，小规模验证无条件 mode coverage；对照确定性解码器（应单态）vs 生成式（应多态）。
+- **Phase 1 · 连续 FM 基线 pilot**：trunk 冻结 + 态特异 repr + 连续 frame FM + CFG，小规模验证无条件 mode coverage；对照确定性解码器（应单态）vs 连续生成式（应多态）。**先确认基线能否不塌缩。**
+- **Phase 1b · VQ 候选消融**：若基线塌缩或 mode coverage 不足，上 VQ 离散混合（同 trunk/repr/条件/评测），实测是否更优；若基线已足够，VQ 复杂度不必要。
 - **Phase 2 · 扩展**：trunk 轻调、采样增强（PT/repulsive）、条件化精修。
 - **Phase 3 · 泛化评测**：held-out 无条件 mode coverage + 基线对比。
 
@@ -133,6 +150,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 
 - **未解前沿**，无保证成功的配方（AF3 有 diffusion + 海量数据仍塌缩）。
 - **数据稀缺是硬约束**：fold-switcher 少，mode 覆盖上限由数据多样性决定。
+- **解码器是次要消融，非主杠杆**：数据 + 态特异 repr 必做；VQ 相对连续 FM 的"省样本/保分离"优势是假设，未证明，须基线对照实测——不先验押注 VQ。
 - 离散 latent 风险：mode 发现质量、token→结构非保距（MultiStateFold：88.7% token 差异仍可 TM 0.96）、codebook collapse——需实测。
 - 泛化到新序列的 fold repertoire 依赖数据多样性，非解码器/条件化能单独解决。
 
