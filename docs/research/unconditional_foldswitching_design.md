@@ -145,6 +145,29 @@
 
 **边界**：仍依赖条件生成质量（§4.4 探针）与序列→fold 泛化。若 fold1 内部多模（非主导合集 >2 fold），fold1 分支才需 VQ/进一步分解；二态下 fold1 通常单替代，问题不大。
 
+### 4.6 非 switcher 幻觉：倾向门 + 置信度缓解
+
+**问题**：混合采样枚举 mode_rank=0,1 默认"每序列都有替代态"，但**绝大多数蛋白不 switch**。对非 switcher 查询 mode_rank=1 是 **OOD 输入**（fold1 FM 只在 switcher 上训）→ 生成**幻觉替代 fold**。
+
+**缓解 1：switching 倾向门 `p(m=1|seq)`**（fold-switching 预测，Porter/Dishman）：
+- 非 switcher `p(m=1|seq)≈0` → 只生成 fold0；switcher 才生成 fold1。
+- **scope 区分**：held-out **已知 switcher** 评测可省门（已知会 switch）；**通用部署（任意序列）必需**，否则幻觉淹没。
+- 训练：正例（switcher）稀缺来自 PDB；**负例（非 switcher）由 AFDB 单 fold 海量提供**（AFDB 另一正当用途）。类别极不平衡 → 需校准，门质量是系统 precision 上限。
+
+**缓解 2：置信度过滤（pLDDT/pTM）**：幻觉/OOD 结构通常**置信度低** → 低 pLDDT/pTM 可作软门过滤明显垃圾，降低幻觉危害。
+- **关键反例（不能只靠置信度）**：Chakravarty 2024 表明 **AF 置信度反而"歧视"真实替代 fold**（替代态置信度偏低）；fold-switcher 本就比单折叠蛋白更不稳定/异质（Chakravarty 2023）。→ **真实替代 fold 与幻觉都偏低置信度**，单靠阈值无法干净区分，**过滤会误删真实替代态**。
+- → 置信度是**有用的软缓解**（滤明显垃圾），但**不是倾向门的干净替代**；两者互补。部署用"倾向门 + 置信度"联合，评测已知 switcher 时置信度仅作辅助诊断。
+
+**候选实现：生成模型兼任 fold-switching 分类器（倾向门由此导出，而非另训）**：
+- 查询 mode_rank=0/1，比较 fold0 与 fold1：**分类信号 = 结构差异度 × 合理性**。
+  - switcher：fold1 与 fold0 **结构不同**（fold0↔fold1 TM-score 低）**且合理**（几何/物理 plausible）。
+  - 非 switcher：fold1 **塌回 fold0**（TM-score 高）或**幻觉 distinct 垃圾**（差异高但不合理）。
+- **差异度比置信度干净**：真实替代 fold 置信度虽低，但与 fold0 确实不同 → 差异度高，避开"替代态低置信"偏置。但差异度 alone 不够（幻觉也 distinct）→ 须配**合理性判别**（立体化学/物理能量/学习判别器）滤垃圾。
+- **统一**：`p(switch|seq)` 从 mode_rank=1 输出质量导出（distinct + plausible → 高），生成 + 分类一个模型。先例：AF2 MSA 子采样检测 switching、ACE 共进化信号——本方案是其生成式版本。
+- **caveat**：依赖生成能力（§4.4 探针先行，循环依赖）；非 switcher 的 fold1 塌回 vs 幻觉需实测；合理性判别器需训/验证；差异度×合理性→p(switch) 需校准。属候选思路，待验证。
+
+**小结**：幻觉问题真实但可控——倾向门（部署必需）+ 置信度软过滤（互补，注意真实替代态也低置信）；AFDB 供负例。倾向门可由"生成模型兼任分类器（差异度×合理性）"实现，生成/分类统一。当前 held-out switcher scope 可后置门，但通用化必须补上。
+
 ## 5. 候选机制（mode 如何表示/采样）
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
