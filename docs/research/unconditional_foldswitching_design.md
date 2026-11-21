@@ -317,6 +317,26 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 
 **战略选择**：若目标是 Tier 3（真泛化），需**扩充多态数据**（MD 系综、cryo-EM 异质性、更多实验 switcher）或**引入共进化信号**（违背 seq-only？）——这是战略选择，非设计细节。当前设定下建议先 identity 分层探针定边界 + 定 scope（Tier 1+2）+ 想清 seq-only niche，再决定是否按此推进。
 
+## 12. 核酸多构象数据 landscape（局部 vs 全局）
+
+核酸多构象**同样数据受限**，但**不是没数据**——有现成 curated 数据集（文献调研，非亲测）：
+
+- **SMARTFlexDB**（NAR/bioRxiv 2025/2026）：curated RNA **apo–holo 配对**库——**452 PDB 结构**、734 条目、266 holo/186 apo、**1187 pocket 级配对**、150 小分子、23 功能类；**riboswitch 占 38%（最大类）**；**自带 leakage-controlled splits**，为 benchmark 设计。
+- **CoDNaS-RNA**（NAR 2022）：RNA 天然态构象多样性库；**RNA-Puzzles**：riboswitch aptamer 盲测靶标（含 bound/unbound）；**Ribocentre** riboswitch catalog。
+
+**关键 nuance：核酸多态数据多是局部小变化，非大 fold-switching**：
+- SMARTFlexDB 1187 配对统计：**全局 RMSD 中位 1.16 Å**、**TM-score 中位 0.79**、**碱基对重排中位 0** → 多数 apo–holo 差异是**局部 pocket 重排**。
+- 有的 riboswitch（SAM-I）游离/结合态 aptamer **无显著构象变化**（Liberman & Penedo 2011）→ "riboswitch=fold-switching" 不总成立。
+
+**与蛋白数据性质不同**：
+- 蛋白 fold-switcher：少（百例）但**大拓扑切换**。
+- 核酸 apo–holo：较多（452 结构/1187 对）但**局部小变化**——类似本文为蛋白**否决的"侧链/局部多构象"**那类。
+
+**scope 决定可行性**：
+- **局部柔性**（pocket/loop 重排）：核酸数据**反而更充足、更 curated**（SMARTFlexDB 是现成 benchmark 起点）。
+- **大 RNA fold-switching**（表达平台重排等）：数据**仍稀缺**，与蛋白 fold-switching 同困境。
+- → 先定**局部 vs 全局** scope 再判断数据够不够；"RNA 自由度大"属实，但可用多态数据捕获的多是局部柔性。
+
 ## 附：关键文献锚点
 
 - AlphaFlow / ESMFlow：预训练 trunk + frame flow matching 系综（MD 训练）。
@@ -328,3 +348,6 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 - Porter 2024（Curr Opin Struct Biol, PMC11102287）：metamorphic 蛋白源于单折叠祖先、亚家族内保守。
 - Schafer & Porter 2023（Nat Commun, ACE）：亚家族特异 MSA 暴露替代 fold 共进化信号（56/56）。
 - Chakravarty 2024（Nat Commun, PMC11344769）：AF 替代 fold 靠结构记忆/序列关联，高同源（~40–70%+）成功、<35% 失败。
+- SMARTFlexDB（NAR/bioRxiv 2025/2026）：RNA apo–holo 配对库，452 PDB/1187 对，riboswitch 38%，变化多局部（RMSD 中位 1.16 Å/TM 0.79）。
+- CoDNaS-RNA（NAR 2022）：RNA 天然态构象多样性库。
+- Liberman & Penedo 2011（PMC3252462）：SAM-I riboswitch 游离/结合态 aptamer 无显著构象变化。
