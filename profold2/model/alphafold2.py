@@ -245,6 +245,7 @@ class AlphaFold2(nn.Module):
         batch.get,
         ('seq', 'mask', 'emb_seq', 'seq_index', 'seq_color', 'seq_sym', 'seq_entity')
     )
+    functional.warm_device_cache(seq.device)
     token_index = batch.get('token_index', batch['seq_index'])
     target_feat, = map(batch.get, ('target_feat', ))
     if not exists(target_feat):
@@ -328,7 +329,7 @@ class AlphaFold2(nn.Module):
     else:
       # black hole frames
       b, n, device = m.shape[:-3], m.shape[-2], m.device
-      quaternions = torch.tensor([1., 0., 0., 0.], device=device)
+      quaternions = functional.identity_quaternion(device)
       quaternions = torch.tile(quaternions, b + (n, 1))
       translations = torch.zeros(b + (n, 3), device=device)
     t = (quaternions, translations)
