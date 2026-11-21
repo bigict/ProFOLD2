@@ -119,12 +119,20 @@
 - 本设计对应：**mode_rank（+序列特征）注入 trunk** 产态特异 repr，**同时 skip 到 frame FM 解码器**——解码器既拿 trunk 处理后的 repr，又直接拿条件/输入特征，缓解 trunk 塌缩丢信息。
 - 对比：A 全压 trunk（微调难、易遗忘）；B 全压解码器（小解码器扛不住序列→fold 映射）；C 折中且 AF3 已验证可行。
 
-**根基探针（先于全管线， cheapest de-risk）**：
-1. 取 fold-switcher 序列过预训练 trunk 得 repr。
-2. 接轻量解码器，条件 mode_rank=1，重建 fold1 backbone。
-3. held-out fold-switcher 上看 fold1 重建 TM-score：能重建 → 根基成立；不能 → seq-only trunk 编码不了替代 fold，须先解决表示（引入亚家族/共进化信号、更强序列编码器、或收缩到高同源 scope），否则全管线白建。
+**根基探针（先于全管线，cheapest de-risk）——须隔离 trunk 可表示性，避免解码器混淆**：
 
-**诚实风险**：seq-only + fold-switcher 数据稀缺双重不利；trunk 替代-fold 可表示性是生死线。探针失败则重议编码器/scope，而非硬搭管线。
+测的是 **trunk repr 本身**是否含替代 fold 信息，**不是解码器能力**。若用在 fold1 上训的解码器重建成功，可能只是解码器自己学会了 seq→fold1（绕过 repr 质量），阳性证明不了 trunk；阴性也可能是解码器太弱。**结果不可解释则探针失效。** 故：
+1. 取 fold-switcher 序列过预训练 trunk 得 repr（mode_rank=0/1）。
+2. **repr 判别探针**：mode_rank=0 vs 1 是否让 repr 产生与 fold0/fold1 实际结构对应、可区分的态特异表示（直接测"条件化是否让 repr 态特异"，不依赖重建）。
+3. **极简/冻结解码器**（线性/极浅）+ mode_rank=1 重建 fold1 backbone：极简解码器能重建 → fold1 信息在 repr 里**线性可访问**（真含信息）；必须深解码器才行 → 信息纠缠或其实是解码器在学。
+4. held-out **按 identity 分层**看结果（§11）。
+
+**结果反推设计（让数据说话，而非先验堆组件）**：
+- repr 态特异 + 极简解码可重建（高同源）→ trunk 可表示，路线 C 地基成立 → 进 Tier 1 全管线。
+- repr 不态特异 / 极简解码失败 → seq-only trunk 编码不了替代 fold → 重议编码器（共进化/更强序列模型）或收缩 scope，**别硬搭 FM/CFG/门**。
+- 低同源全失败 → 确认 Tier 3 不可达（与 Chakravarty 一致）。
+
+**诚实风险 + 收敛判断**：seq-only + 数据稀缺双重不利；trunk 可表示性是生死线且**一次未测**。设计已完备（12 节）但全未实证，**再堆组件边际收益递减**——正确动作是收敛到本探针实测，让结果决定后续，而非在未验证地基上继续盖楼。
 
 ### 4.5 无条件采样 = 混合采样（mode + 条件生成），非直接 FM 边缘
 
@@ -263,7 +271,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
   - 构象聚类（TM-score/RMSD）→ **二态 mode-rank 标签：0=主导、1=非主导（合并替代）**；条件解析；**平衡采样**（覆盖导向，比例可调）。
   - **AFDB 相似转移增广**（§4.2）：按结构相似性从 PDB fold-switcher 转移候选标签 + 模板 fold1，**伪标签按相似度过滤/降权**，真值锚 PDB。
   - **按序列 split** + 统计（多态序列数、态数、态间 TM-score 分布——区分大 fold-switch vs 小波动）。**先验证 mode 可分性**。
-- **Phase 0.5 · 根基探针（先于全管线，按 identity 分层）**：预训练 trunk repr + 轻量解码器 + mode_rank=1 重建 fold1 backbone，held-out fold-switcher **按序列 identity 分层**测 TM-score（§4.4/§11）：高同源（>40%）能重建 → Tier 1 成立；低同源（<35%）失败 → 确认 Tier 3 不可达。**画"泛化 vs identity"曲线定能力边界**，而非单一 pass/fail。生死线，失败则重议编码器/scope。
+- **Phase 0.5 · 根基探针（先于全管线，隔离 trunk 可表示性，按 identity 分层）**：repr 判别探针（mode_rank=0/1 是否产态特异 repr）+ **极简/冻结解码器**重建 fold1（避免解码器混淆，§4.4），held-out fold-switcher **按序列 identity 分层**测 TM-score（§4.4/§11）：高同源（>40%）能重建 → Tier 1 成立；低同源（<35%）失败 → 确认 Tier 3 不可达。**画"泛化 vs identity"曲线定能力边界**，而非单一 pass/fail。生死线，失败则重议编码器/scope。**设计已完备，此探针是唯一未验证根基——先测再定后续，不先验堆组件。**
 - **Phase 1 · 路线 C 条件 FM 基线 pilot**：trunk 轻调 + mode_rank 注入 trunk **且 skip 到 frame FM 解码器**（AF3 式）+ CFG dropout + 平衡采样（fold0 确定性、fold1 生成式），小规模验证 **held-out 无条件 mode coverage**；对照确定性解码器（应单态）vs 条件生成式（应多态）。**先确认基线能否不塌缩且泛化。**
 - **Phase 1b · VQ 备选消融**：仅当无 mode 标签或基线 mode coverage 不足时，上 VQ 离散混合（同 trunk/repr/评测），实测是否更优；有标签且基线足够则 VQ 不必要。
 - **Phase 2 · 扩展**：采样增强（PT/repulsive）、条件化精修、trunk 进一步微调。
