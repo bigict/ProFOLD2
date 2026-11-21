@@ -116,10 +116,52 @@ def make_mask(restypes, mask, device=None):
   return torch.as_tensor([1.0] * num_class, device=device)
 
 
+@functools.lru_cache(maxsize=64)
+def _const_tensor(value, dtype, device):
+  return torch.as_tensor(value, dtype=dtype, device=device)
+
+
+@functools.lru_cache(maxsize=8)
+def identity_quaternion(device):
+  return torch.tensor([1., 0., 0., 0.], device=device)
+
+
+_NP_DEVICE_CACHE = {}
+_WARMED_DEVICES = set()
+
+
+def warm_device_cache(device):
+  # Populate the constant cache from eager code BEFORE any torch.compile
+  # region traces: otherwise dynamo bakes the cache-miss upload path into
+  # the graph and every compiled call re-uploads (pageable HtoD + stream sync).
+  if device.type != 'cuda' or device in _WARMED_DEVICES:
+    return
+  for name in dir(residue_constants):
+    v = getattr(residue_constants, name)
+    if isinstance(v, np.ndarray):
+      _np_to_device(v, device)
+  _WARMED_DEVICES.add(device)
+
+
+def _np_to_device(params, device):
+  # Cache the device copy: a per-call from_numpy().to() is a pageable HtoD
+  # upload that forces a stream sync (pipeline bubbles under torch.compile).
+  # Strong ref to params prevents id() reuse; identity check guards collisions.
+  key = (id(params), device)
+  hit = _NP_DEVICE_CACHE.get(key)
+  if hit is not None and hit[0] is params:
+    return hit[1]
+  if len(_NP_DEVICE_CACHE) >= 128:
+    _NP_DEVICE_CACHE.clear()
+  tensor = torch.from_numpy(params).to(device)
+  _NP_DEVICE_CACHE[key] = (params, tensor)
+  return tensor
+
+
 def batched_gather(params, indices, dim=1, has_batch_dim=False):
   b, device = indices.shape[0], indices.device
   if isinstance(params, np.ndarray):
-    params = torch.from_numpy(params).to(device)
+    params = _np_to_device(params, device)
   if not has_batch_dim:
     params = repeat(params, 'n ... -> b n ...', b=b)
   c = len(params.shape) - len(indices.shape)
@@ -680,7 +722,7 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
   # Mirror psi, because we computed it from the Oxygen-atom.
   mirror_vec = [1., 1., -1.] + [1.] * (residue_constants.chi_angles_num - 3)
   torsion_angles *= rearrange(
-      torch.as_tensor(mirror_vec, device=torsion_angles.device), 'g -> g ()'
+      _const_tensor(tuple(mirror_vec), None, torsion_angles.device), 'g -> g ()'
   )
 
   # Create alternative angles for ambiguous atom names.
@@ -1174,10 +1216,10 @@ def between_residue_clash_loss(
   c_idx = residue_constants.atom_order['C']
   atom_type_num = points_mask.shape[-1]
   c_atom = F.one_hot(  # pylint: disable=not-callable
-      torch.as_tensor(c_idx, dtype=torch.long, device=pred_points.device), atom_type_num
+      _const_tensor(c_idx, torch.long, pred_points.device), atom_type_num
   )
   n_atom = F.one_hot(  # pylint: disable=not-callable
-      torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device), atom_type_num
+      _const_tensor(n_idx, torch.long, pred_points.device), atom_type_num
   )
   neighbour_mask = (residue_index[..., :, None] + 1 == residue_index[..., None, :])
   c_n_bonds = neighbour_mask[..., None, None] * torch.reshape(
@@ -1190,7 +1232,7 @@ def between_residue_clash_loss(
   cys_sg_idx = residue_constants.restype_name_to_atom14_names['CYS'].index('SG')
   if cys_sg_idx < points_mask.shape[-1]:
     cys_sg_atom = F.one_hot(  # pylint: disable=not-callable
-        torch.as_tensor(cys_sg_idx, dtype=torch.long, device=pred_points.device),
+        _const_tensor(cys_sg_idx, torch.long, pred_points.device),
         points_mask.shape[-1]
     )
     disulfide_bonds = cys_sg_atom[:, None] * cys_sg_atom[None, :]

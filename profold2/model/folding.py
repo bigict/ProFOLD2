@@ -146,7 +146,7 @@ class StructureModule(nn.Module):
     if 'frames' in representations and exists(representations['frames']):
       quaternions, translations = representations['frames']
     else:
-      quaternions = torch.tensor([1., 0., 0., 0.], device=device)
+      quaternions = functional.identity_quaternion(device)
       quaternions = torch.tile(quaternions, b + (n, 1))
       translations = torch.zeros(b + (n, 3), device=device)
 
