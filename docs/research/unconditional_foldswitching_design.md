@@ -44,10 +44,10 @@
 
 ## 4. 条件标签的角色：CFG 训练脚手架
 
-虽然产品是无条件，条件标签在**训练时**帮表示/解码器**分离态**（监督 disambiguation），dropout 让模型也学边缘系综；推理 drop 条件 → 无条件采样。**标签是学会"分离态"的辅助，不是推理输入。**
+虽然产品是无条件，条件标签在**训练时**帮表示/解码器**分离态**（监督 disambiguation），dropout 让模型也学边缘系综。**标签是学会"分离态"的辅助。无条件覆盖采样走"混合采样"（枚举/采 mode + 条件生成），而非直接采 FM 边缘（见 §4.5）。**
 
-- 训练：条件 FM + **condition dropout**（classifier-free guidance）。以概率 p 把 condition 换 null，模型同时学 `p(struct|seq,cond)` 与 `p(struct|seq)`。
-- 推理：给条件 → 条件生成（guidance 选 mode）；drop 条件 → 无条件采样。
+- 训练：条件 FM + **condition dropout**（classifier-free guidance）。以概率 p 把 condition 换 null，模型同时学 `p(struct|seq,cond)`、`p(struct|seq)` 与 `p(cond|seq)`。
+- 推理：给条件 → 条件生成（guidance 选 mode）；**无条件 → 混合采样**（采/枚举 mode + 条件生成，§4.5），不直接采 FM 边缘（会塌）。
 - **一个模型，两种能力**；条件生成是免费推论。
 - 推论：若条件完全决定态，每个 `(seq,cond)` 单 GT → 无均值塌缩 → 确定性解码器 + FAPE 就够；FM 只处理"条件不能确定的剩余多模"。
 
@@ -126,6 +126,25 @@
 
 **诚实风险**：seq-only + fold-switcher 数据稀缺双重不利；trunk 替代-fold 可表示性是生死线。探针失败则重议编码器/scope，而非硬搭管线。
 
+### 4.5 无条件采样 = 混合采样（mode + 条件生成），非直接 FM 边缘
+
+**张力**：首要目标是无条件多模采样，但连续 FM 在多模上会平均塌缩（§5.1）。
+- **条件生成**（mode_rank=0/1）：单模 → FM 无模态可平均 → 安全。
+- **直接采 FM 边缘**（drop mode_rank 采 `p(struct|seq)`）：边缘多模 → 高噪声条件均值**又平均两 fold** → 塌缩风险回来。**首要目标恰落在 FM 最不稳处。**
+
+**解法：分解无条件分布，混合采样**：
+\[ p(\text{struct}\mid\text{seq}) = \sum_{m\in\{0,1\}} p(m\mid\text{seq})\, p(\text{struct}\mid\text{seq}, m) \]
+1. 采 mode `m ~ p(m|seq)`（categorical，**无平均**）；
+2. 条件生成 `struct ~ p(struct|seq, m)`（**单模 FM，无平均**）。
+
+→ 多模放在 **categorical mode 选择**（安全），连续 FM 只做**单模条件生成**（安全）。**这是离散混合优势落到采样策略，mode 用数据标签 mode_rank，不需 VQ。**
+
+**"无条件"的含义**：不给定具体 mode、生成整个系综——**枚举/采样 mode_rank 再条件生成**（扫 mode_rank=0,1 或按 `p(m|seq)` 采）。**mode coverage 由构造保证**（扫遍 mode 必采各态），不靠 FM 边缘"碰巧"多模。对新序列仍是泛化（从序列生成 fold，非检索），mode_rank 只选生成哪个 fold。
+
+**CFG 角色（修正）**：dropout 学条件 + 边缘 + `p(m|seq)`；但**覆盖采样走混合路径**，非 drop 条件直接采 FM 边缘。`p(m|seq)` 可学 categorical 头，或覆盖导向均衡枚举两 mode。
+
+**边界**：仍依赖条件生成质量（§4.4 探针）与序列→fold 泛化。若 fold1 内部多模（非主导合集 >2 fold），fold1 分支才需 VQ/进一步分解；二态下 fold1 通常单替代，问题不大。
+
 ## 5. 候选机制（mode 如何表示/采样）
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
@@ -182,7 +201,7 @@ sequence ─► 预训练 trunk(轻调) ─► 态特异 repr ─► 连续 fram
 
 - **路线 C（§4.4，AF3 范式）**：mode_rank（+序列特征）**既注入 trunk**（轻调产态特异 repr），**又 skip 直达 frame FM 解码器**——解码器同时拿 trunk repr 与原始条件/特征，缓解 trunk 塌缩丢替代-fold 信息。连续 frame FM 学 `p(frames|repr, mode_rank)`，CFG dropout 学边缘 `p(frames|repr)`。
 - **生成统一在 backbone frame 级**（§4.3）：fold0/fold1 都生成骨架；**侧链堆积为单独确定性步骤**（fold0 全原子训 torsion 头）。fold1 backbone-only → 只算 backbone FAPE、mask 侧链。
-- 推理：mode_rank=0/1 → 指定态；drop → 无条件系综。
+- 推理：mode_rank=0/1 → 指定态；**无条件 → 混合采样**（枚举/采 mode_rank + 条件生成，§4.5），不直接采 FM 边缘。
 - **先做根基探针**（§4.4）验证 trunk 替代-fold 可表示性，再搭全管线；验证"多态数据 + mode-rank + 态特异 repr + CFG 能否不塌缩、held-out 泛化"。
 
 **备选架构（VQ 混合，仅无 mode 标签时）**：
@@ -209,7 +228,7 @@ sequence ─► 预训练 trunk ─► 态特异 repr ─► 离散 mode latent 
 ## 7. 评测协议（真指标）
 
 - **按序列 split** train/val/test，test 序列训练里没见过（泛化命门）。
-- **无条件**采样 N → 聚类（**backbone TM-score/RMSD**，fold-switching 为骨架级；fold1 backbone-only 不要求全原子）→ 匹配真实态 → **mode coverage（recall/precision）**。
+- **无条件混合采样**（§4.5：枚举/采 mode_rank + 条件生成）N 个 → 聚类（**backbone TM-score/RMSD**，fold-switching 为骨架级；fold1 backbone-only 不要求全原子）→ 匹配真实态 → **mode coverage（recall/precision）**。
 - 对照：AF3 / 单态基线 / 确定性解码器。
 - 辅助指标：条件精度（免费推论，非主指标）。
 - **不是**训练 recall，**不是**条件精度。
