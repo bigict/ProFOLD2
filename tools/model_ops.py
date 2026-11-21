@@ -172,6 +172,17 @@ def tokens_modify_main(args):
   def _linear_key(key):
     return f'{key}.weight', f'{key}.bias'
 
+  # New token rows enter the trunk at the pretrained activation scale:
+  # match the per-column mean/std of the existing AA rows (curve-preserving).
+  def _init_emb_like(padd, ref):
+    mean = ref.mean(dim=0)
+    std = ref.std(dim=0).clamp(min=1e-6)
+    padd.normal_(0, 1).mul_(std).add_(mean)
+
+  # New output classes start with ~zero softmax mass so existing-token
+  # predictions (and the protein loss at step 0) are preserved.
+  new_logit_bias = -10.0
+
   x = torch.load(args.model_files[0], map_location='cpu')
   logging.debug(x.keys())
 
@@ -188,7 +199,7 @@ def tokens_modify_main(args):
   assert m.shape[0] == aa_num + 1
 
   padd = torch.empty(mol_num + 1 - m.shape[0], m.shape[1], dtype=m.dtype)
-  torch.nn.init.uniform_(padd)
+  _init_emb_like(padd, m[:-1])
   m = torch.cat((m[:-1], padd, m[-1:]), dim=0)
   x['model'][token_emb_key] = m
 
@@ -205,14 +216,12 @@ def tokens_modify_main(args):
     m = x['model'][angle_net_weight_key]
     assert m.shape[0] == 7 * 2
     padd = torch.zeros(11 * 2 - m.shape[0], m.shape[1], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m, padd), dim=0)
     x['model'][angle_net_weight_key] = m
   if angle_net_bias_key in x['model']:
     m = x['model'][angle_net_bias_key]
     assert m.shape[0] == 7 * 2
     padd = torch.zeros(11 * 2 - m.shape[0], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m, padd), dim=0)
     x['model'][angle_net_bias_key] = m
 
@@ -223,14 +232,13 @@ def tokens_modify_main(args):
     m = x['model'][profile_weight_key]
     assert m.shape[0] == aa_num + 1
     padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m[:-2], padd[:-gap_num], m[-2:], padd[-gap_num:]), dim=0)
     x['model'][profile_weight_key] = m
   if profile_bias_key in x['model']:
     m = x['model'][profile_bias_key]
     assert m.shape[0] == aa_num + 1
     padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
+    padd.fill_(new_logit_bias)
     m = torch.cat((m[:-2], padd[:-gap_num], m[-2:], padd[-gap_num:]), dim=0)
     x['model'][profile_bias_key] = m
 
@@ -242,14 +250,13 @@ def tokens_modify_main(args):
     m = x['model'][coevolution_single_weight_key]
     assert m.shape[0] == aa_num + 1
     padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], m.shape[1], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m[:-2], padd[:-gap_num], m[-2:], padd[-gap_num:]), dim=0)
     x['model'][coevolution_single_weight_key] = m
   if coevolution_single_bias_key in x['model']:
     m = x['model'][coevolution_single_bias_key]
     assert m.shape[0] == aa_num + 1
     padd = torch.zeros(mol_num + 1 + gap_num - m.shape[0], dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
+    padd.fill_(new_logit_bias)
     m = torch.cat((m[:-2], padd[:-gap_num], m[-2:], padd[-gap_num:]), dim=0)
     x['model'][coevolution_single_bias_key] = m
 
@@ -261,11 +268,9 @@ def tokens_modify_main(args):
     assert m.shape[1] == aa_num + 1 and m.shape[2] == aa_num + 1
     padd = torch.zeros(m.shape[0], mol_num + 1 + gap_num - m.shape[1], m.shape[2],
                        dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m[:,:-2,:], padd[:,:-gap_num,:], m[:, -2:,:], padd[:,-gap_num:,:]), dim=1)
     padd = torch.zeros(m.shape[0], m.shape[1], mol_num + 1 + gap_num - m.shape[2],
                        dtype=m.dtype)
-    torch.nn.init.uniform_(padd)
     m = torch.cat((m[:,:,:-2], padd[:,:,:-gap_num], m[:,:,-2:], padd[:,:,-gap_num:]), dim=2)
     x['model'][coevolution_states_key] = m
   else:
