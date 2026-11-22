@@ -1588,9 +1588,29 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
     def __init__(self, *args, **kwargs):
       super().__init__()
 
+      class _ChunkedLayer(nn.Module):
+        def __init__(self, layers):
+          super().__init__()
+          # plain list, NOT ModuleList: blocks are already registered via
+          # self.layers; re-registering here would duplicate state_dict keys.
+          self.layers = list(layers)
+
+        def forward(self, *args, **kwargs):
+          for i, layer in enumerate(self.layers):
+            args = layer(*args, **kwargs)
+            # HACK: same as checkpoint_sequential_nargs — wrap non-tuple
+            # outputs so the next layer/chunk can unpack them.
+            if i < len(self.layers) - 1 and not isinstance(args, tuple):
+              args = (args, )
+          return args
+
       segment_size = kwargs.pop('checkpoint_segment_size', 1)
       assert depth % segment_size == 0
       layer_kwargs = kwargs.pop('layer_kwargs', None)
+      self.compile = kwargs.pop('compile', False)
+      if self.compile:
+        from torch import _dynamo  # pylint: disable=import-outside-toplevel
+        _dynamo.config.optimize_ddp = False
 
       def kwargs_stack(layer_idx):
         if exists(layer_kwargs):
@@ -1602,8 +1622,35 @@ def layer_stack(moduleclass, depth, *args, **kwargs):
       )  # pylint: disable=missing-kwargs
       self.segments = len(self.layers) // segment_size
 
+      if self.compile:
+        # Chunk layers into module wrappers; checkpoint INSIDE, compile OUTSIDE
+        # (torchtitan order): inductor owns recomputation with consistent layouts,
+        # avoiding the CheckpointError from a dynamo recompile (grad_mode/
+        # num_threads guards) changing tensor layout between forward and backward
+        # recompute. _ChunkedLayer is a MODULE so inductor's checkpoint HOP accepts
+        # it (a plain closure is rejected); supports segment_size > 1.
+        self.chunks = nn.ModuleList()
+        for layer_idx in range(0, depth, segment_size):
+          chunk = _ChunkedLayer(self.layers[layer_idx:layer_idx + segment_size])
+          orig_forward = chunk.forward
+
+          def ckpt_forward(*args, _orig=orig_forward, **kwargs):
+            if torch.is_grad_enabled():
+              return checkpoint(_orig, *args, use_reentrant=False, **kwargs)
+            return _orig(*args, **kwargs)
+
+          chunk.forward = torch.compile(ckpt_forward, dynamic=True)
+          self.chunks.append(chunk)
+
     def forward(self, *args, **kwargs):
       with profiler.record_function(moduleclass.__name__):
+        if self.compile:
+          for i, chunk in enumerate(self.chunks):
+            args = chunk(*args, **kwargs)
+            if i < len(self.chunks) - 1 and not isinstance(args, tuple):
+              args = (args, )
+          return args
+
         return checkpoint_sequential_nargs(self.layers, self.segments, *args, **kwargs)
 
   return _LayerStack(*args, **kwargs)
