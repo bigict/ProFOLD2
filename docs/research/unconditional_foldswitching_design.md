@@ -143,6 +143,54 @@
 
 **诚实风险**：seq-only + 数据稀缺仍不利；决定残基识别（因 vs 果）是核心难点；先验证 switching 场可学性，再搭全管线。
 
+### 4.4 续 · 探针阶段实测结论（2026-11-22，v4–v6 + 三蛋白可移植性）
+
+探针阶段已完成（脚本 `tools/foldswitch_probe/`，XCL1/RfaH/Mad2 三对，统一冻结 trunk + 场门控 adaLN-Zero + oracle 目标扭角，lr1e-4，1200 步）。**以下均为实测，非假设。**
+
+**A. 表示能力确认 + 排除 bug**
+- **fit-alone**（无条件单独拟合各 fold，全微调）：fold0→2.56 Å、fold1→2.00 Å。**模型能表示替代 fold**——早期"fold0 先验障碍/表示受限"彻底撤回。
+- **梯度诊断**（`probe_grad.py`）：trunk 梯度范数 5.6–20.4、head 2.7–6.8，全程健康，零梯度参数恒定（未用 NA 参数）——**无梯度消失 bug**。
+- **~2 Å 记忆地板**：FAPE **局部帧**损失几何所致（远端残基对误差放大 + clamp_ratio=0.9 保留 10% 梯度），非 lr/clamp_distance/sidechain/容量。fold0↔fold1 相距 5 Å，~2 Å 精度足以区分两 fold。
+
+**B. 条件化机制确立（v6，XCL1 阳性）**
+- 验证构造：**场门控 adaLN-Zero**，`x_out = norm(x)·(1 + s_i·γ_i) + s_i·β_i`，`γ_i/β_i = per-norm head(MLP(c_i))` 零初始化，`c_i = s_i·[目标 fold 主链扭角 ω/φ/ψ sin/cos]`（6 维）。**输出端乘 s_i 保证 mode0（s=0）逐位恒等**（仅 c=0 不够，MLP bias 非零）。
+- 注入点：**192 个 trunk 单链路径 norm**（dim_msa=256：msa_attn.row/col_attn.norm + msa_ff.norm，64 block×3）+ **3 个 folding head norm**（dim_single=384）。post-norm 调制，不被 LayerNorm 洗。
+- 条件网络：共享 MLP(6→128→128, SiLU) + per-norm 独立零初始化 γ/β 头，~12.9M 参数。
+- **XCL1 结果**：mode1→fold1 **2.28 Å**（fit-alone 水平），mode1→fold0 5.60，**分离 3.3 Å**，稳定收敛。
+- **D_l 监控**（逐层 mode 分歧度 `‖h1−h0‖/‖h0‖`）：分歧沿 trunk 深度生长（trunk0→trunk63：0.08→0.38），**IPA 迭代再放大 ~3 倍**（head_norm 0.40→ipa5 1.15）——**"局部 switching 残基条件 → IPA 放大 → 整体 fold 变化"在表示+结构层面定量成立**。
+
+**C. 冻结 trunk 是必要条件（v6ft 阴性）**
+- trunk 共微调（trunk lr1e-5 / cond lr1e-4）：mode1→fold1 **振荡 5–9 Å 不收敛**（终值 8.55），mode0 虽改善但 mode1 畸变。
+- 根因：条件调制学的是转向**预训练** trunk 表示；trunk 一旦微调（被 mode0 干净 fold0 梯度主导），地基移动 → 调制失配 → IPA 放大成畸变。**trunk 必须冻结作稳定地基，只训条件网络+head。**
+
+**D. 三蛋白可移植性梯度（机制有边界）**
+
+| 蛋白 | 切换类型 | 幅度 | mode1→fold1 | 分离 | 判定 |
+|---|---|---|---|---|---|
+| **XCL1**（1J8I/2HDM）| 端部重排 | 5 Å | **2.28 Å** | +3.3 Å | 完全成功 |
+| **Mad2**（2V64 O/C 二聚体）| O↔C 拓扑 | 9.8 Å | **6.39 Å** | +3.1 Å | 部分成功（方向对、精度受限）|
+| **RfaH**（2OUG/6C6S）| 结构域 α↔β + 刚体位移 | 16.8 Å（CTD 移 54 Å）| **17.65 Å** | −8.2 Å | 失败（方向错）|
+
+- **D_l 表示分歧三者都大**（trunk63 0.32–0.38，IPA 放大 ~1.1–1.2）——条件化**普遍制造 mode 特异表示**；但**结构结局随切换幅度/刚体位移递减**。
+- XCL1/Mad2 分离度相近（~3 Å）但绝对精度差很多（2.28 vs 6.39）；RfaH 连方向都错。
+
+**E. 机制边界结论**
+- "局部条件 → IPA 放大 → 整体 fold 变化"**真实但有边界**：IPA×8 能把局部条件传播成全局切换，**当全局变化在 IPA 迭代可达范围内**（端部/拓扑重排）；**超出可达范围的大幅刚体结构域重排**（RfaH CTD 移 54 Å + 重建 β-桶）驱动不了。
+- 这给 §4.1 核心原则"局部变化导致整体结构变化"加了**定量边界条件**，非无条件成立。
+
+**F. 对架构的含义（落地 §6）**
+- 逐残基 switching 场 + 靶向条件化对**局部/可传播型 fold-switcher**（XCL1/Mad2 类，占多数）可行；
+- **大幅结构域切换**（RfaH 类）需**不同机制**：结构域帧级条件化，或能采样大重排的生成式解码器（§5 FM）；
+- **trunk 冻结**（非"轻调"），条件网络学转向；adaLN-Zero 场门控构造已验证。
+
+**G. 诚实局限**
+- 全 **oracle**（喂 GT 场 + 目标扭角），**非预测式泛化**——从 seq+mode 预测 switching 场+方向（Stage B）仍是数据受限的真问题（§11 Tier-3）；
+- 单对蛋白，机制可移植性 ≠ 跨序列泛化；
+- Mad2/RfaH 预训练拟合本就差（基线 11–14 Å），精度上限部分受表示能力影响；
+- 数据整理本身印证稀缺：KaiB 5JYT 是工程突变体（序列不配）、Mad2 开态需从 O/C 二聚体拆、BCCIP/Serpin 候选 ID 多误——**可用干净 fold-switcher 对很少**。
+
+**探针阶段结论链**：表示能力 ✓ → 无梯度 bug ✓ → 条件化机制 ✓（XCL1）→ 冻结 trunk 必要 ✓ → 可移植性梯度 ✓（XCL1>Mad2>RfaH）。**下一步真问题：预测式场学习（Stage B）+ 大切换的结构域帧条件化。**
+
 ### 4.5 无条件采样 = 混合采样（mode + 条件生成），非直接 FM 边缘
 
 **张力**：首要目标是无条件多模采样，但连续 FM 在多模上会平均塌缩（§5.1）。
@@ -233,7 +281,7 @@
 **核心架构**：
 
 ```
-sequence ─► 预训练 trunk(轻调) ─► repr ─────────────────────┐
+sequence ─► 预训练 trunk(冻结) ─► repr ─────────────────────┐
                                                             ▼
 (seq, mode) ─► switching 场预测器 ─► 逐残基 switching 场 s_i ─► 靶向条件化(post-norm/条件LN/extra token)
                                                             │
@@ -245,8 +293,9 @@ sequence ─► 预训练 trunk(轻调) ─► repr ─────────�
 ```
 
 - **switching 场预测器**：从 `(seq, mode)` 预测逐残基 switching 场 `s_i`（哪些残基变、变多少）；监督来自 fold0↔fold1 逐残基差异（**局部/核心叠合**，§4.4）。
-- **靶向条件化**：`s_i` 施加到对应残基（switching 残基强、其余≈0）；**post-norm / 条件 LN / extra token**，避开 norm 前注入被洗（§4.4 教训）。
-- **IPA local→global**：靶向扰动决定残基 → IPA 注意力耦合传播成全局 fold 重排。
+- **靶向条件化（已验证构造，§4.4 续 B）**：**场门控 adaLN-Zero** `x_out = norm(x)·(1+s_i·γ_i)+s_i·β_i`，`γ_i/β_i=per-norm head(MLP(c_i))` 零初始化，`c_i=s_i·目标扭角 sin/cos`；输出端乘 `s_i` 保证 mode0 逐位恒等。注入 **trunk 单链路径 norm（192）+ head norm（3）**，post-norm 不被洗。条件网络 MLP(6→128→128 SiLU)+per-norm 头 ~12.9M。
+- **trunk 冻结（必要，§4.4 续 C）**：trunk 作稳定地基，只训条件网络+head；共微调会毁条件化（mode1 振荡畸变）。
+- **IPA local→global（有边界，§4.4 续 D/E）**：靶向扰动决定残基 → IPA 注意力耦合传播成全局 fold 重排；**仅对 IPA 可达的局部/拓扑切换成立**（XCL1✓ Mad2 部分），大幅刚体结构域重排（RfaH✗）需结构域帧条件化或生成式解码器。
 - **生成统一 backbone frame 级**（§4.3）；侧链后补；fold1 只算 backbone FAPE、mask 侧链。
 - 推理：mode=0/1 → 指定态 switching 场；**无条件 → 混合采样**（§4.5）。
 
@@ -254,7 +303,7 @@ sequence ─► 预训练 trunk(轻调) ─► repr ─────────�
 
 **备选（VQ 离散 mode，仅无 switching 场监督时）**：VQ discover mode 码本 + 连续几何精修；但 switching 场有显式逐残基监督时优先（更直接表征"哪个残基变"）。
 
-**先验证 switching 场可学性**（§4.4 修订探针：多案例 + 充分训练 + 正确叠合 + post-norm 注入），再搭全管线。
+**探针已验证条件化机制可行（§4.4 续，XCL1 阳性、冻结 trunk 必要、可移植性有边界）**；剩余未验证根基是**预测式 switching 场可学性**（Stage B：从 seq+mode 预测场+方向，非 oracle）——多案例 + 充分训练 + 正确叠合 + held-out，再搭全管线。
 
 ## 7. 评测协议（真指标）
 
@@ -271,7 +320,9 @@ sequence ─► 预训练 trunk(轻调) ─► repr ─────────�
   - 构象聚类（TM-score/RMSD）→ **二态 mode-rank 标签：0=主导、1=非主导（合并替代）**；条件解析；**平衡采样**（覆盖导向，比例可调）。
   - **AFDB 相似转移增广**（§4.2）：按结构相似性从 PDB fold-switcher 转移候选标签 + 模板 fold1，**伪标签按相似度过滤/降权**，真值锚 PDB。
   - **按序列 split** + 统计（多态序列数、态数、态间 TM-score 分布——区分大 fold-switch vs 小波动）。**先验证 mode 可分性**。
-- **Phase 0.5 · 根基探针（先于全管线，隔离 trunk 可表示性，按 identity 分层）**：repr 判别探针（mode_rank=0/1 是否产态特异 repr）+ **极简/冻结解码器**重建 fold1（避免解码器混淆，§4.4），held-out fold-switcher **按序列 identity 分层**测 TM-score（§4.4/§11）：高同源（>40%）能重建 → Tier 1 成立；低同源（<35%）失败 → 确认 Tier 3 不可达。**画"泛化 vs identity"曲线定能力边界**，而非单一 pass/fail。生死线，失败则重议编码器/scope。**设计已完备，此探针是唯一未验证根基——先测再定后续，不先验堆组件。**
+- **Phase 0.5 · 根基探针**：
+  - **已完成（oracle 机制探针，§4.4 续）**：表示能力 ✓（fit-alone 2 Å）、无梯度 bug ✓、条件化机制 ✓（XCL1 mode1→fold1 2.28 Å）、冻结 trunk 必要 ✓、可移植性梯度 ✓（XCL1>Mad2>RfaH，机制对大幅刚体结构域切换有边界）。
+  - **剩余未验证（预测式泛化探针，生死线）**：从 seq+mode **预测** switching 场+方向（非 oracle），held-out fold-switcher **按序列 identity 分层**测 TM-score（§4.4/§11）：高同源（>40%）能重建 → Tier 1 成立；低同源（<35%）失败 → 确认 Tier 3 不可达。**画"泛化 vs identity"曲线定能力边界**，而非单一 pass/fail。失败则重议编码器/scope。**oracle 机制已立，预测式泛化是唯一未验证根基——先测再定后续，不先验堆组件。**
 - **Phase 1 · 路线 C 条件 FM 基线 pilot**：trunk 轻调 + mode_rank 注入 trunk **且 skip 到 frame FM 解码器**（AF3 式）+ CFG dropout + 平衡采样（fold0 确定性、fold1 生成式），小规模验证 **held-out 无条件 mode coverage**；对照确定性解码器（应单态）vs 条件生成式（应多态）。**先确认基线能否不塌缩且泛化。**
 - **Phase 1b · VQ 备选消融**：仅当无 mode 标签或基线 mode coverage 不足时，上 VQ 离散混合（同 trunk/repr/评测），实测是否更优；有标签且基线足够则 VQ 不必要。
 - **Phase 2 · 扩展**：采样增强（PT/repulsive）、条件化精修、trunk 进一步微调。
@@ -279,7 +330,8 @@ sequence ─► 预训练 trunk(轻调) ─► repr ─────────�
 
 ## 9. 诚实边界与风险
 
-- **核心生死线：trunk 替代-fold 可表示性**（§4.4）。预训练 trunk 塌到主导 fold；seq-only 缺共进化信号（ACE 表替代 fold 信号在亚家族 MSA）。纯序列 trunk 能否编码替代 fold 未验证——**最大不确定性在此，不在解码器**。先做根基探针，失败则重议编码器/scope。
+- **表示能力已验证（§4.4 续 A）**：fit-alone 证明 trunk+head 能表示替代 fold（~2 Å），无梯度 bug；~2 Å 地板是 FAPE 局部帧几何，非容量。**剩余生死线转移到预测式泛化**（seq→switching 场，非 oracle）：seq-only 缺共进化信号（ACE 表替代 fold 信号在亚家族 MSA），数据稀缺——**最大不确定性在此**。
+- **条件化机制有边界（§4.4 续 D/E）**：局部条件→IPA 放大→整体切换仅对 IPA 可达的局部/拓扑切换成立（XCL1✓ Mad2 部分）；**大幅刚体结构域重排（RfaH✗）需结构域帧条件化或生成式解码器**，非逐残基场单独可解。冻结 trunk 必要（共微调毁条件化）。
 - **未解前沿**，无保证成功的配方（AF3 有 diffusion + 海量数据仍塌缩）。
 - **数据稀缺是硬约束**：fold-switcher 少，mode 覆盖上限由数据多样性决定。
 - **解码器是次要消融，非主杠杆**：数据 + 态特异 repr 必做；VQ 相对连续 FM 的"省样本/保分离"优势是假设，未证明，须基线对照实测——不先验押注 VQ。
