@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam
+from tqdm.auto import tqdm
 
 from profold2.common import residue_constants
 from profold2.data import dataset
@@ -417,7 +418,15 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
   # training loop
   try:
-    for it in range(global_step, args.num_batches):
+    for it in tqdm(
+        range(global_step, args.num_batches),
+        initial=global_step,
+        total=args.num_batches,
+        desc='Training',
+        unit='step',
+        dynamic_ncols=True,
+        disable=None if wm.is_master() else True
+    ):
       _step(train_data, it, writer, stage='train')
 
       if (
@@ -445,7 +454,16 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         with torch.no_grad():
           # eval loss
           n, eval_loss = 0, MetricDict()
-          for jt, batch in enumerate(iter(eval_loader)):
+          for jt, batch in enumerate(
+              tqdm(
+                  iter(eval_loader),
+                  total=len(eval_loader),
+                  desc='Eval',
+                  leave=False,
+                  dynamic_ncols=True,
+                  disable=None
+              )
+          ):
             seq = batch['seq']
             logging.debug(
                 '%d %d %d seq.shape: %s, pid: %s, clips: %s', 0, it, jt, seq.shape,
