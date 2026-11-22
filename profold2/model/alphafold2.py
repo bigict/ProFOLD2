@@ -176,6 +176,7 @@ class AlphaFold2(nn.Module):
         checkpoint_segment_size=env(
             'profold2_evoformer_checkpoint_segment_size', defval=1, dtype=int
         ),
+        compile=env('profold2_evoformer_compile', defval=False, dtype=bool),
         dim_msa=dim_msa,
         dim_pairwise=dim_pairwise,
         heads=evoformer_head_num,
@@ -186,18 +187,6 @@ class AlphaFold2(nn.Module):
         attn_dropout=attn_dropout,
         ff_dropout=ff_dropout
     ) if evoformer_depth > 0 else None
-
-    # NOTE: per-block compile (one graph reused across layers, torchtitan-style);
-    # compiling the bound method keeps state_dict keys free of the
-    # OptimizedModule `_orig_mod.` prefix. DDPOptimizer must be off: it hijacks
-    # compiles inside DDP.forward and bucket-splits the graph (see head.py).
-    if exists(self.evoformer) and env(
-        'profold2_evoformer_compile', defval=False, dtype=bool
-    ):
-      from torch import _dynamo  # pylint: disable=import-outside-toplevel
-      _dynamo.config.optimize_ddp = False
-      for block in self.evoformer.layers:
-        block.forward = torch.compile(block.forward, dynamic=True)
 
     # msa to single activations
     self.to_single_repr = nn.Linear(dim_msa, dim_single)
