@@ -447,7 +447,10 @@ class AlphaFold2WithRecycling(nn.Module):
     with torch.no_grad():
       with status(batch, recycling=True, compute_loss=False):
         for i in tqdm(
-            range(num_recycle), disable=self.training, desc=f'Trunk Recycling [{pid}]'
+            range(num_recycle),
+            disable=self.training,
+            leave=False,
+            desc=f'Trunk Recycling [{pid}]'
         ):
           ret = ReturnValues(**cycling_function(batch))
           if 'tmscore' in ret.headers:

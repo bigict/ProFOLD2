@@ -10,6 +10,7 @@ import pickle
 
 import torch
 from einops import rearrange
+from tqdm.auto import tqdm
 
 # models & data
 from profold2.data import dataset
@@ -193,7 +194,16 @@ def evaluate(rank, args):  # pylint: disable=redefined-outer-name
         enabled=args.enable_memory_snapshot, device=rank.device
     ):
       # eval loop
-      for idx, batch in enumerate(filter(data_cond, iter(test_loader))):
+      # NOTE: no total — data_cond filters batches, so the count is unknown.
+      for idx, batch in enumerate(
+          tqdm(
+              filter(data_cond, iter(test_loader)),
+              desc='Evaluating',
+              unit='seq',
+              dynamic_ncols=True,
+              disable=None if rank.is_master() else True
+          )
+      ):
         try:
           with status(
               batch, compute_loss=env('profold2_compute_loss', defval=True, dtype=bool)

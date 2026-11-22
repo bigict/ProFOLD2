@@ -13,6 +13,7 @@ import logging
 import numpy as np
 import torch
 from torch.utils.data.distributed import DistributedSampler
+from tqdm.auto import tqdm
 
 # models & data
 from profold2.common import protein
@@ -281,7 +282,16 @@ def predict(rank, args):  # pylint: disable=redefined-outer-name
     with snapshot.memory_snapshot(
         enabled=args.enable_memory_snapshot, device=rank.device
     ):
-      for idx, batch in enumerate(iter(test_loader)):
+      for idx, batch in enumerate(
+          tqdm(
+              iter(test_loader),
+              total=len(test_loader),
+              desc='Predicting',
+              unit='seq',
+              dynamic_ncols=True,
+              disable=None if rank.is_master() else True
+          )
+      ):
         try:
           predict_structure(idx, batch)
         except RuntimeError as e:
