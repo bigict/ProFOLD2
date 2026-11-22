@@ -739,6 +739,7 @@ van_der_waals_radius = {
     'N': 1.55,
     'O': 1.52,
     'S': 1.8,
+    'P': 1.8,
 }
 
 Bond = collections.namedtuple('Bond', ['atom1_name', 'atom2_name', 'length', 'stddev'])
@@ -1537,9 +1538,6 @@ atom14_van_der_waals_radius = np.zeros(
 
 def _make_atom14_van_der_waals_radius():
   for restype, restype_letter in enumerate(restypes):
-    if not is_aa(restype):
-      continue
-
     resname = restype_1to3[(restype_letter, moltype(restype))]
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
     for atom_idx, atom_name in enumerate(atom_list):  # pylint: disable=redefined-outer-name
