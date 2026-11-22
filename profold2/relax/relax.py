@@ -13,9 +13,11 @@
 # limitations under the License.
 """Amber relaxation."""
 from typing import Any, Dict, Sequence, Tuple
+import logging
 import numpy as np
 
 from profold2.common import protein
+from profold2.common import residue_constants
 from profold2.relax import amber_minimize
 from profold2.relax import utils
 
@@ -59,6 +61,24 @@ class AmberRelaxation(object):
 
   def process(self, *, prot: protein.Protein) -> Tuple[str, Dict[str, Any], np.ndarray]:
     """Runs Amber relax on a prediction, adds hydrogens, returns PDB string."""
+    # amber99sb is protein-only; NA residues have no force-field parameters.
+    if any(
+        residue_constants.moltype(int(a)) != residue_constants.PROT
+        for a in prot.aatype
+    ):
+      logging.warning(
+          'Relax skipped: nucleic-acid residues present '
+          '(amber99sb force field is protein-only); returning unrelaxed PDB.'
+      )
+      debug_data = {
+          'initial_energy': 0.,
+          'final_energy': 0.,
+          'attempts': 0,
+          'rmsd': 0.
+      }
+      violations = np.zeros(prot.aatype.shape[0], dtype=np.float32)
+      return protein.to_pdb(prot), debug_data, violations
+
     out = amber_minimize.run_pipeline(
         prot=prot,
         max_iterations=self._max_iterations,
