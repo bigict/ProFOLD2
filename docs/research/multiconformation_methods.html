@@ -169,7 +169,7 @@
 
   <h2>来源</h2>
   <div class="sources"><ol id="srcList"></ol></div>
-  <footer>调研 2026-11-21 · 部分为 2026 预印本（MultiStateFold / ConforNets / REFLEX / Maddipatla），结论以原文为准 · 机制分析部分为推理而非基准复现 · 紫色行 = 本仓库适配的提议方案（待验证）。</footer>
+  <footer>调研 2026-11-21，更新 2026-11-23（新增 ConforMix，NeurIPS 2025）· 部分为 2026 预印本（MultiStateFold / ConforNets / REFLEX / Maddipatla），结论以原文为准 · 机制分析部分为推理而非基准复现 · 紫色行 = 本仓库适配的提议方案（待验证）。</footer>
 </div>
 
 <script>
@@ -190,6 +190,7 @@ const DATA = [
   {name:'NOE-guided AF3 diffusion', dec:'con', obj:'去噪 + NOE 引导', idx:'噪声 + 约束', pros:'可行', prosNote:'约束满足 ~77%', msa:false, ens:true, compat:'中', note:'需实验约束', src:'https://www.nature.com/articles/s41587-026-03166-5', rna:false},
   {name:'AlphaFlow / ESMFlow', dec:'con', obj:'flow matching', idx:'frame / 连续 z', pros:'可行', prosNote:'平衡系综', msa:false, ens:true, compat:'高', note:'frame 级', src:'https://github.com/bjing2016/alphaflow', rna:false},
   {name:'Str2Str', dec:'con', obj:'score-based 零样本', idx:'噪声', pros:'可行', prosNote:'零样本构象采样', msa:false, ens:false, compat:'高', note:'架构无关', src:'https://arxiv.org/abs/2306.03117', rna:false},
+  {name:'ConforMix（推理时引导扩散）', dec:'con', obj:'推理时 classifier guidance + 过滤 + 自由能重加权', idx:'噪声 + 分类器引导', pros:'可行', prosNote:'静态预测模型采出 domain motion/cryptic pocket/转运循环，近 Boltzmann', msa:false, ens:false, compat:'中', note:'推理时·模型无关·无需重训/先验坐标', src:'https://arxiv.org/abs/2512.03312', rna:false},
   {name:'ConfDiff', dec:'con', obj:'力引导 SE(3) 扩散', idx:'噪声 + 力', pros:'可行', prosNote:'物理合理', msa:false, ens:true, compat:'中', note:'坐标级', src:'https://github.com/bytedance/confdiff', rna:false},
   {name:'DiG / BioEmu', dec:'con', obj:'平衡分布似然', idx:'连续 z', pros:'可行', prosNote:'平衡系综', msa:false, ens:true, compat:'中', note:'需大规模 MD', src:'https://www.biorxiv.org/content/10.1101/2024.12.05.626885v1.full-text', rna:false},
   {name:'DynaRNA', dec:'con', obj:'DDPM + EGNN', idx:'噪声', pros:'可行', prosNote:'小 RNA；TAR 激发态', msa:false, ens:true, compat:'中', note:'坐标级', src:'https://pmc.ncbi.nlm.nih.gov/articles/PMC12528399/', rna:true},
