@@ -106,6 +106,32 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       data_msa_as_seq_min_ident=None,
       data_filter=data_cond
   ):
+    def _generator(data_loader):
+      epoch = 0
+      while True:
+        logging.info('data pass: %d', epoch)
+
+        # NOTE: must precede iter(): workers are rebuilt and the sampler re-read.
+        if hasattr(data_loader.sampler, 'set_epoch'):
+          data_loader.sampler.set_epoch(epoch)
+        data_iter = iter(data_loader)
+        for data in data_iter:
+          if data_filter(data):
+            yield data
+
+        epoch += 1
+
+    class _Cycling:
+      def __init__(self, data_loader):
+        self._gen = _generator(data_loader)
+        self.num_batches = len(data_loader) or 1
+
+      def __iter__(self):
+        return self
+
+      def __next__(self):
+        return next(self._gen)
+
     data_loader = dataset.load(
         data_dir=data_dir,
         data_idx=data_idx,
@@ -138,19 +164,7 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
         pin_memory=True,
         num_workers=args.num_workers
     )
-    epoch = 0
-    while True:
-      logging.info('epoch: %d', epoch)
-
-      # NOTE: must precede iter(): workers are rebuilt and the sampler re-read.
-      if hasattr(data_loader.sampler, 'set_epoch'):
-        data_loader.sampler.set_epoch(epoch)
-      data_iter = iter(data_loader)
-      for data in data_iter:
-        if data_filter(data):
-          yield epoch, data
-
-      epoch += 1
+    return _Cycling(data_loader)
 
   train_data = create_cycling_data(
       args.train_data,
@@ -362,14 +376,14 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
     running_loss = MetricDict()
     for jt in range(args.gradient_accumulate_every):
-      epoch, batch = next(data_loader)
+      batch = next(data_loader)
       batch = features(batch, is_training=True)
       if batch_callback:
         batch = batch_callback(batch)
 
       seq = batch['seq']
       logging.debug(
-          '%d %d %d seq.shape: %s pid: %s, clips: %s', epoch, it, jt, seq.shape,
+          '%d %d seq.shape: %s pid: %s, clips: %s', it, jt, seq.shape,
           ','.join(batch['pid']), batch.get('clip')
       )
       length_scaler = 1.0
@@ -403,6 +417,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
       v /= args.gradient_accumulate_every
       writer_add_scalars(writer, v, it, prefix=f'Loss/{stage}@{k}')
       # writer.add_scalar(f'Loss/train@{k}', v, it)
+
+    # Analytical epoch from the optimizer step (continuous across checkpoint
+    # resume, unlike the data generator's pass counter which restarts at 0).
+    frac_epoch = it * args.gradient_accumulate_every / data_loader.num_batches
+    writer_add_scalars(writer, round(frac_epoch, 2), it, prefix=f'Loss/{stage}@epoch')
 
     # inspecting/clipping gradients
     grad_scaler.unscale_(optimizer)
