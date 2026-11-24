@@ -1,0 +1,11 @@
+# Fetched benchmark payloads and generated tables are large and reproducible:
+# collect.py rebuilds data/, normalize.py rebuilds csv/. Neither belongs in git.
+data/
+csv/
+
+# Local reader environment (pyarrow); recreate with:
+#   python3 -m venv .venv && .venv/bin/pip install pyarrow
+.venv/
+
+__pycache__/
+*.pyc
