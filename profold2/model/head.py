@@ -1813,7 +1813,7 @@ class FitnessHead(nn.Module):
       )
     else:
       self.pos_weight = None
-    self.alpha = alpha
+    self.alpha = default(alpha, 0)
     self.beta = beta
 
     # gating guided by inter-chain contact
@@ -2005,7 +2005,7 @@ class FitnessHead(nn.Module):
       variant_label = batch['variant_label']
       variant_label_mask = batch['variant_label_mask']
 
-      if exists(self.alpha) and self.alpha > 0:
+      if self.alpha > 0:
         # predict motifs
         motifs = value['motifs']
         labels = F.one_hot(batch['variant'][..., None].long(), num_class)
