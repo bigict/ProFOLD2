@@ -1867,7 +1867,7 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
   q_unmatched = kwargs.get('q_unmatched', 0)
   r_unmatched = kwargs.get('r_unmatched', 0)
 
-  tau = kwargs.get('temperature', 2.0)
+  tau = kwargs.get('tau', 2.0)
   sinkhorn_iters = kwargs.get('sinkhorn_iters', 5)
   neg = kwargs.get('neg', torch.finfo(S.dtype).min / 4)
 
@@ -1945,7 +1945,7 @@ def differentiable_smith_waterman(S, penalty=None, mask=None, **kwargs):
 
   # --- Soft correspondence P with dummy (unmatched) states ---
   # Use the normalized M table as a soft-correspondence proxy:
-  # high temperature -> uniform; low temperature -> sharp.
+  # tau is a sharpness, not a temperature: high tau -> sharp, low tau -> uniform.
   # A = S.new_empty((*B, Lq + 1, Lr + 1))
   A = M.new_zeros((*B, Lq + 1, Lr + 1))
   A[..., :Lq, :Lr] = M * tau

@@ -488,7 +488,7 @@ class DSWHead(nn.Module):
     # Learned biases for leaving a query row / ref column unmatched.
     self.q_unmatched = nn.Parameter(torch.tensor(0.0))
     self.r_unmatched = nn.Parameter(torch.tensor(0.0))
-    self.temperature = env('profold2_dsw_tau', defval=tau)
+    self.tau = env('profold2_dsw_tau', defval=tau)
     self.sinkhorn_iters = sinkhorn_iters
 
     num_class = len(residue_constants.restypes_with_x_and_gap)
@@ -573,7 +573,7 @@ class DSWHead(nn.Module):
             gap_extend=self.log_gap_ext,
             q_unmatched=self.q_unmatched,
             r_unmatched=self.r_unmatched,
-            temperature=self.temperature,
+            tau=self.tau,
             sinkhorn_iters=self.sinkhorn_iters,
             sinkhorn_custom_bwd=env('profold2_dsw_sinkhorn_custom_bwd', defval=True),
             dtype=self.dtype,
