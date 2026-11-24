@@ -127,3 +127,10 @@ class XPU(object):
   def destroy_process_group(self):
     if self.is_available():
       torch.distributed.destroy_process_group()
+
+  def barrier(self):
+    # Synchronize ranks before teardown: with tcp:// init the rank-0 process
+    # hosts the TCPStore server, so if it exits first the peers' NCCL teardown
+    # queries a dead store ("should dump" flag -> Broken pipe warning).
+    if self.is_available() and torch.distributed.is_initialized():
+      torch.distributed.barrier()

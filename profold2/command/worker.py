@@ -238,6 +238,13 @@ class WorkerFunction(object):
       #--------------
       # cleanup
       #--------------
+      # Sync ranks before teardown: with tcp:// init rank-0 hosts the TCPStore
+      # server, so exiting first while peers are still finishing makes their
+      # NCCL teardown query a dead store ("should dump" flag -> Broken pipe).
+      # Generic to predict/eval/train (trainer eval is master-only, so ranks
+      # finish especially unevenly). A hard-crashed peer bounds the wait by
+      # NCCL_TIMEOUT, same as the collectives it would otherwise block in.
+      xpu.barrier()
       # Also on KeyboardInterrupt: leaving the group alive keeps peer ranks
       # blocked in NCCL collectives until NCCL_TIMEOUT.
       xpu.destroy_process_group()
