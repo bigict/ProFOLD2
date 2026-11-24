@@ -1820,6 +1820,11 @@ class FitnessHead(nn.Module):
     self.gij_guidance = gij_guidance
     self.gij_cutoff = gij_cutoff
     self.gij_noise = gij_noise
+    if gij_guidance > 0 and not exists(self.task_gating):
+      logger.warning(
+          'FitnessHead: gij_guidance=%s has no effect without task gating; '
+          'set task_model=MMoE to enable it.', gij_guidance
+      )
 
     self.focal_loss = focal_loss
     self.min_posterior_probability = env(
@@ -1940,7 +1945,9 @@ class FitnessHead(nn.Module):
       variant_mask = variant_mask * variant_mask[..., :1, :, :]
       variant_logit = logits - logits[..., :1, :, :]
       variant_logit = self.predict(
-          variant_logit, variant_mask, gating=gating[..., None, :, :]
+          variant_logit,
+          variant_mask,
+          gating=gating[..., None, :, :] if exists(gating) else None
       )
       r.update(variant_logit=variant_logit)
 
@@ -1956,7 +1963,7 @@ class FitnessHead(nn.Module):
 
     loss = MetricDict()
 
-    if self.gij_guidance > 0 and 'pseudo_beta' in batch:
+    if self.gij_guidance > 0 and exists(gating) and 'pseudo_beta' in batch:
       positions = batch['pseudo_beta']
       mask = batch['pseudo_beta_mask']
       seq_color = batch["seq_color"]
@@ -2126,7 +2133,9 @@ class FitnessHead(nn.Module):
     )
     # variant_logit = torch.sum(variant_logit * variant_mask, dim=-1)
     variant_logit = self.predict(
-        variant_logit, variant_mask, gating=gating[..., None, None, :, :]
+        variant_logit,
+        variant_mask,
+        gating=gating[..., None, None, :, :] if exists(gating) else None
     )
     logger.debug('FitnessHead.logit: %s', str(variant_logit))
     logger.debug('FitnessHead.label: %s', str(variant_label))
