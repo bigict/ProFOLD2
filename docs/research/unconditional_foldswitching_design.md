@@ -237,13 +237,15 @@
 
 §4.2 的 AFDB 增广需要 **PDB 真值 switcher 模板**；本节是从本地 PDB 库（`~/shared_hosts/pdb_train.zip`，210k mmCIF，982,970 蛋白链 → 166,030 唯一序列）挖掘 fold0/fold1 配对的生产管线，产出训练底座与 AFDB 搜索模板。
 
-**方法演进（Porter 已知 switcher 召回逐步提升）**：
+**方法演进（匹配口径依赖的召回估计，逐步提升）**：
 
-| 方法 | Porter 召回 | 问题 |
+| 方法 | Porter 召回（估计）| 问题 |
 |---|---|---|
-| APSP 精确 suffix-prefix 分组 | 11.8% | 漏 tag/构建变体（包含关系非 suffix-prefix）|
-| MMseqs2 95% 序列簇 + pairwise swSS | 32.3% | 代表采样漏具体条目；钙调蛋白刚体运动假阳 |
-| **混合双聚类（最终）** | **60.2%（56/93）** | 过分裂簇需 curation |
+| APSP 精确 suffix-prefix 分组 | ~11.8% | 漏 tag/构建变体（包含关系非 suffix-prefix）|
+| MMseqs2 95% 序列簇 + pairwise swSS | ~32.3% | 代表采样漏具体条目；钙调蛋白刚体运动假阳 |
+| **混合双聚类（最终）** | 见下方硬锚点 | 过分裂簇需 curation |
+
+**召回口径说明（重要）**：上表召回是「已知对是否被挖掘标记」的**匹配口径依赖估计**（PDB-id 严格匹配 vs 序列簇匹配给出不同值，复核约 38%–72%），**非单一可复现值**。**口径无关的硬锚点**（`cross_validation.json`）：Porter 已知 **93 对 = 25 缺库（≥1 结构不在 archive）+ 3 无共同建模残基 + 65 完全可用**（28/93 库不可用）；可用 65 对直接施加 swSS 判据的**上限 = 46/65 = 70.8%**（另 15 刚体结构域运动 + 4 小波动按设计排除，非漏检）。可用对中的挖掘漏检来自跨序列簇（>95% 分歧）/ 同折叠聚类未分裂。
 
 **最终混合框架**：MMseqs2 序列簇（95% id）× Foldseek 结构簇（3Di+AA，`-c 0.8 --cov-mode 0`，E-value 0.01，**非 TM-score**）+ **簇内 swSS 补充**。
 - 序列簇跨 ≥2 Foldseek 折叠簇 = **折叠级 switcher**（RfaH/KaiB/XCL1，大幅构象差异）；
@@ -253,7 +255,7 @@
 **关键判据 swSS**（`stage2_metrics.classify_pair`）：switch pair = **swSS ≥ 0.30 且 max_disp ≥ 12 Å**。swSS = switching 场残基（核心对齐位移 > 0.5·max）中二级结构变化比例。
 - 抓 **Mad2 拓扑切换**（同折叠簇、高 swSS）——补 Foldseek/TM-score 盲区；
 - 排除 **钙调蛋白开/合刚体运动**（低 swSS，SS 不变只是结构域摆动）——补 SS-only 盲区。
-- 两个盲区都补，是召回 60.2% 且假阳可控的核心。
+- 两个盲区都补，是可用对判据上限 70.8% 且假阳可控的核心。
 
 **结果**：**14,083 switchers**（折叠级 8,976 + 拓扑 5,107），全保留 **407,890 条目**（fold0/fold1 标签）。
 
