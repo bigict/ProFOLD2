@@ -1,8 +1,8 @@
 # 工作周报 · TCR-pMHC 特异性评估基准搭建
 
-**日期**：2026-11-24
+**日期**：2026-11-24，2026-11-25 补充 TCRvdb（§2d）
 **项目**：ProFOLD2 / DSW+Fitness
-**说明**：本文所有数字均于 2026-11-24 在本机重新核验（CSV 重新解析、基线脚本重跑、磁盘文件清点、PRP 与源矩阵逐格比对），非引用历史记录。
+**说明**：本文所有数字均在本机重新核验（CSV 重新解析、基线脚本重跑、磁盘文件清点、PRP 与 TCRvdb 均与源表逐字段比对），非引用历史记录。
 
 ---
 
@@ -66,6 +66,36 @@ Wang N, Yeh H, … **Garcia KC**，*Deep peptide recognition profiling decodes T
 
 **由此修正一处对论文结论的引用**：该文"α 链无贡献"（α+β vs β-only median PR AUC **0.85 vs 0.86**，*p*=0.39，n=12）是在**结合**任务上测的，**不是激活任务**。上述 8/16 的标签分歧说明，在激活读出上 α 或其它链特征可能仍带信息，**该结论不能直接搬用**。这条警告已写入脚本运行时输出。
 
+### 2d. 新增第六张表：TCRvdb（Messemaker / Schumacher，*Immunity* 2026）— 2026-11-25
+
+DOI `10.1016/j.immuni.2026.09.007`。**申请已获批，数据已下载并导出。**
+
+**为什么它最有价值**：这是唯一同时具备 **完整双链 + I 类天然适配 + 功能验证标签 + 每个抗原组正负齐全** 的一份。论文的核心发现是公开 TCR 库中**仅约 56% 的 pair 能复现其标注反应性**（各原始研究的验证率从 <10% 到 >95%），所以未经功能筛选的公共库基准测到的很大一部分是标签噪声。TCRvdb 正是筛过的那一份。
+
+已导出 `triads_tcrvdb.csv`：**2,034 行 × 24 列**，验收 COMPLETE，**与源表逐字段比对 0 处不符**（2,034 × 6 个字段）。
+
+| 项 | 值 |
+|---|---|
+| 标签 | **910 pos / 872 neg / 252 ambiguous**，三个 flag **互斥**，无重叠 |
+| 抗原 | **5 个，每个都同时有正负** → per-epitope AUC **5/5** 有定义 |
+| HLA | **仅 2 个等位，全为 I 类**：A\*02:01（1,647）、A\*01:01（387） |
+| `TCRA` / `TCRB` | **完整 α/β 链，0 缺失**（α 103–121 aa、β 109–122 aa） |
+| `MHC_str` | 两个等位的真实 **284 aa** 序列，取自我们已验证的 `iedb_I` triad 表 |
+| 主键 | 2,034 个 `tcr_id` 与 `(epitope, α, β)` **全部唯一**，无 PRP 那类碰撞 |
+
+按抗原分布：GILGFVFTL 670、YLQPRTFLL 419、TTDPSFLGRY 387、NLVPMVATV 366、GLCTLVAML 192。
+
+**因为是 I 类，天然适配 ProTCR 单链 `MHC_str`，不需要 CRESTA 那套 α+β 拼接 workaround。**
+
+⚠️ **两点必须标注：**
+
+1. **序列范围与 Woods 不同。** TCRvdb 的 `full_seq_*` 实为 **V 域**（α 103–121、β 109–122 aa），而 Woods 的 `tcr_1_seq` 187–274、`tcr_2_seq` 238–320 是**完整胞外域**。`tcr_chain_scope='v_domain_only'` 逐行标注。**不阻塞运行，但跨数据集比数字时必须带上这个 caveat。**
+2. **许可禁止再分发。** 原文：*"Redistribution or public sharing of the dataset, in whole or in part, is not permitted without explicit permission from the authors."* 因此该表**不入 git、不传共享服务器**，导出默认落 `data/tcrvdb/` 而非 `csv/`（后者是待上传集合）。脚本 docstring、运行输出、以及每一行的 `licence` 列都写明了这条禁令；已用 `git check-ignore` 与远端 tree 查询确认 GitHub 上 `data/`、`csv/` 路径数为 **0**。使用时须引用上述 DOI。
+
+**ambiguous 处理（已定）**：2,034 行全部导出，`label_state ∈ {pos, neg, ambiguous}`，`y = 1.0 / 0.0 / 0.5`。**`y=0.5` 只是让 ProTCR 的 float 解析不报错的占位值，不是软标签**；算 AUC 前必须先 `label_state != 'ambiguous'`，严格版为 **1,782 行**（910+872），5 个抗原仍全部有正负。
+
+**获取方式的技术要点**（供再次申请时参考）：门户 `/download/<token>` 是**前端 SPA 路由**，直接 GET 只返回 index.html 且**不消耗额度**。真实接口为 `GET /api/download/<token>/info`（只读，返回 `used_at` / `expires_at`）与 **`POST /api/download/<token>/file`**。链接 **7 天单次有效**，本次已消耗，原始 CSV 需自行备份。
+
 ## 3. AF3 基线复现（核心结果）
 
 triad 表自带 AF3 置信度特征，因此**无需结构预测、纯 CPU 表格运算**即可复现论文基线。
@@ -105,15 +135,16 @@ triad 表自带 AF3 置信度特征，因此**无需结构预测、纯 CPU 表�
 
 - 数据与脚本已传至计算服务器 `ProTCR_data/woods2026/`，六文件 md5 一致。
 - **以服务器重跑为准**：远端 `python3`（pyarrow 23.0.0）复现出 **0.920 / 0.809**，与本机（26.0.1）完全一致；仅从导出的 CSV 重算得 0.9199。结果不依赖机器、reader 版本或 parquet/CSV 路径。
-- 四个脚本（`collect.py` / `normalize.py` / `baseline_auc.py` / `prp_activation.py`）已提交至分支 **`tcr-bench` @ `7bb5025`** 作为代码备份，不开 PR、不合入 main。三次提交均为快进：`9cfc0f2` → `41bf131`（IEDB 打分 + 本周报）→ `7bb5025`（PRP 导出）。每次推送后均核对 `origin/main` 仍为 `94e03c6` 未被触碰，且该分支无 PR。
-- 数据、`csv/` 与 venv 由 `.gitignore` 排除，可完全重建；五张 CSV 全部不入库。
+- 服务器上共 **4 脚本 + 5 CSV + 4 parquet**，四个脚本均可独立跑通。**TCRvdb 不在服务器上**（许可禁止再分发）。
+- 五个脚本（`collect.py` / `normalize.py` / `baseline_auc.py` / `prp_activation.py` / `tcrvdb.py`）已提交至分支 **`tcr-bench` @ `bb89938`** 作为代码备份，不开 PR、不合入 main。六次提交全部为快进：`9cfc0f2` → `41bf131`（IEDB 打分 + 本周报）→ `7bb5025`（PRP 导出）→ `062eb2a`（周报补 PRP）→ `9b84c7d`（采用 12）→ `bb89938`（TCRvdb 导出器）。每次推送后均核对 `origin/main` 仍为 `94e03c6` 未被触碰，且该分支无 PR。
+- 数据、`csv/` 与 venv 由 `.gitignore` 排除，可完全重建；**六张 CSV 全部不入库**。远端 tree 查询确认 `tcr_bench/data` 与 `tcr_bench/csv` 下路径数为 **0**。
 
 ## 5. 已知问题 / 下周
 
 1. **II 类 MHC 编码未验证**：ProTCR 只接受单条 `MHC_str`，CRESTA 全为 II 类，目前用 α+β 拼接（388–391 aa）。能否通过 `aligned_ratio ≥ 0.85` 过滤**尚未实测**，是跑通前的首要风险。
 2. **基线特征身份为数值吻合，非确认**：论文可达文本未点名具体特征，扫描 14 个候选后取最接近者。
 3. **IEDB 正样本数与论文有差**：8,096 / 1,668 vs 论文 7,702 / 1,625（差 394 / 43），而**负样本数完全一致**（157,025 / 33,628）。差异只在正样本侧，疑为论文的同源排除步骤，未证实。
-4. **第二篇文献的 TCRvdb 已定位但受限**：Messemaker, *Immunity* 2026（DOI `10.1016/j.immuni.2026.09.007`）。GitHub 仓库 `schumacherlab/TCRvdb` 仅含 README，数据在 `tcrvdb.nkiai.nl`，需实名申请（Email / Name / Organization / Purpose + captcha）与人工审核，下载链接 7 天单次有效，且**明确禁止再分发**，不能沿用现有的共享服务器流程。其价值在于标签经过功能验证 —— 公开库中仅约 56% 的 pair 能复现标注反应性。发布版覆盖 5 个 epitope（YLQ / GLC / TTD / GIL / NLV）。
+4. **TCRvdb 只能在本机跑**：数据已获得并导出（§2d），但许可禁止再分发，**不能上传共享服务器**。若要在服务器上评估这 2,034 行，需先取得作者书面许可，或改在你本人独占的环境里跑。这是目前唯一的高质量功能验证集，值得优先解决其运行位置问题。
 5. **PRP 缺 TCR 全长**：GitHub 与 Dryad 都只给 CDR3β，`TCRA` 只能留空。若要跑完整 ProTCR 输入，需从 Supplementary Table 1 或作者处补全长 α/β。在补齐前，该表的结果受 **0.955 准确率上限**约束（见 §2c）。
 6. **第三篇已排除**：NeoDisc（Huber et al., *Nat Biotechnol* 2024，DOI `10.1038/s41587-024-02420-y`）。四张补充表逐单元格扫描 `CDR`/`TRAV`/`TRBV`/`TCR` **命中 0**；它做的是**肽层面新抗原优先级排序**，不是 TCR 特异性。S4 仅 63 条肽 / 5 个病人，且文章为 **CC BY-NC-ND 4.0**（禁止分发改编材料）。其唯一可用切片是 12 条 tumor-rejection 验证肽，但属另一任务，且其筛选引用 IEDB，与我们已有池重叠，不构成独立留出集。
 
@@ -152,14 +183,21 @@ tcr_bench/.venv/bin/python tcr_bench/baseline_auc.py --iedb
 
 # 4. 导出 PRP 激活集（需先完成步骤 1，MHC 序列取自 iedb_I triad 表）
 tcr_bench/.venv/bin/python tcr_bench/prp_activation.py
+
+# 5. 导出 TCRvdb（需先完成步骤 1；原始 CSV 须自行申请，见 §2d）
+#    输出落 data/tcrvdb/，禁止再分发，不要指向 csv/ 或共享挂载
+tcr_bench/.venv/bin/python tcr_bench/tcrvdb.py
 ```
 
-五张表的口径速查：
+六张表的口径速查：
 
-| 表 | 行数 | 标签 | 分组键 |
-|---|---:|---|---|
-| `triads_pdb_validation` | 197 | 结合 | `epitope_id`（14） |
-| `triads_cresta` | 1,433 | 结合 | `epitope_id`（8） |
-| `triads_iedb_I` | 165,121 | 结合 | `epitope_id`（1,031） |
-| `triads_iedb_II` | 35,296 | 结合 | `epitope_id`（281） |
-| `triads_prp_activation` | 336 | **激活 CD69** | **`tcr_id`（19 可用）** |
+| 表 | 行数 | TCR 链范围 | 标签 | 分组键 | 可分发 |
+|---|---:|---|---|---|---|
+| `triads_pdb_validation` | 197 | 全长胞外域 | 结合 | `epitope_id`（14） | ✓ |
+| `triads_cresta` | 1,433 | 全长胞外域 | 结合 | `epitope_id`（8） | ✓ |
+| `triads_iedb_I` | 165,121 | 全长胞外域 | 结合 | `epitope_id`（1,031） | ✓ |
+| `triads_iedb_II` | 35,296 | 全长胞外域 | 结合 | `epitope_id`（281） | ✓ |
+| `triads_prp_activation` | 336 | **仅 CDR3β** | **激活 CD69** | **`tcr_id`（19 可用）** | ✓ CC0 |
+| `triads_tcrvdb` | 2,034 | **V 域 α+β** | **功能验证** | `epitope_id`（5） | **✗ 禁** |
+
+**三张表三种标签语义**（结合 / 激活 / 功能验证），**三种 TCR 链范围**（胞外域 / CDR3β / V 域）—— 跨表比较前必须先看这两列。
