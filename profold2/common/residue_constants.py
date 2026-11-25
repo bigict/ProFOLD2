@@ -1550,6 +1550,9 @@ def _make_atom14_van_der_waals_radius():
 _make_atom14_van_der_waals_radius()
 
 
+# Cached: rebuilt per within_residue_clash_loss call otherwise (~1.7ms/call,
+# ~54ms per accum=32 step). Result is read-only (callers batched_gather it).
+@functools.lru_cache(maxsize=8)
 def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor=15):
   """compute upper and lower bounds for bonds to assess violations."""
   restype_atom14_bond_lower_bound = np.zeros(
