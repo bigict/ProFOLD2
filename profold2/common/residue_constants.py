@@ -1574,10 +1574,9 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor
   )
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
-    if moltype(restype) != PROT:
-      continue
-
     resname = restype_1to3[(restype_letter, moltype(restype))]
+    if resname not in residue_bonds:
+      continue
     atom_list = restype_name_to_atom14_names[resname]  # pylint: disable=redefined-outer-name
 
     # create lower and upper bounds for clashes
