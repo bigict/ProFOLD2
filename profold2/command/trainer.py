@@ -367,7 +367,9 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
   grad_scaler = accelerator.GradScaler(enabled=args.amp_enabled)
   loss_scaler = 1 / (args.gradient_accumulate_every or 1.0)
 
-  def _step(data_loader, it, writer, stage='train', batch_callback=None):
+  def _step(
+      data_loader, it, writer, stage='train', batch_callback=None, *, epoch_step=None
+  ):
     optimizer.zero_grad(set_to_none=True)
 
     writer_add_scalars(
@@ -420,7 +422,12 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
 
     # Analytical epoch from the optimizer step (continuous across checkpoint
     # resume, unlike the data generator's pass counter which restarts at 0).
-    frac_epoch = it * args.gradient_accumulate_every / data_loader.num_batches
+    # Counts steps completed THROUGH the current one (it is 0-based, hence +1).
+    # epoch_step defaults to it+1 (train runs every step); tuning runs only every
+    # tuning_every steps, so it passes the tuning-step count instead — using the
+    # global it here would inflate tuning@epoch ~tuning_every-fold.
+    epoch_step = default(epoch_step, it + 1)
+    frac_epoch = epoch_step * args.gradient_accumulate_every / data_loader.num_batches
     writer_add_scalars(writer, round(frac_epoch, 2), it, prefix=f'Loss/{stage}@epoch')
 
     # inspecting/clipping gradients
@@ -452,7 +459,11 @@ def train(rank, args):  # pylint: disable=redefined-outer-name
           args.tuning_data and args.tuning_every > 0 and
           (it + 1) % args.tuning_every == 0
       ):
-        _step(tuning_data, it, writer, stage='tuning')
+        _step(
+            tuning_data, it, writer,
+            stage='tuning',
+            epoch_step=(it + 1) // args.tuning_every
+        )
 
       if (
           args.checkpoint_every > 0 and (it + 1) % args.checkpoint_every == 0 and
