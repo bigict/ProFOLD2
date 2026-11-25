@@ -1742,6 +1742,10 @@ class ViolationHead(nn.Module):
           'coord_exists', batch.get('coord_mask')
       )
       assert exists(point_mask)
+      # Between-residue clash covers all molecule types (NA radii filled,
+      # O3'-P bonded pair excluded in functional); the other terms use
+      # peptide geometry / protein stereochem bounds (protein only).
+      full_mask = point_mask
       point_mask = point_mask * torch.logical_and(  # protein only
           batch['seq'] >= residue_constants.prot_from_idx,
           batch['seq'] <= residue_constants.prot_to_idx
@@ -1756,7 +1760,7 @@ class ViolationHead(nn.Module):
           functional.between_residue_bond_loss(points, point_mask, seq_index, seq)
       )
       ret.update(
-          functional.between_residue_clash_loss(points, point_mask, seq_index, seq)
+          functional.between_residue_clash_loss(points, full_mask, seq_index, seq)
       )
       ret.update(
           functional.within_residue_clash_loss(points, point_mask, seq_index, seq)

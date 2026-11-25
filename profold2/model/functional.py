@@ -1179,10 +1179,37 @@ def between_residue_clash_loss(
   n_atom = F.one_hot(  # pylint: disable=not-callable
       torch.as_tensor(n_idx, dtype=torch.long, device=pred_points.device), atom_type_num
   )
+  # NA residues alias the backbone slots (N->OP1, C->OP2); their real
+  # inter-residue bond is O3'(i)-P(i+1). Make the C/N selectors per-residue
+  # moltype-aware so ONE neighbour-bond mask covers protein C-N and NA O3'-P.
+  is_na = (
+      (aatypes >= residue_constants.dna_from_idx) &
+      (aatypes <= residue_constants.dna_to_idx)
+  ) | (
+      (aatypes >= residue_constants.rna_from_idx) &
+      (aatypes <= residue_constants.rna_to_idx)
+  )
+  da_names = residue_constants.restype_name_to_atom14_names['DA']
+  o3p_atom = F.one_hot(  # pylint: disable=not-callable
+      torch.as_tensor(
+          da_names.index("O3'"), dtype=torch.long, device=pred_points.device
+      ), atom_type_num
+  )
+  p_atom = F.one_hot(  # pylint: disable=not-callable
+      torch.as_tensor(
+          da_names.index('P'), dtype=torch.long, device=pred_points.device
+      ), atom_type_num
+  )
+  # per-residue selectors (..., n, A): protein -> C/N slot, NA -> O3'/P slot
+  c_atom = (~is_na)[..., None] * c_atom + is_na[..., None] * o3p_atom
+  n_atom = (~is_na)[..., None] * n_atom + is_na[..., None] * p_atom
   neighbour_mask = (residue_index[..., :, None] + 1 == residue_index[..., None, :])
-  c_n_bonds = neighbour_mask[..., None, None] * torch.reshape(
-      c_atom[:, None] * n_atom[None, :],
-      (1, ) * len(neighbour_mask.shape) + (atom_type_num, atom_type_num)
+  # Exclude bonded neighbours of the SAME molecule type only (cross-type
+  # junctions are not standard bonds).
+  aatype_pair = ~torch.logical_xor(is_na[..., :, None], is_na[..., None, :])
+  c_n_bonds = (
+      neighbour_mask[..., None, None] * aatype_pair[..., None, None] *
+      (c_atom[..., :, None, :, None] * n_atom[..., None, :, None, :])
   )
   dist_mask *= (~c_n_bonds.bool())
 
