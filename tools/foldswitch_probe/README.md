@@ -50,6 +50,21 @@ geometry (not a bug); frozen trunk + per-residue switching-field conditioning
 steers modes; mechanism bounded by IPA-reachability (large rigid-body domain
 switches need a generative decoder).
 
+## 3. AFDB augmentation (direction-2 data prep)
+
+Transfer mined fold0/fold1 templates onto AFDB to augment per-mode training data
+for the FM decoder. Runs on the AFDB machine (192 cores / 1.5T RAM).
+
+| stage | script | purpose |
+|---|---|---|
+| template extraction | `extract_templates.py` | per switcher per fold, write representative backbone PDB (`sw<seq_rep>_fold<N>.pdb`) + `manifest.json` |
+| AFDB search | `afdb_search.py --stage search` | Foldseek `easy-search` templates vs AFDB (3Di+AA, `-c 0.8`, TM-score output) |
+| per-mode assignment | `afdb_search.py --stage assign` | assign each AFDB hit to the fold of its best-matching template (TM/coverage-gated) → `afdb_per_fold.json` |
+
+Caveats (§4.2/§4.3): AFDB hits are **pseudo-labels** (predicted structures) —
+downweight + identity-gate; per-mode augmentation ≠ new-switcher discovery (a
+switcher must match BOTH folds); downstream construction is backbone-only.
+
 ## Data
 
 - `data/*.npz` — small fold0/fold1 backbone test pairs (XCL1, RfaH, Mad2).
