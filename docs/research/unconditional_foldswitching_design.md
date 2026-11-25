@@ -184,7 +184,8 @@
 - **trunk 冻结**（非"轻调"），条件网络学转向；adaLN-Zero 场门控构造已验证。
 
 **G. 诚实局限**
-- 全 **oracle**（喂 GT 场 + 目标扭角），**非预测式泛化**——从 seq+mode 预测 switching 场+方向（Stage B）仍是数据受限的真问题（§11 Tier-3）；
+- **扭角特征是 oracle 泄漏，不可作预测特征**（用户 2026-11-25 纠正："这是结构预测，用扭角特征不行吧"）：结构预测的输入只有序列，**GT fold1 主链扭角正是待预测的输出**——把 `c_i = s_i·sincos(fold1 扭角)` 当输入特征等于喂答案（数据泄漏），本质是「给定目标几何的条件重建」，**不是预测**。v4 标量场、v5/v6 场×扭角都属此类 oracle 探针，只证明 **trunk 可被转向替代 fold（机制可行性 / 可操纵性上界）**，**扭角特征本身不可部署**。
+- **可部署的 mode 特征必须能从 seq+mode 导出**（不含目标几何）：如学习式 mode 嵌入、从序列预测的 switching 场、由先验模型预测的目标扭角/方向等。从 seq+mode 预测 switching 场+方向（**Stage B**）仍是数据受限的真问题（§11 Tier-3）——探针绕过的是这一最难环节，而非已解决它；
 - 单对蛋白，机制可移植性 ≠ 跨序列泛化；
 - Mad2/RfaH 预训练拟合本就差（基线 11–14 Å），精度上限部分受表示能力影响；
 - 数据整理本身印证稀缺：KaiB 5JYT 是工程突变体（序列不配）、Mad2 开态需从 O/C 二聚体拆、BCCIP/Serpin 候选 ID 多误——**可用干净 fold-switcher 对很少**。
@@ -330,7 +331,7 @@ sequence ─► 预训练 trunk(冻结) ─► repr ─────────�
 ```
 
 - **switching 场预测器**：从 `(seq, mode)` 预测逐残基 switching 场 `s_i`（哪些残基变、变多少）；监督来自 fold0↔fold1 逐残基差异（**局部/核心叠合**，§4.4）。
-- **靶向条件化（已验证构造，§4.4 续 B）**：**场门控 adaLN-Zero** `x_out = norm(x)·(1+s_i·γ_i)+s_i·β_i`，`γ_i/β_i=per-norm head(MLP(c_i))` 零初始化，`c_i=s_i·目标扭角 sin/cos`；输出端乘 `s_i` 保证 mode0 逐位恒等。注入 **trunk 单链路径 norm（192）+ head norm（3）**，post-norm 不被洗。条件网络 MLP(6→128→128 SiLU)+per-norm 头 ~12.9M。
+- **靶向条件化（adaLN-Zero 构造已验证，但探针为 oracle，§4.4 续 B/G）**：**场门控 adaLN-Zero** `x_out = norm(x)·(1+s_i·γ_i)+s_i·β_i`，`γ_i/β_i=per-norm head(MLP(c_i))` 零初始化，`c_i=s_i·目标扭角 sin/cos`；输出端乘 `s_i` 保证 mode0 逐位恒等。注入 **trunk 单链路径 norm（192）+ head norm（3）**，post-norm 不被洗。条件网络 MLP(6→128→128 SiLU)+per-norm 头 ~12.9M。**注意**：探针里 `c_i` 的目标扭角是 GT（oracle 泄漏，仅证机制可行）；**部署时 `c_i` 的目标扭角/方向必须由 seq+mode 预测**（接 switching 场预测器，Stage B 未验证），不能用 GT——否则即数据泄漏（§4.4 续 G）。
 - **trunk 冻结（必要，§4.4 续 C）**：trunk 作稳定地基，只训条件网络+head；共微调会毁条件化（mode1 振荡畸变）。
 - **IPA local→global（有边界，§4.4 续 D/E）**：靶向扰动决定残基 → IPA 注意力耦合传播成全局 fold 重排；**仅对 IPA 可达的局部/拓扑切换成立**（XCL1✓ Mad2 部分），大幅刚体结构域重排（RfaH✗）需结构域帧条件化或生成式解码器。
 - **生成统一 backbone frame 级**（§4.3）；侧链后补；fold1 只算 backbone FAPE、mask 侧链。
