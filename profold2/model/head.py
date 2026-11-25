@@ -78,9 +78,7 @@ def _make_dynamic_errors(errors, batch, num_pivot, alpha=0.3):
 
 
 def lddt_cutoff(seq, prot_cutoff=15., na_cutoff=30.):
-  is_prot = torch.logical_and(
-      seq >= residue_constants.prot_from_idx, seq <= residue_constants.prot_to_idx
-  )
+  is_prot = residue_constants.is_prot(seq)
   return torch.where(is_prot[..., None, :], prot_cutoff, na_cutoff)
 
 
@@ -1746,9 +1744,8 @@ class ViolationHead(nn.Module):
       # O3'-P bonded pair excluded in functional); the other terms use
       # peptide geometry / protein stereochem bounds (protein only).
       full_mask = point_mask
-      point_mask = point_mask * torch.logical_and(  # protein only
-          batch['seq'] >= residue_constants.prot_from_idx,
-          batch['seq'] <= residue_constants.prot_to_idx
+      point_mask = point_mask * residue_constants.is_prot(  # protein only
+          batch['seq']
       )[..., None]
 
       ret.update(
