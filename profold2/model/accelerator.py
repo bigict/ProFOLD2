@@ -133,4 +133,4 @@ class XPU(object):
     # hosts the TCPStore server, so if it exits first the peers' NCCL teardown
     # queries a dead store ("should dump" flag -> Broken pipe warning).
     if self.is_available() and torch.distributed.is_initialized():
-      torch.distributed.barrier()
+      torch.distributed.barrier(device_ids=[self.local_rank])
