@@ -1,0 +1,7 @@
+# Large regenerable mining outputs — do not commit
+mining/
+# Python cache
+__pycache__/
+*.pyc
+# Local scratch
+*.log
