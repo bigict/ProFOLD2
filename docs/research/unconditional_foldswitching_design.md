@@ -233,6 +233,41 @@
 
 **小结**：幻觉问题真实但可控——倾向门（部署必需）+ 置信度软过滤（互补，注意真实替代态也低置信）；AFDB 供负例。倾向门可由"生成模型兼任分类器（差异度×合理性）"实现，生成/分类统一。当前 held-out switcher scope 可后置门，但通用化必须补上。
 
+### 4.7 Fold-switcher 挖掘管线（PDB 混合双聚类，训练底座）
+
+§4.2 的 AFDB 增广需要 **PDB 真值 switcher 模板**；本节是从本地 PDB 库（`~/shared_hosts/pdb_train.zip`，210k mmCIF，982,970 蛋白链 → 166,030 唯一序列）挖掘 fold0/fold1 配对的生产管线，产出训练底座与 AFDB 搜索模板。
+
+**方法演进（Porter 已知 switcher 召回逐步提升）**：
+
+| 方法 | Porter 召回 | 问题 |
+|---|---|---|
+| APSP 精确 suffix-prefix 分组 | 11.8% | 漏 tag/构建变体（包含关系非 suffix-prefix）|
+| MMseqs2 95% 序列簇 + pairwise swSS | 32.3% | 代表采样漏具体条目；钙调蛋白刚体运动假阳 |
+| **混合双聚类（最终）** | **60.2%（56/93）** | 过分裂簇需 curation |
+
+**最终混合框架**：MMseqs2 序列簇（95% id）× Foldseek 结构簇（3Di+AA，`-c 0.8 --cov-mode 0`，E-value 0.01，**非 TM-score**）+ **簇内 swSS 补充**。
+- 序列簇跨 ≥2 Foldseek 折叠簇 = **折叠级 switcher**（RfaH/KaiB/XCL1，大幅构象差异）；
+- 单折叠簇内 swSS 分裂 = **同折叠拓扑 switcher**（Mad2 O/C，Foldseek 同一簇但拓扑重排）；
+- fold0 = 多数派构象，fold1 = 少数派；**全保留**每簇所有 PDB 条目（检测用代表封顶省算力，训练时随机抽取）。
+
+**关键判据 swSS**（`stage2_metrics.classify_pair`）：switch pair = **swSS ≥ 0.30 且 max_disp ≥ 12 Å**。swSS = switching 场残基（核心对齐位移 > 0.5·max）中二级结构变化比例。
+- 抓 **Mad2 拓扑切换**（同折叠簇、高 swSS）——补 Foldseek/TM-score 盲区；
+- 排除 **钙调蛋白开/合刚体运动**（低 swSS，SS 不变只是结构域摆动）——补 SS-only 盲区。
+- 两个盲区都补，是召回 60.2% 且假阳可控的核心。
+
+**结果**：**14,083 switchers**（折叠级 8,976 + 拓扑 5,107），全保留 **407,890 条目**（fold0/fold1 标签）。
+
+**TM-align 模式对照（弃用）**：`--exact-tmscore 1` 更敏感（+4 折叠级切换）但**精度更低**（钙调蛋白假阳，fold_level 绕过 swSS），且慢 5–10×。保持默认 3Di+swSS。
+
+**被否定的假设（避免重走弯路）**：
+- ~~采样偏差导致漏检~~ → 否（漏检条目在位置 1 即被丢）；真因 = `parse_ids` 按 PDB 去重丢同 PDB 多链 + 跨簇 + 代表封顶。已修：按 (pdb, chain) 去重留全链。
+- ~~APSP+MMseqs 混合提升召回~~ → 否（MMseqs 已覆盖 APSP 全部已知）。
+
+**Caveat 与待办**：
+- **2 构象局限**：当前 fold0/fold1 二元框架；**3+ 构象必定失败**（需多模态扩展，与 §4.5 混合采样的 mode 枚举一致——多 fold 需 VQ/多 mode）。
+- **Curation 待做**：UniProt 同蛋白过滤（砍 ortholog 冗余）+ 合并过分裂簇（n_conformations 高达 93）。
+- **代码**：`tools/foldswitch_probe/`（分支 feat-foldswitch-mining，commit 42dd755 已推送，待开 PR）；AFDB 模板提取 `extract_templates.py` + 搜索 `afdb_search.py` 衔接 §4.2。
+
 ## 5. 候选机制（mode 如何表示/采样）
 
 | 机制 | 如何保 mode 分离 | 优势 | 风险 |
