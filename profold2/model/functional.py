@@ -572,10 +572,7 @@ def angles_from_positions(aatypes, coords, coord_mask, placeholder_for_undefined
       '... n,... g m n -> ... g m', coord_mask.float(), torsion_atom14_idx.float()
   )
 
-  is_na = torch.logical_or(
-      (aatypes >= residue_constants.dna_from_idx) & (aatypes <= residue_constants.dna_to_idx),
-      (aatypes >= residue_constants.rna_from_idx) & (aatypes <= residue_constants.rna_to_idx),
-  )
+  is_na = residue_constants.is_dna(aatypes) | residue_constants.is_rna(aatypes)
 
   # fix omega/phi (prot) and epsilon/zeta (na) cross-residue angles
   for i in range(torsion_points.shape[-4] - 1, 0, -1):
@@ -1182,13 +1179,7 @@ def between_residue_clash_loss(
   # NA residues alias the backbone slots (N->OP1, C->OP2); their real
   # inter-residue bond is O3'(i)-P(i+1). Make the C/N selectors per-residue
   # moltype-aware so ONE neighbour-bond mask covers protein C-N and NA O3'-P.
-  is_na = (
-      (aatypes >= residue_constants.dna_from_idx) &
-      (aatypes <= residue_constants.dna_to_idx)
-  ) | (
-      (aatypes >= residue_constants.rna_from_idx) &
-      (aatypes <= residue_constants.rna_to_idx)
-  )
+  is_na = residue_constants.is_dna(aatypes) | residue_constants.is_rna(aatypes)
   da_names = residue_constants.restype_name_to_atom14_names['DA']
   o3p_atom = F.one_hot(  # pylint: disable=not-callable
       torch.as_tensor(

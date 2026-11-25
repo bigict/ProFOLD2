@@ -975,8 +975,16 @@ restype_num = len(restypes)  # := 20.
 unk_restype_index = restype_num  # Catch-all index for unknown restypes.
 
 
-def is_aa(restype: int) -> bool:
-  return moltype(restype) == PROT
+def is_dna(aatype):
+  return (aatype >= dna_from_idx) & (aatype <= dna_to_idx)
+
+
+def is_rna(aatype):
+  return (aatype >= rna_from_idx) & (aatype <= rna_to_idx)
+
+
+def is_prot(aatype):
+  return ~(is_dna(aatype) | is_rna(aatype))
 
 
 restypes_with_x = restypes + ('X', ) if PROT in restype_list else restypes
@@ -1566,7 +1574,7 @@ def make_atom14_dists_bounds(overlap_tolerance=1.5, bond_length_tolerance_factor
   )
   residue_bonds, residue_virtual_bonds, _ = load_stereo_chemical_props()
   for restype, restype_letter in enumerate(restypes):
-    if not is_aa(restype):
+    if moltype(restype) != PROT:
       continue
 
     resname = restype_1to3[(restype_letter, moltype(restype))]
