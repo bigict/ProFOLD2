@@ -29,9 +29,17 @@ domain motion (calmodulin open/closed, low swSS) — the two blind spots of
 TM-score/Foldseek-only and SS-only methods respectively.
 
 **Result** (default 3Di + swSS hybrid): 14,083 switchers (8,976 fold-level +
-5,107 topology), Porter known-switcher recall 60.2% (56/93), calmodulin correctly
-excluded, Mad2/RfaH/KaiB recovered. Full-retention manifest keeps every PDB entry
-per switcher cluster (fold0/fold1 labels; random draw at training use).
+5,107 topology), calmodulin correctly excluded, Mad2/RfaH/KaiB recovered.
+Full-retention manifest keeps every PDB entry per switcher cluster (fold0/fold1
+labels; random draw at training use).
+
+**Porter recall — criterion-independent anchor** (`cross_validation.json`): of 93
+known pairs, 25 lack ≥1 structure in the local archive + 3 have no common modeled
+residues (28/93 library-unusable), 65 fully available. The swSS criterion ceiling
+on the 65 available is 46/65 = 70.8% (15 rigid-body domain motions + 4 fluctuations
+excluded by design, not misses). The mining recall (whether a known pair is flagged)
+is matching-criterion-dependent (PDB-id vs sequence-cluster matching differ), so no
+single reproducible percentage is quoted.
 
 TM-align mode (`--exact-tmscore 1`) compared and rejected: more sensitive (+4
 fold-level switches) but less precise (calmodulin false positive; ~5–10× slower).
