@@ -83,9 +83,6 @@ export AxialAttention_accept_edge_norm=${AxialAttention_accept_edge_norm:-"0"}
 export AxialAttention_accept_kernel_fn=${AxialAttention_accept_kernel_fn:-"1"}
 # export AxialAttention_accept_kernel_dtype="float16"
 
-export NCCL_SOCKET_FAMILY=AF_INET
-export NCCL_TIMEOUT=3600
-
 runner="python"
 if [ x"${platform}" = x"slurm" ]; then
   runner="srun ${runner}"
