@@ -462,8 +462,9 @@ class FoldingHead(nn.Module):
       point_value_dim=8,
       qkv_use_bias=False,
       fape_min=1e-6,
-      fape_max=15,
-      fape_z=15,
+      fape_max=10,
+      fape_z=10,
+      fape_epsilon=1e-4,
       fape_backbone_clamp_ratio=1.0,
       fape_sidechain_clamp_ratio=1.0,
       dropout=.0,
@@ -484,6 +485,7 @@ class FoldingHead(nn.Module):
     self.fape_min = fape_min
     self.fape_max = fape_max
     self.fape_z = fape_z
+    self.fape_epsilon = fape_epsilon
     self.fape_backbone_clamp_ratio = fape_backbone_clamp_ratio
     self.fape_sidechain_clamp_ratio = fape_sidechain_clamp_ratio
 
@@ -545,7 +547,8 @@ class FoldingHead(nn.Module):
             self.fape_max,
             clamp_ratio=clamp_ratio,
             dij_weight=dij_weight,
-            use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False)
+            use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False),
+            epsilon=self.fape_epsilon
         ) / self.fape_z
         logger.debug('FoldingHead.loss(backbone_fape_loss: %d): %s', i, r)
         yield r
@@ -604,7 +607,8 @@ class FoldingHead(nn.Module):
           self.fape_max,
           clamp_ratio=self.fape_sidechain_clamp_ratio,
           dij_weight=dij_weight,
-          use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False)
+          use_weighted_mask=batch.get('coord_plddt_use_weighted_mask', False),
+          epsilon=self.fape_epsilon
       ) / self.fape_z
       logger.debug('FoldingHead.loss(sidechain_fape_loss): %s', r)
       return r

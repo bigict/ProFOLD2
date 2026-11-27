@@ -948,7 +948,7 @@ def fape(
     clamp_ratio=None,
     dij_weight=None,
     use_weighted_mask=True,
-    epsilon=1e-8
+    epsilon=1e-4
 ):
   """ FAPE(Frame Aligined Point Error) - Measure point error under different
   alignments
@@ -996,7 +996,7 @@ def fape(
   else:
     dij *= dij_weight
 
-  return masked_mean(value=dij, mask=dij_mask, epsilon=epsilon)
+  return masked_mean(value=dij, mask=dij_mask)
 
 
 def between_ca_ca_distance_loss(
